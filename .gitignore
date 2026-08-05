@@ -1,0 +1,8 @@
+.DS_Store
+.env
+.env.local
+.output/
+.wxt/
+coverage/
+node_modules/
+*.zip

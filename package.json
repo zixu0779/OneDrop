@@ -1,0 +1,43 @@
+{
+  "name": "onedrop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A serverless Microsoft Edge extension for sharing through a user's OneDrive.",
+  "scripts": {
+    "dev": "wxt --browser edge",
+    "build": "wxt build --browser edge",
+    "zip": "wxt zip --browser edge",
+    "compile": "wxt prepare && tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
+  },
+  "dependencies": {
+    "dexie": "4.4.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@testing-library/jest-dom": "7.0.0",
+    "@testing-library/react": "16.3.2",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
+    "@wxt-dev/module-react": "1.2.2",
+    "eslint": "10.8.0",
+    "globals": "17.8.0",
+    "jsdom": "29.1.1",
+    "prettier": "3.9.6",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.65.0",
+    "vitest": "4.1.10",
+    "wxt": "0.21.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

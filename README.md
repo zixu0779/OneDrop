@@ -2,7 +2,7 @@
 
 OneDrop is a Microsoft Edge extension that will provide cross-device text and file sharing through the user's own OneDrive. It has no application server and no SaaS data layer.
 
-This repository currently contains the approved project foundation only. Authentication, Microsoft Graph synchronization, messaging, uploads, downloads, and cache lifecycle behavior are intentionally not implemented.
+This repository currently contains the approved project foundation and a minimal Microsoft identity compatibility check. Microsoft Graph synchronization, messaging, uploads, downloads, and cache lifecycle behavior are intentionally not implemented.
 
 ## Architecture baseline
 
@@ -32,12 +32,12 @@ npm test
 npm run build
 ```
 
-`npm run dev` launches the Edge-targeted WXT development build. The production unpacked extension is emitted under `.output/` by `npm run build`.
+`npm run dev` starts the Edge-targeted WXT development build. If WXT does not start Edge automatically, follow its terminal instruction and load `.output/edge-mv3-dev` from `edge://extensions` as an unpacked extension. The production unpacked extension is emitted at `.output/edge-mv3` by `npm run build`.
 
 ## Configuration
 
-Copy `.env.example` to `.env.local` only when authentication implementation begins. Never commit Microsoft Entra environment values or token material.
+Copy `.env.example` to `.env.local` and add the development Microsoft Entra Application (client) ID before running the authentication check. Never commit Microsoft Entra environment values or token material. See [docs/authentication.md](docs/authentication.md).
 
 ## Current scope
 
-The current side panel is a deliberately minimal project-foundation screen. It proves that the Edge entrypoints and build configuration are connected without prematurely implementing product functionality.
+The current side panel exposes only the Microsoft identity compatibility check. A successful login proves redirect handling, PKCE code exchange, consent, and session token storage; it does not access or create OneDrive data.

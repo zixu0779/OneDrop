@@ -121,6 +121,10 @@ Historical month documents are cached locally and fetched on demand as the user 
 
 There is no promise of real-time background delivery while Edge or the extension is inactive.
 
+### Current read-only implementation
+
+The current compatibility stage reads `messages/<UTC YYYY-MM>.json` without creating it. A missing file is a valid empty state. When present, OneDrop reads the DriveItem ETag, downloads the JSON content, validates `schemaVersion`, the month partition, and every message, then returns the validated result to the Side Panel. No remote response is allowed to enter application state before schema validation.
+
 ## 7. File transfer
 
 The planned write transaction is:

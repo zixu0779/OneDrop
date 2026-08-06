@@ -40,7 +40,7 @@ A successful sign-in proves:
 - the account consented to `Files.ReadWrite.AppFolder`;
 - the extension can keep token material in `browser.storage.session`.
 
-The check does not call Microsoft Graph or create the OneDrive App Folder. That is the following implementation stage.
+After authentication succeeds, the Side Panel presents a separate, explicit OneDrive App Folder verification action. Authentication by itself does not call Graph or create OneDrive data.
 
 ## Deliberate validation limitations
 

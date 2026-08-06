@@ -168,6 +168,50 @@ body {
   border-color: rgb(18 183 106 / 30%);
 }
 
+.verification-step,
+.folder-result,
+.month-result {
+  display: grid;
+  gap: 8px;
+  margin-top: 24px;
+  padding: 14px;
+  border-radius: 14px;
+  background: rgb(18 183 106 / 8%);
+}
+
+.verification-step p {
+  font-size: 12px;
+}
+
+.verification-step .primary-button {
+  margin-top: 6px;
+}
+
+.folder-result span,
+.folder-result code,
+.folder-result a,
+.month-result span,
+.month-result code {
+  font-size: 12px;
+}
+
+.folder-result code {
+  overflow-wrap: anywhere;
+}
+
+.month-result {
+  background: rgb(31 128 255 / 7%);
+}
+
+.month-result code {
+  overflow-wrap: anywhere;
+}
+
+.folder-result a {
+  color: #0875e1;
+  font-weight: 700;
+}
+
 .error {
   display: grid;
   gap: 4px;

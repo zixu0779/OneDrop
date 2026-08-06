@@ -1,18 +1,30 @@
 import { useEffect, useState } from "react";
 
 import type {
+  AppFolderSummary,
   AuthStatus,
+  MonthReadResult,
   RuntimeRequest,
   RuntimeResponse,
 } from "../../src/contracts/runtime-messages";
 
-async function sendRequest(request: RuntimeRequest): Promise<AuthStatus> {
+async function sendRequest(request: RuntimeRequest): Promise<RuntimeResponse> {
   const response = (await browser.runtime.sendMessage(
     request,
   )) as RuntimeResponse;
 
   if (!response.ok) {
     throw new Error(response.error);
+  }
+
+  return response;
+}
+
+async function sendAuthRequest(request: RuntimeRequest): Promise<AuthStatus> {
+  const response = await sendRequest(request);
+
+  if (!response.ok || response.type !== "auth/status") {
+    throw new Error("OneDrop received an unexpected authentication response.");
   }
 
   return response.status;
@@ -22,9 +34,11 @@ export function App() {
   const [status, setStatus] = useState<AuthStatus>();
   const [error, setError] = useState<string>();
   const [isWorking, setIsWorking] = useState(false);
+  const [appFolder, setAppFolder] = useState<AppFolderSummary>();
+  const [monthResult, setMonthResult] = useState<MonthReadResult>();
 
   useEffect(() => {
-    void sendRequest({ type: "auth/status" })
+    void sendAuthRequest({ type: "auth/status" })
       .then(setStatus)
       .catch((cause: unknown) => {
         setError(
@@ -38,10 +52,60 @@ export function App() {
     setError(undefined);
 
     try {
-      setStatus(await sendRequest(request));
+      setStatus(await sendAuthRequest(request));
+      setAppFolder(undefined);
+      setMonthResult(undefined);
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "Authentication failed",
+      );
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function readCurrentMonth() {
+    setIsWorking(true);
+    setError(undefined);
+
+    try {
+      const response = await sendRequest({
+        type: "messages/read-current-month",
+      });
+
+      if (!response.ok || response.type !== "messages/month") {
+        throw new Error(
+          "OneDrop received an unexpected monthly sync response.",
+        );
+      }
+
+      setMonthResult(response.result);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Monthly message read failed",
+      );
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function verifyOneDrive() {
+    setIsWorking(true);
+    setError(undefined);
+
+    try {
+      const response = await sendRequest({
+        type: "onedrive/verify-app-folder",
+      });
+
+      if (!response.ok || response.type !== "onedrive/app-folder") {
+        throw new Error("OneDrop received an unexpected OneDrive response.");
+      }
+
+      setAppFolder(response.appFolder);
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "OneDrive check failed",
       );
     } finally {
       setIsWorking(false);
@@ -110,6 +174,55 @@ export function App() {
             {new Date(status.expiresAt).toLocaleString()}. This validation build
             keeps the token only for the current Edge session.
           </p>
+          {!appFolder ? (
+            <div className="verification-step">
+              <strong>Next: verify OneDrive storage</strong>
+              <p>
+                This user-triggered check calls Microsoft Graph. On first use,
+                OneDrive may create the dedicated Apps/OneDrop Development
+                folder.
+              </p>
+              <button
+                className="primary-button"
+                disabled={isWorking}
+                onClick={() => void verifyOneDrive()}
+                type="button"
+              >
+                {isWorking
+                  ? "Checking OneDrive…"
+                  : "Verify OneDrive App Folder"}
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="folder-result" aria-live="polite">
+                <strong>OneDrive App Folder verified</strong>
+                <span>{appFolder.name}</span>
+                <code>{appFolder.id}</code>
+                {appFolder.webUrl ? (
+                  <a href={appFolder.webUrl} rel="noreferrer" target="_blank">
+                    Open folder in OneDrive
+                  </a>
+                ) : null}
+              </div>
+              <div className="verification-step">
+                <strong>Read current month</strong>
+                <p>
+                  Read and validate the current UTC month document without
+                  creating or changing OneDrive content.
+                </p>
+                <button
+                  className="primary-button"
+                  disabled={isWorking}
+                  onClick={() => void readCurrentMonth()}
+                  type="button"
+                >
+                  {isWorking ? "Reading messages…" : "Read monthly messages"}
+                </button>
+              </div>
+              {monthResult ? <MonthResult result={monthResult} /> : null}
+            </>
+          )}
           <button
             className="secondary-button"
             disabled={isWorking}
@@ -123,11 +236,31 @@ export function App() {
 
       {error ? (
         <div className="error" role="alert">
-          <strong>Authentication failed</strong>
+          <strong>Operation failed</strong>
           <span>{error}</span>
         </div>
       ) : null}
     </main>
+  );
+}
+
+function MonthResult({ result }: { result: MonthReadResult }) {
+  return (
+    <div className="month-result" aria-live="polite">
+      <strong>{result.month} synchronization result</strong>
+      {result.state === "missing" ? (
+        <span>
+          No monthly document exists yet. This is a valid empty state.
+        </span>
+      ) : (
+        <>
+          <span>
+            {result.messages.length} messages passed schema validation.
+          </span>
+          <code>ETag: {result.eTag}</code>
+        </>
+      )}
+    </div>
   );
 }
 

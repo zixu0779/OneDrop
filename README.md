@@ -40,4 +40,4 @@ Copy `.env.example` to `.env.local` and add the development Microsoft Entra Appl
 
 ## Current scope
 
-The current side panel exposes only the Microsoft identity compatibility check. A successful login proves redirect handling, PKCE code exchange, consent, and session token storage; it does not access or create OneDrive data.
+The current side panel exposes Microsoft identity and OneDrive App Folder checks followed by a read-only current-month message check. It may create the dedicated app folder, but it does not create message metadata or upload user files.

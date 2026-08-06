@@ -3,7 +3,14 @@ import { describe, expect, it } from "vitest";
 import { readUnverifiedIdTokenClaims } from "../../src/features/auth/token";
 
 function encode(value: object): string {
-  return btoa(JSON.stringify(value))
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  let binary = "";
+
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+
+  return btoa(binary)
     .replaceAll("+", "-")
     .replaceAll("/", "_")
     .replace(/=+$/u, "");
@@ -11,10 +18,10 @@ function encode(value: object): string {
 
 describe("readUnverifiedIdTokenClaims", () => {
   it("reads display-only account claims", () => {
-    const token = `header.${encode({ name: "One Drop", preferred_username: "one@example.com" })}.signature`;
+    const token = `header.${encode({ name: "一滴水", preferred_username: "one@example.com" })}.signature`;
 
     expect(readUnverifiedIdTokenClaims(token)).toEqual({
-      name: "One Drop",
+      name: "一滴水",
       preferred_username: "one@example.com",
     });
   });

@@ -162,6 +162,19 @@ export async function signOut(): Promise<AuthStatus> {
   return getAuthStatus();
 }
 
+export async function getCurrentAccessToken(): Promise<string> {
+  const token = await readStoredToken();
+
+  if (!token || Date.parse(token.expiresAt) <= Date.now()) {
+    await browser.storage.session.remove(TOKEN_STORAGE_KEY);
+    throw new Error(
+      "The validation access token expired. Sign in again to continue.",
+    );
+  }
+
+  return token.access_token;
+}
+
 function getTokenErrorMessage(body: unknown): string {
   if (typeof body !== "object" || body === null) {
     return "Unknown response";

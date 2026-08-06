@@ -7,6 +7,9 @@ import {
   signIn,
   signOut,
 } from "../src/features/auth/auth-service";
+import { verifyAppFolder } from "../src/infrastructure/onedrive/app-folder";
+import { getUtcMonth } from "../src/features/messages/month";
+import { readMonthDocument } from "../src/infrastructure/onedrive/month-reader";
 
 export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(() => {
@@ -18,11 +21,27 @@ export default defineBackground(() => {
       try {
         switch (request.type) {
           case "auth/status":
-            return { ok: true, status: await getAuthStatus() };
+            return {
+              ok: true,
+              type: "auth/status",
+              status: await getAuthStatus(),
+            };
           case "auth/sign-in":
-            return { ok: true, status: await signIn() };
+            return { ok: true, type: "auth/status", status: await signIn() };
           case "auth/sign-out":
-            return { ok: true, status: await signOut() };
+            return { ok: true, type: "auth/status", status: await signOut() };
+          case "onedrive/verify-app-folder":
+            return {
+              ok: true,
+              type: "onedrive/app-folder",
+              appFolder: await verifyAppFolder(),
+            };
+          case "messages/read-current-month":
+            return {
+              ok: true,
+              type: "messages/month",
+              result: await readMonthDocument(getUtcMonth()),
+            };
         }
       } catch (error) {
         return {

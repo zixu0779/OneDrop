@@ -33,7 +33,11 @@ export function readUnverifiedIdTokenClaims(idToken?: string): IdTokenClaims {
       normalized.length + ((4 - (normalized.length % 4)) % 4),
       "=",
     );
-    const parsed: unknown = JSON.parse(atob(padded));
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (character) =>
+      character.charCodeAt(0),
+    );
+    const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
 
     return z
       .object({

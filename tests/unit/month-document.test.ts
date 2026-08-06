@@ -22,4 +22,14 @@ describe("monthDocumentSchema", () => {
 
     expect(result.success).toBe(false);
   });
+
+  it("rejects corrupted remote message data", () => {
+    const result = monthDocumentSchema.safeParse({
+      schemaVersion: 1,
+      month: "2026-08",
+      messages: [{ schemaVersion: 1, id: "not-a-uuid", type: "text" }],
+    });
+
+    expect(result.success).toBe(false);
+  });
 });

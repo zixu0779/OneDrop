@@ -1,19 +1,12 @@
+import type { Message } from "../domain/message";
+
 export type AuthStatus =
-  | {
-      state: "unconfigured";
-      redirectUri: string;
-    }
-  | {
-      state: "signed-out";
-      redirectUri: string;
-    }
+  | { state: "unconfigured"; redirectUri: string }
+  | { state: "signed-out"; redirectUri: string }
   | {
       state: "signed-in";
       redirectUri: string;
-      account: {
-        displayName?: string;
-        username?: string;
-      };
+      account: { displayName?: string; username?: string };
       expiresAt: string;
     };
 
@@ -22,7 +15,8 @@ export type RuntimeRequest =
   | { type: "auth/sign-in" }
   | { type: "auth/sign-out" }
   | { type: "onedrive/verify-app-folder" }
-  | { type: "messages/read-current-month" };
+  | { type: "messages/read-current-month" }
+  | { type: "messages/send-text"; text: string };
 
 export type AppFolderSummary = {
   id: string;
@@ -31,10 +25,7 @@ export type AppFolderSummary = {
 };
 
 export type MonthReadResult =
-  | {
-      state: "missing";
-      month: string;
-    }
+  | { state: "missing"; month: string }
   | {
       state: "loaded";
       month: string;
@@ -55,4 +46,3 @@ export type RuntimeResponse =
       result: MonthReadResult;
     }
   | { ok: false; error: string };
-import type { Message } from "../domain/message";

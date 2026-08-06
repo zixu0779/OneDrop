@@ -45,7 +45,10 @@ OneDrop uses the least-privilege OneDrive App Folder reached through `/me/drive/
 Apps/OneDrop/
 ├── schema.json
 ├── messages/
-│   ├── 2026-08.json
+│   └── 2026-08/
+│       ├── 0001.json
+│       └── 0002.json
+├── archive/
 │   ├── 2026-07.json
 │   └── 2026-06.json
 ├── files/
@@ -59,6 +62,8 @@ Apps/OneDrop/
 ```
 
 The physical OneDrive App Folder name is determined by the Microsoft Entra application registration.
+
+The chunked layout above is the approved next schema. The currently implemented compatibility schema still uses `messages/YYYY-MM.json` and will be migrated deliberately rather than silently reinterpreted.
 
 ## 4. Monthly message documents
 
@@ -92,9 +97,11 @@ OneDrive does not provide an atomic JSON append. Concurrent writers therefore us
 
 Blind overwrite is forbidden. Within one extension installation, write commands are additionally serialized to reduce self-conflicts.
 
-### Growth guard
+### Growth and archival
 
-The first release uses one file per month. Implementation must measure serialized metadata size and message count. A future schema may introduce deterministic overflow documents if real usage demonstrates that monthly rewrites are too large. This is an explicit migration path, not first-release behavior.
+The current compatibility implementation uses one file per month with a 10 MB safety limit. The approved next schema uses deterministic active-month chunks with a 256 KiB soft target and 320 KiB hard ceiling. This keeps ordinary conditional rewrites small while avoiding a mutable shared pointer file.
+
+Once a month is closed for 24 hours, its chunks may be compacted into one immutable `archive/YYYY-MM.json`. The archive is created with conflict behavior `fail`, verified before publication is considered complete, and does not require immediate deletion of its source chunks. Late offline sends are not supported, so normal send behavior never reopens archived months.
 
 ## 5. Send semantics
 
@@ -124,6 +131,10 @@ There is no promise of real-time background delivery while Edge or the extension
 ### Current read-only implementation
 
 The current compatibility stage reads `messages/<UTC YYYY-MM>.json` without creating it. A missing file is a valid empty state. When present, OneDrop reads the DriveItem ETag, downloads the JSON content, validates `schemaVersion`, the month partition, and every message, then returns the validated result to the Side Panel. No remote response is allowed to enter application state before schema validation.
+
+### Current text write implementation
+
+Text messages are limited to 20,000 characters and assigned a UUID before the cloud transaction. OneDrop caches validated monthly snapshots and the messages-folder ID in IndexedDB. After the first read, the normal send path merges locally and performs one conditional upload. A missing month is created with conflict behavior `fail`; an existing month is replaced with its exact ETag in `If-Match`. HTTP 409 and 412 responses invalidate the cache and cause a bounded read-merge-retry cycle of at most five attempts. HTTP 429 and network failures are reported immediately and are never queued for later delivery. An ambiguous network failure also invalidates the snapshot so the next operation must reconcile with OneDrive.
 
 ## 7. File transfer
 

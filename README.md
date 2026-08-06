@@ -2,7 +2,7 @@
 
 OneDrop is a Microsoft Edge extension that will provide cross-device text and file sharing through the user's own OneDrive. It has no application server and no SaaS data layer.
 
-This repository currently contains the approved project foundation and a minimal Microsoft identity compatibility check. Microsoft Graph synchronization, messaging, uploads, downloads, and cache lifecycle behavior are intentionally not implemented.
+This repository contains the working Edge side-panel foundation, Microsoft identity and OneDrive App Folder validation, current-month synchronization, and conditional text-message writes. File transfer and managed download caching remain deferred.
 
 ## Architecture baseline
 
@@ -40,4 +40,4 @@ Copy `.env.example` to `.env.local` and add the development Microsoft Entra Appl
 
 ## Current scope
 
-The current side panel exposes Microsoft identity and OneDrive App Folder checks followed by a read-only current-month message check. It may create the dedicated app folder, but it does not create message metadata or upload user files.
+The current side panel exposes Microsoft identity and OneDrive App Folder checks, current-month reads, and conditional text-message writes. Validated monthly snapshots and the messages-folder ID are cached in IndexedDB, so the normal subsequent send uses one conditional OneDrive upload. Conflicts invalidate the cache and use a bounded read-merge-retry path. File attachments, downloads, background synchronization, active-month chunking, and production token refresh remain deferred.

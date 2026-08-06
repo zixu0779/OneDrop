@@ -1,8 +1,8 @@
 # OneDrive storage contract
 
-Status: root compatibility check implemented; storage operations deferred.
+Status: root check, cached monthly reads, and conditional text writes implemented; active-month chunking, attachments, and deletion deferred.
 
-The root App Folder lookup and current-month read are implemented as user-triggered compatibility checks. Monthly writes, attachments, and tombstones remain deferred.
+The root App Folder lookup, current-month read, and text message write are implemented. Attachments and tombstones remain deferred.
 
 ## Root
 
@@ -19,6 +19,16 @@ The `/special/approot` endpoint is the identity boundary for this lookup. The cl
 Historical documents are not rewritten by normal send behavior. OneDrop does not automatically replay failed or offline sends into historical months.
 
 The read-only stage requests the current UTC month's DriveItem metadata first. HTTP 404 is interpreted as an empty timeline, not an error. An existing document must expose an ETag and pass the versioned Zod schema before it is displayed.
+
+The first text send creates `messages/` and the current month document. Subsequent sends replace the JSON only when the previously read ETag still matches. A validated snapshot and the messages-folder DriveItem ID are cached in IndexedDB. The normal subsequent-send path therefore performs one conditional upload. Create and update conflicts invalidate the snapshot, then re-read, merge by immutable message ID, and retry within a fixed budget.
+
+A network failure after an upload starts is ambiguous: OneDrive might have accepted the request even though OneDrop did not receive the response. OneDrop invalidates the cached snapshot and reports failure; it does not automatically replay the message. The next read must reconcile with OneDrive first.
+
+## Approved active-month chunk migration
+
+The current single-file format is transitional. The approved next storage version will keep the mutable current UTC month in deterministic chunk files with a 256 KiB soft target and 320 KiB hard ceiling. No shared `current.json` pointer is used. Writers derive the active chunk from validated metadata and create deterministic successors with conflict behavior `fail`.
+
+After a month closes and a 24-hour grace period passes, OneDrop may merge that month's chunks into one immutable `archive/YYYY-MM.json`. Archive publication must use create-with-conflict-fail, validate the merged result, and retain source chunks until cleanup is independently safe. This reduces hot-file rewrite cost without permanently exposing users to many small historical files.
 
 ## Attachments
 

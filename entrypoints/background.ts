@@ -8,8 +8,10 @@ import {
   signOut,
 } from "../src/features/auth/auth-service";
 import { verifyAppFolder } from "../src/infrastructure/onedrive/app-folder";
+import { createTextMessage } from "../src/features/messages/create-text-message";
 import { getUtcMonth } from "../src/features/messages/month";
 import { readMonthDocument } from "../src/infrastructure/onedrive/month-reader";
+import { appendTextMessage } from "../src/infrastructure/onedrive/month-writer";
 
 export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(() => {
@@ -42,6 +44,14 @@ export default defineBackground(() => {
               type: "messages/month",
               result: await readMonthDocument(getUtcMonth()),
             };
+          case "messages/send-text": {
+            const message = createTextMessage(request.text);
+            return {
+              ok: true,
+              type: "messages/month",
+              result: await appendTextMessage(getUtcMonth(), message),
+            };
+          }
         }
       } catch (error) {
         return {

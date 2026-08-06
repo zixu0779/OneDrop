@@ -36,6 +36,7 @@ export function App() {
   const [isWorking, setIsWorking] = useState(false);
   const [appFolder, setAppFolder] = useState<AppFolderSummary>();
   const [monthResult, setMonthResult] = useState<MonthReadResult>();
+  const [draft, setDraft] = useState("");
 
   useEffect(() => {
     void sendAuthRequest({ type: "auth/status" })
@@ -106,6 +107,33 @@ export function App() {
     } catch (cause) {
       setError(
         cause instanceof Error ? cause.message : "OneDrive check failed",
+      );
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function sendText() {
+    if (!draft.trim()) return;
+
+    setIsWorking(true);
+    setError(undefined);
+
+    try {
+      const response = await sendRequest({
+        type: "messages/send-text",
+        text: draft,
+      });
+
+      if (!response.ok || response.type !== "messages/month") {
+        throw new Error("OneDrop received an unexpected send response.");
+      }
+
+      setMonthResult(response.result);
+      setDraft("");
+    } catch (cause) {
+      setError(
+        cause instanceof Error ? cause.message : "Text message send failed",
       );
     } finally {
       setIsWorking(false);
@@ -221,6 +249,28 @@ export function App() {
                 </button>
               </div>
               {monthResult ? <MonthResult result={monthResult} /> : null}
+              <div className="composer">
+                <label htmlFor="message-text">Text message</label>
+                <textarea
+                  id="message-text"
+                  maxLength={20_000}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder="Write a message to your other devices…"
+                  rows={4}
+                  value={draft}
+                />
+                <div className="composer-footer">
+                  <span>{draft.length.toLocaleString()} / 20,000</span>
+                  <button
+                    className="primary-button"
+                    disabled={isWorking || !draft.trim()}
+                    onClick={() => void sendText()}
+                    type="button"
+                  >
+                    {isWorking ? "Sending…" : "Send text"}
+                  </button>
+                </div>
+              </div>
             </>
           )}
           <button
@@ -258,6 +308,22 @@ function MonthResult({ result }: { result: MonthReadResult }) {
             {result.messages.length} messages passed schema validation.
           </span>
           <code>ETag: {result.eTag}</code>
+          {result.messages.length > 0 ? (
+            <ol className="message-list">
+              {result.messages.map((message) => (
+                <li key={message.id}>
+                  {message.type === "text" ? (
+                    <p>{message.text}</p>
+                  ) : (
+                    <p>File: {message.attachment.name}</p>
+                  )}
+                  <time dateTime={message.createdAt}>
+                    {new Date(message.createdAt).toLocaleString()}
+                  </time>
+                </li>
+              ))}
+            </ol>
+          ) : null}
         </>
       )}
     </div>

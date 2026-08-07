@@ -19,6 +19,9 @@ export const fileMessageSchema = messageBaseSchema.extend({
     name: z.string().min(1),
     size: z.number().int().nonnegative(),
     mimeType: z.string().min(1),
+    imageWidth: z.number().int().positive().optional(),
+    imageHeight: z.number().int().positive().optional(),
+    thumbHash: z.string().min(1).max(256).optional(),
   }),
 });
 

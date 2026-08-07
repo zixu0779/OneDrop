@@ -46,7 +46,9 @@ After authentication succeeds, the Side Panel automatically verifies the OneDriv
 
 - Access and refresh tokens are stored in `browser.storage.local`, which is private to the extension but is not an operating-system credential vault.
 - OneDrop requests `offline_access` and refreshes the access token on demand shortly before expiry. A rotated refresh token replaces the previous value atomically.
-- Temporary refresh failures are reported without deleting the refresh token. `invalid_grant` and `interaction_required` clear local authentication and require interactive sign-in.
+- Because the extension redirect URI is registered as an SPA, Microsoft limits that refresh-token family to 24 hours; rotated tokens do not extend that original deadline.
+- When that grant expires, OneDrop first runs a non-interactive authorization-code flow with `prompt=none`. If the Microsoft browser session is still active, this obtains a fresh token family without asking for credentials. If silent authorization requires interaction, OneDrop clears the unusable local grant and shows the normal sign-in state.
+- Temporary refresh failures are reported without deleting the refresh token.
 - **Sign out locally** clears both local and legacy session token storage but does not terminate the Microsoft Entra browser session.
 - Uninstalling the extension clears its local token storage.
 - ID-token claims are decoded only for display. Authorization decisions must never rely on these unverified display claims.

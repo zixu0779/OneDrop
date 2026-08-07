@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable } from "dexie";
 
 import type { MonthDocument } from "../../domain/month-document";
+import type { Attachment } from "../../domain/message";
 
 export type CachedChunk = {
   index: number;
@@ -23,15 +24,54 @@ type SettingRecord = {
   value: string;
 };
 
+export type PendingTransferRecord = {
+  id: string;
+  createdAt: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  lastModified: number;
+  blob: Blob;
+  isImage: boolean;
+  imageWidth?: number;
+  imageHeight?: number;
+  thumbHash?: string;
+  status: "uploading" | "upload-failed" | "commit-failed";
+  error?: string;
+  attachment?: Attachment;
+};
+
+export type DownloadRecord = {
+  driveItemId: string;
+  downloadId: number;
+  cloudName: string;
+  localFilename?: string;
+  createdAt: string;
+  lastOpenedAt?: string;
+};
+
 class OneDropDatabase extends Dexie {
   monthCache!: EntityTable<MonthCacheRecord, "month">;
   settings!: EntityTable<SettingRecord, "key">;
+  pendingTransfers!: EntityTable<PendingTransferRecord, "id">;
+  downloads!: EntityTable<DownloadRecord, "driveItemId">;
 
   constructor() {
     super("OneDrop");
     this.version(1).stores({
       monthCache: "&month",
       settings: "&key",
+    });
+    this.version(2).stores({
+      monthCache: "&month",
+      settings: "&key",
+      pendingTransfers: "&id,createdAt,status",
+    });
+    this.version(3).stores({
+      monthCache: "&month",
+      settings: "&key",
+      pendingTransfers: "&id,createdAt,status",
+      downloads: "&driveItemId,downloadId,lastOpenedAt",
     });
   }
 }

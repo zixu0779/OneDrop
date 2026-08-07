@@ -19,6 +19,7 @@
     "dexie": "4.4.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "thumbhash": "^0.1.1",
     "zod": "4.4.3"
   },
   "devDependencies": {

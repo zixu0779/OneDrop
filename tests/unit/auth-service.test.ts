@@ -40,6 +40,7 @@ describe("persistent authentication lifecycle", () => {
     vi.stubGlobal("browser", {
       identity: {
         getRedirectURL: vi.fn(() => "https://extension.chromiumapp.org/auth"),
+        launchWebAuthFlow: vi.fn(),
       },
       storage: {
         local: storageArea(localState),
@@ -81,6 +82,78 @@ describe("persistent authentication lifecycle", () => {
       (localState["onedrop.auth.token"] as Record<string, unknown>)
         .refresh_token,
     ).toBe("refresh-token");
+  });
+
+  it("silently obtains a new authorization grant when the 24-hour SPA refresh grant expires", async () => {
+    localState["onedrop.auth.token"] = token({
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    const launchWebAuthFlow = vi.mocked(browser.identity.launchWebAuthFlow);
+    launchWebAuthFlow.mockImplementation(async ({ url, interactive }) => {
+      expect(interactive).toBe(false);
+      const authorizeUrl = new URL(url);
+      expect(authorizeUrl.searchParams.get("prompt")).toBe("none");
+      return `https://extension.chromiumapp.org/auth?code=fresh-code&state=${authorizeUrl.searchParams.get("state")}`;
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json(
+            {
+              error: "invalid_grant",
+              error_description: "AADSTS70000: The grant is expired.",
+            },
+            { status: 400 },
+          ),
+        )
+        .mockResolvedValueOnce(
+          Response.json({
+            token_type: "Bearer",
+            scope: "openid offline_access",
+            expires_in: 3600,
+            access_token: "silent-access-token",
+            refresh_token: "fresh-refresh-token",
+          }),
+        ),
+    );
+    const { getCurrentAccessToken } =
+      await import("../../src/features/auth/auth-service");
+
+    await expect(getCurrentAccessToken()).resolves.toBe("silent-access-token");
+    expect(
+      (localState["onedrop.auth.token"] as Record<string, unknown>)
+        .refresh_token,
+    ).toBe("fresh-refresh-token");
+  });
+
+  it("returns signed-out when both the refresh grant and Microsoft browser session have ended", async () => {
+    localState["onedrop.auth.token"] = token({
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    vi.mocked(browser.identity.launchWebAuthFlow).mockRejectedValue(
+      new Error("Interaction required"),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: "invalid_grant",
+            error_description: "AADSTS70000: The grant is expired.",
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    const { getAuthStatus } =
+      await import("../../src/features/auth/auth-service");
+
+    await expect(getAuthStatus()).resolves.toMatchObject({
+      state: "signed-out",
+    });
+    expect(localState["onedrop.auth.token"]).toBeUndefined();
   });
 
   it("clears persistent and legacy session tokens on sign out", async () => {

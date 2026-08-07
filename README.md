@@ -2,7 +2,7 @@
 
 OneDrop is a Microsoft Edge extension that will provide cross-device text and file sharing through the user's own OneDrive. It has no application server and no SaaS data layer.
 
-This repository contains the working Edge side-panel foundation, Microsoft identity and OneDrive App Folder validation, current-month synchronization, and conditional text-message writes. File transfer and managed download caching remain deferred.
+This repository contains the working Edge side-panel foundation, Microsoft identity and OneDrive App Folder validation, current-month synchronization, conditional text-message writes, small-file transfer, and user-owned local downloads.
 
 ## Architecture baseline
 
@@ -40,4 +40,4 @@ Copy `.env.example` to `.env.local` and add the development Microsoft Entra Appl
 
 ## Current scope
 
-The current side panel automatically restores Microsoft identity, verifies the OneDrive App Folder, reads the current month, and supports conditional text and small-file messages. Current-month metadata uses deterministic 256 KiB-target chunks with a 320 KiB hard ceiling. Files up to 4 MiB use a direct deterministic-path OneDrive upload followed by attachment metadata commit, with separate upload-failed Resend and commit-failed Retry states. The obsolete `messages/YYYY-MM.json` layout is not read or migrated. Validated snapshots and folder IDs are cached in IndexedDB, so the normal subsequent send uses one conditional OneDrive upload. Conflicts invalidate the cache and use a bounded read-merge-retry path. Large-file upload sessions, downloads, background synchronization, and closed-month archive compaction remain deferred.
+The current side panel automatically restores Microsoft identity, verifies the OneDrive App Folder, reads the current month, and supports conditional text and small-file messages. Current-month metadata uses deterministic 256 KiB-target chunks with a 320 KiB hard ceiling. Files up to 4 MiB use a direct deterministic-path OneDrive upload followed by attachment metadata commit, with separate upload-failed Resend and commit-failed Retry states. Clicking an attachment opens a still-existing Edge download or downloads it again; Save as is available from the message menu, and filename conflicts use the browser's `uniquify` behavior. OneDrop records download IDs but never deletes user-owned files. The obsolete `messages/YYYY-MM.json` layout is not read or migrated. Validated snapshots and folder IDs are cached in IndexedDB, so the normal subsequent send uses one conditional OneDrive upload. Conflicts invalidate the cache and use a bounded read-merge-retry path. Large-file upload sessions, background synchronization, and closed-month archive compaction remain deferred.

@@ -20,16 +20,29 @@ export type RuntimeRequest =
   | { type: "messages/send-text"; text: string }
   | {
       type: "files/send";
-      file: { name: string; mimeType: string; size: number; base64: string };
+      file: {
+        name: string;
+        mimeType: string;
+        size: number;
+        base64: string;
+        imageWidth?: number;
+        imageHeight?: number;
+        thumbHash?: string;
+      };
       messageId: string;
       createdAt: string;
+      reuseExisting?: boolean;
     }
   | {
       type: "files/retry-commit";
       attachment: Attachment;
       messageId: string;
       createdAt: string;
-    };
+    }
+  | { type: "files/read-preview"; driveItemId: string; mimeType: string }
+  | { type: "files/check-attachment"; driveItemId: string }
+  | { type: "files/open-local"; attachment: Attachment }
+  | { type: "files/save-as"; attachment: Attachment };
 
 export type AppFolderSummary = {
   id: string;
@@ -65,6 +78,18 @@ export type RuntimeResponse =
       transfer:
         | { state: "sent"; result: MonthReadResult }
         | { state: "upload-failed"; error: string }
-        | { state: "commit-failed"; error: string; attachment: Attachment };
+        | {
+            state: "commit-failed";
+            error: string;
+            attachment: Attachment;
+            createdAt: string;
+          };
+    }
+  | { ok: true; type: "files/preview"; dataUrl: string }
+  | { ok: true; type: "files/availability"; exists: boolean }
+  | {
+      ok: true;
+      type: "files/local-action";
+      action: "opened" | "downloaded";
     }
   | { ok: false; error: string };

@@ -14,8 +14,13 @@ import { readMonthDocument } from "../src/infrastructure/onedrive/month-reader";
 import { appendTextMessage } from "../src/infrastructure/onedrive/month-writer";
 import { getOrCreateDeviceId } from "../src/features/device/device-service";
 import { createFileMessage } from "../src/features/messages/create-file-message";
-import { uploadSmallFile } from "../src/infrastructure/onedrive/file-uploader";
+import {
+  checkAttachmentExists,
+  readImagePreview,
+  uploadSmallFile,
+} from "../src/infrastructure/onedrive/file-uploader";
 import { appendMessage } from "../src/infrastructure/onedrive/month-writer";
+import { openOrDownloadAttachment } from "../src/features/downloads/download-service";
 
 export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(() => {
@@ -74,6 +79,7 @@ export default defineBackground(() => {
                 ...request.file,
                 messageId: request.messageId,
                 createdAt: request.createdAt,
+                ...(request.reuseExisting ? { reuseExisting: true } : {}),
               });
             } catch (error) {
               return {
@@ -86,11 +92,12 @@ export default defineBackground(() => {
               };
             }
 
+            const uploadedAt = new Date();
             try {
               const message = createFileMessage(
                 attachment,
                 await getOrCreateDeviceId(),
-                new Date(request.createdAt),
+                uploadedAt,
                 request.messageId,
               );
               return {
@@ -109,6 +116,7 @@ export default defineBackground(() => {
                   state: "commit-failed",
                   error: getErrorMessage(error),
                   attachment,
+                  createdAt: uploadedAt.toISOString(),
                 },
               };
             }
@@ -137,10 +145,38 @@ export default defineBackground(() => {
                   state: "commit-failed",
                   error: getErrorMessage(error),
                   attachment: request.attachment,
+                  createdAt: request.createdAt,
                 },
               };
             }
           }
+          case "files/read-preview":
+            return {
+              ok: true,
+              type: "files/preview",
+              dataUrl: await readImagePreview(
+                request.driveItemId,
+                request.mimeType,
+              ),
+            };
+          case "files/check-attachment":
+            return {
+              ok: true,
+              type: "files/availability",
+              exists: await checkAttachmentExists(request.driveItemId),
+            };
+          case "files/open-local":
+            return {
+              ok: true,
+              type: "files/local-action",
+              action: await openOrDownloadAttachment(request.attachment, false),
+            };
+          case "files/save-as":
+            return {
+              ok: true,
+              type: "files/local-action",
+              action: await openOrDownloadAttachment(request.attachment, true),
+            };
         }
       } catch (error) {
         return {

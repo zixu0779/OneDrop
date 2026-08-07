@@ -1,0 +1,68 @@
+import type { Attachment } from "../../domain/message";
+import {
+  deleteDownloadRecord,
+  getDownloadRecord,
+  markDownloadOpened,
+  putDownloadRecord,
+} from "../../infrastructure/indexed-db/downloads";
+import { readAttachmentDataUrl } from "../../infrastructure/onedrive/file-uploader";
+
+export async function openOrDownloadAttachment(
+  attachment: Attachment,
+  saveAs: boolean,
+): Promise<"opened" | "downloaded"> {
+  if (!saveAs) {
+    const existing = await openExistingDownload(attachment.driveItemId);
+    if (existing) return existing === "opened" ? "opened" : "downloaded";
+  }
+
+  const dataUrl = await readAttachmentDataUrl(
+    attachment.driveItemId,
+    attachment.mimeType,
+  );
+  const downloadId = await browser.downloads.download({
+    url: dataUrl,
+    filename: sanitizeDownloadFilename(attachment.name),
+    conflictAction: "uniquify",
+    saveAs,
+  });
+  const [item] = await browser.downloads.search({ id: downloadId });
+  await putDownloadRecord({
+    driveItemId: attachment.driveItemId,
+    downloadId,
+    cloudName: attachment.name,
+    ...(item?.filename ? { localFilename: item.filename } : {}),
+    createdAt: new Date().toISOString(),
+  });
+  return "downloaded";
+}
+
+async function openExistingDownload(
+  driveItemId: string,
+): Promise<"opened" | "downloading" | false> {
+  const record = await getDownloadRecord(driveItemId);
+  if (!record) return false;
+
+  const [item] = await browser.downloads.search({ id: record.downloadId });
+  if (!item || item.exists === false || item.state === "interrupted") {
+    await deleteDownloadRecord(driveItemId);
+    return false;
+  }
+
+  if (item.state === "in_progress") return "downloading";
+
+  await browser.downloads.open(record.downloadId);
+  await markDownloadOpened(driveItemId, item.filename);
+  return "opened";
+}
+
+export function sanitizeDownloadFilename(name: string): string {
+  const printableName = Array.from(name, (character) =>
+    character.charCodeAt(0) < 32 ? "_" : character,
+  ).join("");
+  const sanitized = printableName
+    .replace(/[\\/:*?"<>|]/g, "_")
+    .replace(/^\.+/, "")
+    .trim();
+  return sanitized || "download";
+}

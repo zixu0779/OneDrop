@@ -1,8 +1,8 @@
 # OneDrive storage contract
 
-Status: root check, cached monthly reads, and active-month chunk writes implemented; archive compaction, attachments, and deletion deferred.
+Status: root checks, cached monthly reads, active-month chunk writes, and small-file attachments are implemented; archive compaction and deletion remain deferred.
 
-The root App Folder lookup, current-month read, and text message write are implemented. Attachments and tombstones remain deferred.
+The root App Folder lookup, current-month read, text message write, and small-file upload paths are implemented. Tombstones remain deferred.
 
 ## Root
 
@@ -32,7 +32,9 @@ After a month closes and a 24-hour grace period passes, OneDrop may merge that m
 
 ## Attachments
 
-Attachment bytes live under `files/YYYY/MM/<message-id>/`. A message record refers to the returned DriveItem ID, original name, MIME type, size, and content identity information that is available from Graph.
+Attachment bytes live under `files/YYYY/MM/<message-id>/`. A message record refers to the returned DriveItem ID, original name, MIME type, and size.
+
+New image records may additionally store the original pixel dimensions and a Base64-encoded ThumbHash. OneDrop generates the hash locally from a canvas no larger than 100 pixels on its longest edge. The hash is only a compact visual approximation used for a blurred placeholder while the original image is loading or unavailable; it is not a separate OneDrive file and cannot reconstruct the original image. Older records without these optional fields remain valid and use the generic placeholder.
 
 ## Deletion
 

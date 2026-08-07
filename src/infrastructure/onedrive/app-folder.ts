@@ -16,11 +16,14 @@ const driveItemSchema = z.object({
     .optional(),
 });
 
-export async function verifyAppFolder(): Promise<AppFolderSummary> {
+export async function verifyAppFolder(
+  signal?: AbortSignal,
+): Promise<AppFolderSummary> {
   const accessToken = await getCurrentAccessToken();
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}`,
     {
+      ...(signal ? { signal } : {}),
       headers: {
         Authorization: `Bearer ${accessToken}`,
       },

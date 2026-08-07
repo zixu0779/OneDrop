@@ -64,7 +64,9 @@ const zStoredToken = tokenResponseSchema.extend({
   expiresAt: z.iso.datetime(),
 });
 
-let refreshInFlight: Promise<StoredToken> | undefined;
+let refreshInFlight: Promise<StoredToken | undefined> | undefined;
+
+class SignInRequiredError extends Error {}
 
 async function storeToken(token: StoredToken): Promise<void> {
   await browser.storage.local.set({ [TOKEN_STORAGE_KEY]: token });
@@ -91,9 +93,14 @@ async function getUsableToken(): Promise<StoredToken | undefined> {
     return undefined;
   }
 
-  refreshInFlight ??= refreshAccessToken(token).finally(() => {
-    refreshInFlight = undefined;
-  });
+  refreshInFlight ??= refreshAccessToken(token)
+    .catch((error: unknown) => {
+      if (error instanceof SignInRequiredError) return undefined;
+      throw error;
+    })
+    .finally(() => {
+      refreshInFlight = undefined;
+    });
 
   return refreshInFlight;
 }
@@ -133,11 +140,29 @@ export async function signIn(): Promise<AuthStatus> {
     throw new Error("Microsoft Entra Client ID is not configured.");
   }
 
+  await acquireAuthorizationCodeToken({ interactive: true });
+  await browser.storage.session.remove(TOKEN_STORAGE_KEY);
+  return getAuthStatus();
+}
+
+async function acquireAuthorizationCodeToken(options: {
+  interactive: boolean;
+  previous?: StoredToken;
+}): Promise<StoredToken> {
+  const clientId = getClientId();
+
+  if (!clientId) {
+    throw new Error("Microsoft Entra Client ID is not configured.");
+  }
+
   const authority = getAuthority();
   const redirectUri = getRedirectUri();
   const state = createRandomBase64Url();
   const { verifier, challenge } = await createPkcePair();
   const authorizeUrl = new URL(`${authority}/oauth2/v2.0/authorize`);
+  const previousClaims = readUnverifiedIdTokenClaims(
+    options.previous?.id_token,
+  );
 
   authorizeUrl.search = new URLSearchParams({
     client_id: clientId,
@@ -148,15 +173,32 @@ export async function signIn(): Promise<AuthStatus> {
     code_challenge: challenge,
     code_challenge_method: "S256",
     state,
-    prompt: "select_account",
+    prompt: options.interactive ? "select_account" : "none",
+    ...(previousClaims.preferred_username
+      ? { login_hint: previousClaims.preferred_username }
+      : {}),
   }).toString();
 
-  const callbackUrl = await browser.identity.launchWebAuthFlow({
-    url: authorizeUrl.toString(),
-    interactive: true,
-  });
+  let callbackUrl: string | undefined;
+  try {
+    callbackUrl = await browser.identity.launchWebAuthFlow({
+      url: authorizeUrl.toString(),
+      interactive: options.interactive,
+    });
+  } catch (cause) {
+    if (!options.interactive) {
+      throw new SignInRequiredError(
+        "The Microsoft browser session cannot renew OneDrop silently.",
+        { cause },
+      );
+    }
+    throw cause;
+  }
 
   if (!callbackUrl) {
+    if (!options.interactive) {
+      throw new SignInRequiredError("The Microsoft browser session has ended.");
+    }
     throw new Error("Microsoft sign-in did not return a callback URL.");
   }
 
@@ -164,6 +206,9 @@ export async function signIn(): Promise<AuthStatus> {
   const authError = callback.searchParams.get("error_description");
 
   if (authError) {
+    if (!options.interactive) {
+      throw new SignInRequiredError(authError);
+    }
     throw new Error(authError);
   }
 
@@ -194,6 +239,9 @@ export async function signIn(): Promise<AuthStatus> {
 
   if (!tokenResponse.ok) {
     const message = getTokenErrorMessage(tokenBody);
+    if (!options.interactive && isPermanentRefreshFailure(tokenBody)) {
+      throw new SignInRequiredError(message);
+    }
     throw new Error(`Microsoft token exchange failed: ${message}`);
   }
 
@@ -204,8 +252,7 @@ export async function signIn(): Promise<AuthStatus> {
   };
 
   await storeToken(storedToken);
-  await browser.storage.session.remove(TOKEN_STORAGE_KEY);
-  return getAuthStatus();
+  return storedToken;
 }
 
 export async function signOut(): Promise<AuthStatus> {
@@ -245,7 +292,17 @@ async function refreshAccessToken(previous: StoredToken): Promise<StoredToken> {
 
   if (!response.ok) {
     if (isPermanentRefreshFailure(body)) {
-      await removeStoredToken();
+      try {
+        return await acquireAuthorizationCodeToken({
+          interactive: false,
+          previous,
+        });
+      } catch (error) {
+        if (error instanceof SignInRequiredError) {
+          await removeStoredToken();
+        }
+        throw error;
+      }
     }
 
     throw new Error(

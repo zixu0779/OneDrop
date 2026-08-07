@@ -154,16 +154,17 @@ Files up to 4 MiB use direct upload through the service worker. The Side Panel s
 
 Larger files will use a Microsoft Graph upload session with bounded retries while the user operation remains active. Upload sessions are not resumed automatically in a later browser session.
 
-## 8. Managed local file cache
+## 8. Local downloads and optional preview cache
 
-OneDrop distinguishes managed cache entries from files explicitly saved by the user.
+OneDrop distinguishes user-owned downloads from extension-managed transient data.
 
-- Managed preview data lives in Cache Storage and can be evicted automatically.
-- User-exported files in the Downloads folder are user-owned and are never automatically deleted.
-- IndexedDB records cache key, DriveItem ID, ETag, byte size, last access, and expiration.
-- Cleanup combines TTL and least-recently-used eviction.
-- The initial product default is a 500 MB application target and 30-day TTL, both subject to product validation.
-- A cloud ETag change invalidates the corresponding local cached response.
+- Clicking a file or image opens an existing, still-accessible local download when one is known; otherwise OneDrop downloads it from OneDrive.
+- The message menu offers Save as so the user can choose a location. When the downloads API exposes that saved item, OneDrop records its download ID and can recognize and open it later.
+- Downloads use the browser's `uniquify` conflict behavior so a later file with the same name does not overwrite the existing file.
+- User-downloaded files are user-owned and are never automatically deleted by OneDrop.
+- IndexedDB stores only a download registry such as DriveItem ID, cloud ETag, browser download ID, resolved filename, existence state, and last-opened time. This registry may be pruned when entries no longer exist.
+- A managed full-file byte cache is not required for the initial product because it would duplicate user downloads and require capacity, TTL, and eviction controls.
+- Cache Storage may later be used for bounded image preview data only. Preview cache entries remain extension-owned and may be evicted automatically when their cloud ETag changes or under storage pressure.
 
 ## 9. Authentication and permissions
 
@@ -217,7 +218,7 @@ Domain and contract code must not depend on React, WXT, or Microsoft Graph respo
 3. Read-only monthly document synchronization.
 4. Text message conditional-write transaction.
 5. File upload and attachment metadata.
-6. Managed file cache and lifecycle controls.
+6. File download/open behavior, Save as, and the local download registry.
 7. Failure recovery, observability, accessibility, and Edge Add-ons packaging.
 
 Each stage should preserve the no-backend and least-privilege boundaries.

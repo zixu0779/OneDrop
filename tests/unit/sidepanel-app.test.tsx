@@ -136,12 +136,18 @@ describe("side panel message composer", () => {
 
   it("closes account details when the user clicks outside", async () => {
     await screenForComposer();
+    expect(
+      screen.queryByRole("button", { name: "Sign out" }),
+    ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", {
         name: /one@example.com|sycamore|microsoft account/iu,
       }),
     );
     expect(screen.getByText("Add account — coming later")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Sign out" }),
+    ).toBeInTheDocument();
 
     fireEvent.pointerDown(document.body);
     await waitFor(() =>

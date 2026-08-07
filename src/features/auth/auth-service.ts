@@ -8,6 +8,7 @@ import {
 } from "./token";
 
 const TOKEN_STORAGE_KEY = "onedrop.auth.token";
+const EXPIRY_SKEW_MS = 60_000;
 const REDIRECT_PATH = "auth";
 const SCOPES = [
   "openid",
@@ -37,15 +38,65 @@ function getRedirectUri(): string {
 }
 
 async function readStoredToken(): Promise<StoredToken | undefined> {
-  const stored = await browser.storage.session.get(TOKEN_STORAGE_KEY);
+  const stored = await browser.storage.local.get(TOKEN_STORAGE_KEY);
   const value: unknown = stored[TOKEN_STORAGE_KEY];
 
-  return zStoredToken.safeParse(value).data;
+  const parsed = zStoredToken.safeParse(value).data;
+
+  if (parsed) return parsed;
+
+  // Migrate a token created by an earlier validation build while the current
+  // Edge session is still alive.
+  const sessionStored = await browser.storage.session.get(TOKEN_STORAGE_KEY);
+  const sessionToken = zStoredToken.safeParse(
+    sessionStored[TOKEN_STORAGE_KEY],
+  ).data;
+
+  if (sessionToken) {
+    await storeToken(sessionToken);
+    await browser.storage.session.remove(TOKEN_STORAGE_KEY);
+  }
+
+  return sessionToken;
 }
 
 const zStoredToken = tokenResponseSchema.extend({
   expiresAt: z.iso.datetime(),
 });
+
+let refreshInFlight: Promise<StoredToken> | undefined;
+
+async function storeToken(token: StoredToken): Promise<void> {
+  await browser.storage.local.set({ [TOKEN_STORAGE_KEY]: token });
+}
+
+async function removeStoredToken(): Promise<void> {
+  await Promise.all([
+    browser.storage.local.remove(TOKEN_STORAGE_KEY),
+    browser.storage.session.remove(TOKEN_STORAGE_KEY),
+  ]);
+}
+
+function isAccessTokenUsable(token: StoredToken): boolean {
+  return Date.parse(token.expiresAt) > Date.now() + EXPIRY_SKEW_MS;
+}
+
+async function getUsableToken(): Promise<StoredToken | undefined> {
+  const token = await readStoredToken();
+
+  if (!token || isAccessTokenUsable(token)) return token;
+
+  if (!token.refresh_token) {
+    await removeStoredToken();
+    return undefined;
+  }
+
+  refreshInFlight ??= refreshAccessToken(token).finally(() => {
+    refreshInFlight = undefined;
+  });
+
+  return refreshInFlight;
+}
 
 export async function getAuthStatus(): Promise<AuthStatus> {
   const redirectUri = getRedirectUri();
@@ -54,10 +105,9 @@ export async function getAuthStatus(): Promise<AuthStatus> {
     return { state: "unconfigured", redirectUri };
   }
 
-  const token = await readStoredToken();
+  const token = await getUsableToken();
 
-  if (!token || Date.parse(token.expiresAt) <= Date.now()) {
-    await browser.storage.session.remove(TOKEN_STORAGE_KEY);
+  if (!token) {
     return { state: "signed-out", redirectUri };
   }
 
@@ -153,26 +203,72 @@ export async function signIn(): Promise<AuthStatus> {
     expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
   };
 
-  await browser.storage.session.set({ [TOKEN_STORAGE_KEY]: storedToken });
-  return getAuthStatus();
-}
-
-export async function signOut(): Promise<AuthStatus> {
+  await storeToken(storedToken);
   await browser.storage.session.remove(TOKEN_STORAGE_KEY);
   return getAuthStatus();
 }
 
-export async function getCurrentAccessToken(): Promise<string> {
-  const token = await readStoredToken();
+export async function signOut(): Promise<AuthStatus> {
+  await removeStoredToken();
+  return getAuthStatus();
+}
 
-  if (!token || Date.parse(token.expiresAt) <= Date.now()) {
-    await browser.storage.session.remove(TOKEN_STORAGE_KEY);
-    throw new Error(
-      "The validation access token expired. Sign in again to continue.",
-    );
+export async function getCurrentAccessToken(): Promise<string> {
+  const token = await getUsableToken();
+
+  if (!token) {
+    throw new Error("Your Microsoft session ended. Sign in again to continue.");
   }
 
   return token.access_token;
+}
+
+async function refreshAccessToken(previous: StoredToken): Promise<StoredToken> {
+  const clientId = getClientId();
+
+  if (!clientId || !previous.refresh_token) {
+    await removeStoredToken();
+    throw new Error("Microsoft authentication is no longer configured.");
+  }
+
+  const response = await fetch(`${getAuthority()}/oauth2/v2.0/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: clientId,
+      grant_type: "refresh_token",
+      refresh_token: previous.refresh_token,
+      scope: SCOPES.join(" "),
+    }),
+  });
+  const body: unknown = await response.json();
+
+  if (!response.ok) {
+    if (isPermanentRefreshFailure(body)) {
+      await removeStoredToken();
+    }
+
+    throw new Error(
+      `Microsoft session refresh failed: ${getTokenErrorMessage(body)}`,
+    );
+  }
+
+  const refreshed = tokenResponseSchema.parse(body);
+  const storedToken: StoredToken = {
+    ...refreshed,
+    refresh_token: refreshed.refresh_token ?? previous.refresh_token,
+    id_token: refreshed.id_token ?? previous.id_token,
+    expiresAt: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
+  };
+  await storeToken(storedToken);
+  return storedToken;
+}
+
+function isPermanentRefreshFailure(body: unknown): boolean {
+  if (typeof body !== "object" || body === null) return false;
+
+  const code = (body as Record<string, unknown>).error;
+  return code === "invalid_grant" || code === "interaction_required";
 }
 
 function getTokenErrorMessage(body: unknown): string {

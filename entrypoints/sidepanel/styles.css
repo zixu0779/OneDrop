@@ -11,6 +11,7 @@
     sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  font-size: 15px;
 }
 
 * {
@@ -20,7 +21,7 @@
 html,
 body,
 #root {
-  min-height: 100%;
+  height: 100%;
   margin: 0;
 }
 
@@ -29,8 +30,12 @@ body {
 }
 
 .shell {
-  min-height: 100vh;
-  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  padding: 10px 14px 14px;
+  overflow: hidden;
 }
 
 .header {
@@ -168,6 +173,162 @@ body {
   border-color: rgb(18 183 106 / 30%);
 }
 
+.signed-in-layout {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: 0;
+}
+
+.account-card {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  margin: 0 -14px 8px;
+  padding: 4px 16px 10px;
+  border: 0;
+  border-bottom: 1px solid rgb(152 162 179 / 22%);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.account-summary {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.account-avatar {
+  display: grid;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border-radius: 50%;
+  color: white;
+  background: linear-gradient(145deg, #1f80ff, #56c8ff);
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.account-email {
+  min-width: 0;
+  color: #667085;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-popover {
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 7px);
+  left: 12px;
+  right: 12px;
+  display: grid;
+  gap: 5px;
+  padding: 13px;
+  border: 1px solid rgb(152 162 179 / 26%);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 0 16px 38px rgb(16 24 40 / 16%);
+}
+
+.account-popover span {
+  color: #667085;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.account-popover button {
+  margin-top: 7px;
+  padding: 9px 10px;
+  border: 1px dashed rgb(102 112 133 / 32%);
+  border-radius: 10px;
+  color: #667085;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+
+.account-action,
+.error button {
+  padding: 0;
+  border: 0;
+  color: #0875e1;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.conversation {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.message-scroll {
+  flex: 1;
+  min-height: 0;
+  margin-right: -14px;
+  padding: 8px 9px 16px 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.message-scroll.is-scrolling {
+  scrollbar-color: rgb(102 112 133 / 48%) transparent;
+}
+
+.message-scroll::-webkit-scrollbar {
+  width: 7px;
+}
+
+.message-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.message-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  background-clip: padding-box;
+}
+
+.message-scroll.is-scrolling::-webkit-scrollbar-thumb {
+  background: rgb(102 112 133 / 48%);
+  background-clip: padding-box;
+}
+
+.timeline-loading,
+.empty-timeline {
+  display: block;
+  padding: 56px 12px;
+  color: #667085;
+  text-align: center;
+  font-size: 13px;
+}
+
 .verification-step,
 .folder-result,
 .month-result {
@@ -200,7 +361,10 @@ body {
 }
 
 .month-result {
-  background: rgb(31 128 255 / 7%);
+  min-height: 100%;
+  margin-top: 0;
+  padding: 0;
+  background: transparent;
 }
 
 .month-result code {
@@ -213,63 +377,166 @@ body {
 }
 
 .composer {
-  display: grid;
+  display: flex;
+  flex: none;
+  align-items: center;
   gap: 8px;
-  margin-top: 24px;
+  margin: 0 -14px -14px;
+  padding: 9px 14px 13px;
+  border-top: 1px solid rgb(152 162 179 / 18%);
+  background: rgb(246 248 251 / 96%);
+  backdrop-filter: blur(14px);
 }
 
-.composer label {
-  font-size: 12px;
-  font-weight: 700;
+.composer-field {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: flex-end;
+  border: 1px solid rgb(102 112 133 / 30%);
+  border-radius: 15px;
+  background: rgb(255 255 255 / 78%);
+  box-shadow: none;
+  transition:
+    border-color 160ms ease,
+    box-shadow 180ms ease,
+    background-color 180ms ease;
 }
 
 .composer textarea {
+  position: relative;
+  z-index: 2;
   width: 100%;
-  resize: vertical;
-  padding: 12px;
-  border: 1px solid rgb(102 112 133 / 35%);
-  border-radius: 12px;
+  min-height: 40px;
+  max-height: 144px;
+  resize: none;
+  padding: 8px 42px 8px 13px;
+  border: 0;
+  border-radius: inherit;
   color: inherit;
   background: transparent;
-  font: inherit;
-  line-height: 1.5;
+  font-family: inherit;
+  font-size: 16px;
+  font-weight: 450;
+  line-height: 24px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .composer textarea:focus {
-  border-color: #0875e1;
-  outline: 2px solid rgb(8 117 225 / 15%);
+  outline: none;
 }
 
-.composer-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+.composer-field:focus-within {
+  border-color: transparent;
+  outline: none;
+  background:
+    linear-gradient(rgb(255 255 255 / 94%), rgb(255 255 255 / 94%)) padding-box,
+    linear-gradient(105deg, #55c2ff, #6e8cff 52%, #8a6dff) border-box;
+  box-shadow:
+    0 6px 20px rgb(74 111 226 / 15%),
+    0 0 0 2px rgb(110 140 255 / 9%);
 }
 
-.composer-footer span {
-  color: #667085;
-  font-size: 11px;
+.send-icon {
+  position: absolute;
+  z-index: 3;
+  right: 5px;
+  bottom: 4px;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 6px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: #3077d4;
+  background: transparent;
+  cursor: pointer;
 }
 
-.composer-footer .primary-button {
-  width: auto;
-  min-width: 110px;
-  margin-top: 0;
+.send-icon svg,
+.attach-button svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.attach-button {
+  display: grid;
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 5px;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: white;
+  background: #3077d4;
+}
+
+.attach-button:disabled {
+  opacity: 0.82;
 }
 
 .message-list {
   display: grid;
-  gap: 10px;
-  margin: 8px 0 0;
+  gap: 14px;
+  margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .message-list li {
-  padding: 10px 12px;
-  border-radius: 12px;
-  background: rgb(255 255 255 / 65%);
+  display: grid;
+  width: 100%;
+  gap: 6px;
+}
+
+.message-list time {
+  justify-self: center;
+  color: #7b8492;
+  font-size: 11px;
+}
+
+.message-group-bubbles {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.message-own .message-group-bubbles {
+  align-items: flex-end;
+}
+
+.message-bubble {
+  max-width: 84%;
+  padding: 9px 12px;
+  border-radius: 15px 15px 15px 5px;
+  background: white;
+  box-shadow: 0 3px 10px rgb(16 24 40 / 7%);
+}
+
+.message-own .message-bubble {
+  border-radius: 15px 15px 5px;
+  color: white;
+  background: #3077d4;
 }
 
 .message-list p {
@@ -279,11 +546,129 @@ body {
   overflow-wrap: anywhere;
 }
 
-.message-list time {
+.message-bubble p {
+  font-size: 15px;
+}
+
+.pending-file-list {
+  display: grid;
+  gap: 14px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pending-file-list li {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pending-file-bubble {
+  position: relative;
+  min-width: 150px;
+  max-width: 84%;
+  padding: 10px 12px;
+  border-radius: 15px 15px 5px;
+  color: white;
+  background: #3077d4;
+  overflow: hidden;
+}
+
+.pending-image {
+  position: relative;
+  min-width: 180px;
+  max-width: 240px;
+  margin: -10px -12px;
+}
+
+.pending-image img {
   display: block;
-  margin-top: 6px;
-  color: #667085;
-  font-size: 10px;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+}
+
+.pending-image > span {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: white;
+  background: rgb(45 50 58 / 68%);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pending-file-copy {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+
+.pending-file-copy > span {
+  color: #ffd2d2;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.pending-transfer-spinner {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 88%);
+}
+
+.pending-error-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.pending-error-action button {
+  padding: 0;
+  border: 0;
+  color: #f04438;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.pending-error-action > span {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 2px solid #f04438;
+  border-radius: 50%;
+  color: #f04438;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.loading-spinner {
+  width: 17px;
+  height: 17px;
+  border: 2px solid rgb(48 119 212 / 25%);
+  border-top-color: #3077d4;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .error {
@@ -316,7 +701,41 @@ body {
     background: rgb(27 35 46 / 86%);
   }
 
-  .message-list li {
-    background: rgb(255 255 255 / 6%);
+  .composer-field {
+    border-color: rgb(255 255 255 / 12%);
+    background: rgb(27 35 46 / 86%);
+  }
+
+  .account-card {
+    border-bottom-color: rgb(255 255 255 / 12%);
+    background: transparent;
+  }
+
+  .composer-field:focus-within {
+    border-color: transparent;
+    background:
+      linear-gradient(#1e2733, #1e2733) padding-box,
+      linear-gradient(105deg, #55c2ff, #6e8cff 52%, #8a6dff) border-box;
+    box-shadow:
+      0 6px 20px rgb(48 100 220 / 22%),
+      0 0 0 2px rgb(110 140 255 / 10%);
+  }
+
+  .account-popover {
+    border-color: rgb(255 255 255 / 12%);
+    background: #1b232e;
+  }
+
+  .composer {
+    border-color: rgb(255 255 255 / 9%);
+    background: rgb(17 22 30 / 96%);
+  }
+
+  .message-bubble {
+    background: #27313f;
+  }
+
+  .message-own .message-bubble {
+    background: #3077d4;
   }
 }

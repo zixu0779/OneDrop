@@ -1,6 +1,6 @@
 # Authentication compatibility check
 
-Status: implemented as a development validation; production token lifecycle is deferred.
+Status: persistent sign-in and refresh-token rotation implemented for the development extension.
 
 OneDrop is a public client and contains no client secret. The validation flow uses OAuth 2.0 Authorization Code with PKCE, initiated through `browser.identity.launchWebAuthFlow` in the MV3 service worker.
 
@@ -38,15 +38,17 @@ A successful sign-in proves:
 - Entra accepted the PKCE verifier;
 - the browser-origin token exchange passed Entra CORS enforcement;
 - the account consented to `Files.ReadWrite.AppFolder`;
-- the extension can keep token material in `browser.storage.session`.
+- the extension can persist its refresh credential in extension-local storage and restore the session after Edge restarts.
 
-After authentication succeeds, the Side Panel presents a separate, explicit OneDrive App Folder verification action. Authentication by itself does not call Graph or create OneDrive data.
+After authentication succeeds, the Side Panel automatically verifies the OneDrive App Folder and reads the current UTC month. The manual actions remain available as recovery and refresh controls.
 
-## Deliberate validation limitations
+## Token lifecycle
 
-- Access and refresh tokens are stored only in `browser.storage.session` and disappear when the Edge session ends.
-- Expired tokens return the UI to signed-out state; refresh-token handling is not implemented.
-- **Sign out locally** clears extension session storage but does not terminate the Microsoft Entra browser session.
+- Access and refresh tokens are stored in `browser.storage.local`, which is private to the extension but is not an operating-system credential vault.
+- OneDrop requests `offline_access` and refreshes the access token on demand shortly before expiry. A rotated refresh token replaces the previous value atomically.
+- Temporary refresh failures are reported without deleting the refresh token. `invalid_grant` and `interaction_required` clear local authentication and require interactive sign-in.
+- **Sign out locally** clears both local and legacy session token storage but does not terminate the Microsoft Entra browser session.
+- Uninstalling the extension clears its local token storage.
 - ID-token claims are decoded only for display. Authorization decisions must never rely on these unverified display claims.
 - Errors are shown in the Side Panel so redirect-type and CORS incompatibilities can be recorded before production auth design is finalized.
 

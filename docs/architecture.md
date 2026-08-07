@@ -63,11 +63,11 @@ Apps/OneDrop/
 
 The physical OneDrive App Folder name is determined by the Microsoft Entra application registration.
 
-The chunked layout above is the approved next schema. The currently implemented compatibility schema still uses `messages/YYYY-MM.json` and will be migrated deliberately rather than silently reinterpreted.
+The chunked layout above is the only supported message layout. Obsolete `messages/YYYY-MM.json` files are not probed, read, migrated, or deleted by OneDrop.
 
 ## 4. Monthly message documents
 
-Each UTC month maps to one metadata document. The current month is mutable; prior months are logically immutable.
+Each UTC month maps to an ordered set of metadata chunks. The current month's active chunk is mutable; prior chunks and prior months are logically immutable.
 
 ```json
 {
@@ -83,7 +83,7 @@ Attachments are stored as independent OneDrive files. Monthly JSON documents con
 
 The successful commit time determines the partition. An attachment is uploaded first. Immediately before the message metadata is committed, OneDrop selects the current UTC month. A manually retried send is a new current-time attempt and is not backdated into a closed month.
 
-At a month boundary no rename or archive job is required. The first successful message in the new month creates the next `YYYY-MM.json`; the preceding file naturally becomes historical.
+At a month boundary, the first successful message in the new month creates `messages/<new month>/0001.json`. The preceding month's chunk directory becomes eligible for archive compaction after the grace period.
 
 ### Concurrency protocol
 
@@ -99,7 +99,7 @@ Blind overwrite is forbidden. Within one extension installation, write commands 
 
 ### Growth and archival
 
-The current compatibility implementation uses one file per month with a 10 MB safety limit. The approved next schema uses deterministic active-month chunks with a 256 KiB soft target and 320 KiB hard ceiling. This keeps ordinary conditional rewrites small while avoiding a mutable shared pointer file.
+The current schema uses deterministic active-month chunks with a 256 KiB soft target and 320 KiB hard ceiling. This keeps ordinary conditional rewrites small while avoiding a mutable shared pointer file. Chunk discovery follows Microsoft Graph pagination rather than assuming all children fit in one response.
 
 Once a month is closed for 24 hours, its chunks may be compacted into one immutable `archive/YYYY-MM.json`. The archive is created with conflict behavior `fail`, verified before publication is considered complete, and does not require immediate deletion of its source chunks. Late offline sends are not supported, so normal send behavior never reopens archived months.
 
@@ -115,6 +115,10 @@ OneDrop intentionally has no offline outbox or delayed delivery queue.
 
 OneDrive is file storage, not a message broker. It offers no FIFO consumption, acknowledgement, visibility timeout, dead-letter queue, or consumer leasing, and OneDrop will not emulate those facilities.
 
+### Deletion scope
+
+The product supports deletion of individual messages only. It does not expose a delete-month operation. A message deletion will be represented by a versioned tombstone containing the message ID, original month, and deletion timestamp. Readers apply tombstones to active chunks and archives consistently. Physical removal from metadata and attachment cleanup are maintenance concerns and must never make a deleted message visible again.
+
 ## 6. Synchronization
 
 Without a public backend endpoint, OneDrop cannot depend on Microsoft Graph change-notification webhooks. Synchronization is pull-based:
@@ -128,17 +132,17 @@ Historical month documents are cached locally and fetched on demand as the user 
 
 There is no promise of real-time background delivery while Edge or the extension is inactive.
 
-### Current read-only implementation
+### Current read implementation
 
-The current compatibility stage reads `messages/<UTC YYYY-MM>.json` without creating it. A missing file is a valid empty state. When present, OneDrop reads the DriveItem ETag, downloads the JSON content, validates `schemaVersion`, the month partition, and every message, then returns the validated result to the Side Panel. No remote response is allowed to enter application state before schema validation.
+OneDrop enumerates `messages/<UTC YYYY-MM>/` with Graph pagination. A missing directory is a valid empty state. It reuses locally cached chunk content when the DriveItem ETag is unchanged, downloads changed chunks, validates `schemaVersion`, the month partition, and every message, then returns the deduplicated chronological result to the Side Panel. No remote response is allowed to enter application state before schema validation.
 
 ### Current text write implementation
 
-Text messages are limited to 20,000 characters and assigned a UUID before the cloud transaction. OneDrop caches validated monthly snapshots and the messages-folder ID in IndexedDB. After the first read, the normal send path merges locally and performs one conditional upload. A missing month is created with conflict behavior `fail`; an existing month is replaced with its exact ETag in `If-Match`. HTTP 409 and 412 responses invalidate the cache and cause a bounded read-merge-retry cycle of at most five attempts. HTTP 429 and network failures are reported immediately and are never queued for later delivery. An ambiguous network failure also invalidates the snapshot so the next operation must reconcile with OneDrive.
+Text messages are limited to 20,000 characters and assigned a UUID before the cloud transaction. Each Edge installation also persists an anonymous device UUID in extension-local storage and stamps new messages with `senderDeviceId`; this is used only to align local bubbles on the right and is not an account or tracking identifier. Older messages without this optional field remain readable and render as remote. OneDrop caches validated monthly snapshots and folder IDs in IndexedDB. After the first read, the normal send path merges locally and performs one conditional upload. A missing or full active chunk creates its deterministic successor with conflict behavior `fail`; an existing active chunk is replaced with its exact ETag in `If-Match`. HTTP 409 and 412 responses invalidate the cache and cause a bounded read-merge-retry cycle of at most five attempts. HTTP 429 and network failures are reported immediately and are never queued for later delivery. An ambiguous network failure also invalidates the snapshot so the next operation must reconcile with OneDrive.
 
 ## 7. File transfer
 
-The planned write transaction is:
+The implemented small-file transaction is:
 
 1. Validate the selected file locally.
 2. Upload the file into `files/YYYY/MM/<message-id>/`.
@@ -146,7 +150,9 @@ The planned write transaction is:
 4. Commit the message into the current monthly JSON document with ETag protection.
 5. If metadata commit fails, report failure and record the uploaded object for later orphan cleanup rather than silently claiming success.
 
-Small files use direct upload. Larger files use a Microsoft Graph upload session with bounded retries while the user operation remains active. Upload sessions are not resumed automatically in a later browser session.
+Files up to 4 MiB use direct upload through the service worker. The Side Panel sends base64 file content over the extension runtime boundary; tokens remain outside presentation code. The UI keeps a local transfer bubble until both upload and metadata commit succeed. Upload failure offers Resend; metadata-only failure preserves the DriveItem and offers Retry without uploading again. If the original browser File is no longer readable, Resend opens the file picker for explicit reselection.
+
+Larger files will use a Microsoft Graph upload session with bounded retries while the user operation remains active. Upload sessions are not resumed automatically in a later browser session.
 
 ## 8. Managed local file cache
 

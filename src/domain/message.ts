@@ -4,6 +4,7 @@ const messageBaseSchema = z.object({
   schemaVersion: z.literal(1),
   id: z.uuid(),
   createdAt: z.iso.datetime(),
+  senderDeviceId: z.uuid().optional(),
 });
 
 export const textMessageSchema = messageBaseSchema.extend({
@@ -28,3 +29,5 @@ export const messageSchema = z.discriminatedUnion("type", [
 
 export type Message = z.infer<typeof messageSchema>;
 export type TextMessage = z.infer<typeof textMessageSchema>;
+export type FileMessage = z.infer<typeof fileMessageSchema>;
+export type Attachment = FileMessage["attachment"];

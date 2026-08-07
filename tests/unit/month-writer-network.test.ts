@@ -36,6 +36,16 @@ const second = createTextMessage(
   "01989f5e-7700-7000-8000-000000000002",
 );
 
+function largeMessages() {
+  return Array.from({ length: 14 }, (_, index) =>
+    createTextMessage(
+      "x".repeat(20_000),
+      new Date(Date.UTC(2026, 7, 2, 10, 0, index)),
+      `01989f5e-7700-7000-8000-${(index + 10).toString().padStart(12, "0")}`,
+    ),
+  );
+}
+
 function loaded(eTag: string, messages = [first]) {
   return {
     state: "loaded" as const,
@@ -43,6 +53,18 @@ function loaded(eTag: string, messages = [first]) {
     itemId: "month-item-id",
     eTag,
     document: { schemaVersion: 1 as const, month: "2026-08", messages },
+    chunks: [
+      {
+        index: 1,
+        itemId: "month-item-id",
+        eTag,
+        document: {
+          schemaVersion: 1 as const,
+          month: "2026-08",
+          messages,
+        },
+      },
+    ],
   };
 }
 
@@ -86,6 +108,7 @@ describe("appendTextMessage conflict recovery", () => {
       "fetch",
       vi
         .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
         .mockResolvedValueOnce(new Response(null, { status: 409 }))
         .mockResolvedValueOnce(
           Response.json(
@@ -101,6 +124,29 @@ describe("appendTextMessage conflict recovery", () => {
     if (result.state === "loaded") {
       expect(result.messages).toEqual([first, second]);
     }
+  });
+
+  it("creates the deterministic next chunk after the soft size target", async () => {
+    const messages = largeMessages();
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(
+      loaded("etag-1", messages),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(
+          Response.json({ id: "chunk-2", eTag: "etag-2" }, { status: 201 }),
+        ),
+    );
+
+    const result = await appendTextMessage("2026-08", second);
+
+    expect(result.state).toBe("loaded");
+    expect(vi.mocked(fetch).mock.calls[1]?.[0]).toContain(
+      "/messages/2026-08/0002.json:/content",
+    );
   });
 
   it("fails explicitly after five consecutive conflicts", async () => {

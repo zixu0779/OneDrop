@@ -28,4 +28,15 @@ describe("createTextMessage", () => {
       ),
     ).toThrow();
   });
+
+  it("records the sending Edge installation when provided", () => {
+    const message = createTextMessage(
+      "from this device",
+      new Date("2026-08-03T00:00:00.000Z"),
+      "01989f5e-7700-7000-8000-000000000001",
+      "01989f5e-7700-7000-8000-000000000099",
+    );
+
+    expect(message.senderDeviceId).toBe("01989f5e-7700-7000-8000-000000000099");
+  });
 });

@@ -1,6 +1,6 @@
 # OneDrive storage contract
 
-Status: root check, cached monthly reads, and conditional text writes implemented; active-month chunking, attachments, and deletion deferred.
+Status: root check, cached monthly reads, and active-month chunk writes implemented; archive compaction, attachments, and deletion deferred.
 
 The root App Folder lookup, current-month read, and text message write are implemented. Attachments and tombstones remain deferred.
 
@@ -14,19 +14,19 @@ The `/special/approot` endpoint is the identity boundary for this lookup. The cl
 
 ## Monthly records
 
-`messages/YYYY-MM.json` is the canonical metadata document for a UTC month. Only the current month is mutable. A conditional ETag write is mandatory for every update.
+`messages/YYYY-MM/NNNN.json` is the active metadata layout for a UTC month. Only the current month is mutable. A conditional ETag write is mandatory for every existing-chunk update.
 
-Historical documents are not rewritten by normal send behavior. OneDrop does not automatically replay failed or offline sends into historical months.
+The obsolete `messages/YYYY-MM.json` layout is outside the protocol: OneDrop does not probe, read, migrate, or delete those files. Historical documents are not rewritten by normal send behavior. OneDrop does not automatically replay failed or offline sends into historical months.
 
-The read-only stage requests the current UTC month's DriveItem metadata first. HTTP 404 is interpreted as an empty timeline, not an error. An existing document must expose an ETag and pass the versioned Zod schema before it is displayed.
+The reader enumerates the current UTC month's chunk directory with Graph pagination. HTTP 404 is interpreted as an empty timeline, not an error. Every chunk must expose an ETag and pass the versioned Zod schema before its messages are displayed.
 
-The first text send creates `messages/` and the current month document. Subsequent sends replace the JSON only when the previously read ETag still matches. A validated snapshot and the messages-folder DriveItem ID are cached in IndexedDB. The normal subsequent-send path therefore performs one conditional upload. Create and update conflicts invalidate the snapshot, then re-read, merge by immutable message ID, and retry within a fixed budget.
+The first text send creates the month folder and `0001.json`. Subsequent sends replace the active chunk only when its previously read ETag still matches. Once adding a message would exceed the 256 KiB soft target, the writer creates the deterministic successor instead. Every individual chunk has a 320 KiB hard ceiling. A validated snapshot and folder IDs are cached in IndexedDB. Old cache records that contain no chunk metadata are invalidated automatically. The normal subsequent-send path therefore performs one conditional upload. Create and update conflicts invalidate the snapshot, then re-read, merge by immutable message ID, and retry within a fixed budget.
 
 A network failure after an upload starts is ambiguous: OneDrive might have accepted the request even though OneDrop did not receive the response. OneDrop invalidates the cached snapshot and reports failure; it does not automatically replay the message. The next read must reconcile with OneDrive first.
 
-## Approved active-month chunk migration
+## Active-month chunks
 
-The current single-file format is transitional. The approved next storage version will keep the mutable current UTC month in deterministic chunk files with a 256 KiB soft target and 320 KiB hard ceiling. No shared `current.json` pointer is used. Writers derive the active chunk from validated metadata and create deterministic successors with conflict behavior `fail`.
+The mutable current UTC month uses deterministic chunk files with a 256 KiB soft target and 320 KiB hard ceiling. No shared `current.json` pointer is used. Readers enumerate chunk children with Graph pagination. Writers derive the active chunk from validated metadata and create deterministic successors with conflict behavior `fail`.
 
 After a month closes and a 24-hour grace period passes, OneDrop may merge that month's chunks into one immutable `archive/YYYY-MM.json`. Archive publication must use create-with-conflict-fail, validate the merged result, and retain source chunks until cleanup is independently safe. This reduces hot-file rewrite cost without permanently exposing users to many small historical files.
 
@@ -36,7 +36,7 @@ Attachment bytes live under `files/YYYY/MM/<message-id>/`. A message record refe
 
 ## Deletion
 
-Deletion semantics are deferred. The reserved `tombstones/YYYY-MM.json` namespace allows devices to observe deletions without requiring in-place removal to be the only signal. Its concurrency protocol must match monthly message documents.
+Deletion implementation is deferred, but its product scope is limited to individual messages. OneDrop will not offer deletion of an entire month. Versioned tombstones will identify the message ID, original month, and deletion timestamp so the same rule can filter active chunks and archive files. The tombstone write protocol must use the same bounded conflict handling as message metadata.
 
 ## Schema evolution
 

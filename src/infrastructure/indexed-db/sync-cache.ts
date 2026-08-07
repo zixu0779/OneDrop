@@ -1,5 +1,9 @@
 import type { MonthDocument } from "../../domain/month-document";
-import { oneDropDatabase, type MonthCacheRecord } from "./database";
+import {
+  oneDropDatabase,
+  type CachedChunk,
+  type MonthCacheRecord,
+} from "./database";
 
 const MESSAGES_FOLDER_KEY = "onedrive.messagesFolderId";
 
@@ -14,6 +18,7 @@ export async function putMonthCache(input: {
   itemId: string;
   eTag: string;
   document: MonthDocument;
+  chunks?: CachedChunk[];
 }): Promise<void> {
   await oneDropDatabase.monthCache.put({
     ...input,

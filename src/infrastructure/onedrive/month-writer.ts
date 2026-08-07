@@ -20,7 +20,8 @@ import {
 } from "./month-reader";
 
 const MAX_ATTEMPTS = 5;
-const MAX_MONTH_BYTES = 10 * 1024 * 1024;
+export const CHUNK_SOFT_LIMIT_BYTES = 256 * 1024;
+export const CHUNK_HARD_LIMIT_BYTES = 320 * 1024;
 
 const writtenItemSchema = z.object({
   id: z.string().min(1),
@@ -35,6 +36,13 @@ export async function appendTextMessage(
   month: string,
   message: TextMessage,
 ): Promise<MonthReadResult> {
+  return appendMessage(month, message);
+}
+
+export async function appendMessage(
+  month: string,
+  message: Message,
+): Promise<MonthReadResult> {
   const accessToken = await getCurrentAccessToken();
   await ensureMessagesFolder(accessToken);
   let snapshot: MonthSnapshot | undefined = await getCachedMonthSnapshot(month);
@@ -44,9 +52,7 @@ export async function appendTextMessage(
     const existingMessages =
       snapshot.state === "loaded" ? snapshot.document.messages : [];
 
-    const merged = mergeTextMessage(month, existingMessages, message);
-
-    if (!merged.added) {
+    if (existingMessages.some((item) => item.id === message.id)) {
       if (snapshot.state === "missing") return snapshot;
       return {
         state: "loaded",
@@ -56,27 +62,47 @@ export async function appendTextMessage(
       };
     }
 
-    const document = merged.document;
-    const body = JSON.stringify(document);
+    const chunks = snapshot.state === "loaded" ? snapshot.chunks : [];
+    const active = chunks.at(-1);
+    const candidate = mergeMessage(
+      month,
+      active?.document.messages ?? [],
+      message,
+    ).document;
+    const shouldCreateChunk =
+      !active || serializedBytes(candidate) > CHUNK_SOFT_LIMIT_BYTES;
+    const document = shouldCreateChunk
+      ? mergeMessage(month, [], message).document
+      : candidate;
 
-    if (new TextEncoder().encode(body).byteLength > MAX_MONTH_BYTES) {
+    if (serializedBytes(document) > CHUNK_HARD_LIMIT_BYTES) {
       throw new Error(
-        "The current monthly message document reached its 10 MB limit.",
+        "This message is too large for a OneDrop metadata chunk.",
       );
     }
+
+    const chunkIndex = shouldCreateChunk
+      ? (active?.index ?? 0) + 1
+      : active.index;
+    if (chunkIndex > 9_999) {
+      throw new Error("The current month reached OneDrop's chunk count limit.");
+    }
+    const body = JSON.stringify(document);
 
     let response: Response;
 
     try {
-      response =
-        snapshot.state === "missing"
-          ? await createMonth(accessToken, month, body)
-          : await updateMonth(
-              accessToken,
-              snapshot.itemId,
-              snapshot.eTag,
-              body,
-            );
+      if (shouldCreateChunk) {
+        await ensureMonthFolder(accessToken, month);
+        response = await createChunk(accessToken, month, chunkIndex, body);
+      } else {
+        response = await updateMonth(
+          accessToken,
+          active.itemId,
+          active.eTag,
+          body,
+        );
+      }
     } catch (error) {
       // The request may have reached OneDrive even when the client never
       // received its response. Invalidate the snapshot, but never replay an
@@ -104,17 +130,32 @@ export async function appendTextMessage(
     }
 
     const item = writtenItemSchema.parse(await response.json());
+    const writtenChunk = {
+      index: chunkIndex,
+      itemId: item.id,
+      eTag: item.eTag,
+      document,
+    };
+    const nextChunks = shouldCreateChunk
+      ? [...chunks, writtenChunk]
+      : [...chunks.slice(0, -1), writtenChunk];
+    const aggregateDocument = monthDocumentSchema.parse({
+      schemaVersion: 1,
+      month,
+      messages: [...existingMessages, message],
+    });
     await putMonthCache({
       month,
       itemId: item.id,
       eTag: item.eTag,
-      document,
+      document: aggregateDocument,
+      chunks: nextChunks,
     });
     return {
       state: "loaded",
       month,
       eTag: item.eTag,
-      messages: document.messages,
+      messages: aggregateDocument.messages,
     };
   }
 
@@ -127,6 +168,14 @@ export function mergeTextMessage(
   month: string,
   existingMessages: Message[],
   message: TextMessage,
+): ReturnType<typeof mergeMessage> {
+  return mergeMessage(month, existingMessages, message);
+}
+
+export function mergeMessage(
+  month: string,
+  existingMessages: Message[],
+  message: Message,
 ): {
   added: boolean;
   document: z.infer<typeof monthDocumentSchema>;
@@ -204,16 +253,64 @@ async function ensureMessagesFolder(accessToken: string): Promise<void> {
   throw new Error(`Messages folder creation failed: ${error}`);
 }
 
-function createMonth(
+async function ensureMonthFolder(
   accessToken: string,
   month: string,
+  canRepairMessagesFolder = true,
+): Promise<void> {
+  const existing = await fetch(
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (existing.ok) return;
+  if (existing.status !== 404) {
+    throw new Error(
+      `Month folder lookup failed: ${await readGraphError(existing)}`,
+    );
+  }
+
+  const messagesFolderId = await getMessagesFolderId();
+  if (!messagesFolderId) {
+    throw new Error("OneDrop could not resolve the messages folder.");
+  }
+  const created = await fetch(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(messagesFolderId)}/children`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: month,
+        folder: {},
+        "@microsoft.graph.conflictBehavior": "fail",
+      }),
+    },
+  );
+  if (created.ok || created.status === 409) return;
+  if (created.status === 404 && canRepairMessagesFolder) {
+    await deleteMessagesFolderId();
+    await ensureMessagesFolder(accessToken);
+    return ensureMonthFolder(accessToken, month, false);
+  }
+  throw new Error(
+    `Month folder creation failed: ${await readGraphError(created)}`,
+  );
+}
+
+function createChunk(
+  accessToken: string,
+  month: string,
+  index: number,
   body: string,
 ): Promise<Response> {
   const conflictBehavior = encodeURIComponent(
     "@microsoft.graph.conflictBehavior",
   );
+  const name = `${index.toString().padStart(4, "0")}.json`;
   return fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}.json:/content?${conflictBehavior}=fail`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}/${name}:/content?${conflictBehavior}=fail`,
     {
       method: "PUT",
       headers: {
@@ -223,6 +320,12 @@ function createMonth(
       body,
     },
   );
+}
+
+function serializedBytes(
+  document: z.infer<typeof monthDocumentSchema>,
+): number {
+  return new TextEncoder().encode(JSON.stringify(document)).byteLength;
 }
 
 function updateMonth(

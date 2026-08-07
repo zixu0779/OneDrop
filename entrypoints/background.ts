@@ -13,13 +13,20 @@ import { getUtcMonth } from "../src/features/messages/month";
 import { readMonthDocument } from "../src/infrastructure/onedrive/month-reader";
 import { appendTextMessage } from "../src/infrastructure/onedrive/month-writer";
 import { getOrCreateDeviceId } from "../src/features/device/device-service";
-import { createFileMessage } from "../src/features/messages/create-file-message";
+import {
+  createFileMessage,
+  createUploadingFileMessage,
+} from "../src/features/messages/create-file-message";
 import {
   checkAttachmentExists,
   readImagePreview,
   uploadSmallFile,
 } from "../src/infrastructure/onedrive/file-uploader";
-import { appendMessage } from "../src/infrastructure/onedrive/month-writer";
+import {
+  appendMessage,
+  removeMessage,
+  replaceMessage,
+} from "../src/infrastructure/onedrive/month-writer";
 import { openOrDownloadAttachment } from "../src/features/downloads/download-service";
 
 export default defineBackground(() => {
@@ -62,8 +69,8 @@ export default defineBackground(() => {
           case "messages/send-text": {
             const message = createTextMessage(
               request.text,
-              new Date(),
-              crypto.randomUUID(),
+              request.createdAt ? new Date(request.createdAt) : new Date(),
+              request.messageId ?? crypto.randomUUID(),
               await getOrCreateDeviceId(),
             );
             return {
@@ -73,15 +80,23 @@ export default defineBackground(() => {
             };
           }
           case "files/send": {
-            let attachment;
+            const deviceId = await getOrCreateDeviceId();
+            const registeredAt = new Date(request.createdAt);
+            const placeholder = createUploadingFileMessage(
+              request.file,
+              deviceId,
+              registeredAt,
+              request.messageId,
+            );
             try {
-              attachment = await uploadSmallFile({
-                ...request.file,
-                messageId: request.messageId,
-                createdAt: request.createdAt,
-                ...(request.reuseExisting ? { reuseExisting: true } : {}),
-              });
+              await appendMessage(getUtcMonth(), placeholder);
             } catch (error) {
+              try {
+                await removeMessage(getUtcMonth(), request.messageId);
+              } catch {
+                // The local pending transfer retains cleanup responsibility
+                // and will retry discarding this placeholder after reconnect.
+              }
               return {
                 ok: true,
                 type: "files/transfer",
@@ -92,12 +107,35 @@ export default defineBackground(() => {
               };
             }
 
-            const uploadedAt = new Date();
+            let attachment;
+            try {
+              attachment = await uploadSmallFile({
+                ...request.file,
+                messageId: request.messageId,
+                createdAt: request.createdAt,
+                ...(request.reuseExisting ? { reuseExisting: true } : {}),
+              });
+            } catch (error) {
+              try {
+                await removeMessage(getUtcMonth(), request.messageId);
+              } catch {
+                // Retry cleanup when the originating device reconnects.
+              }
+              return {
+                ok: true,
+                type: "files/transfer",
+                transfer: {
+                  state: "upload-failed",
+                  error: getErrorMessage(error),
+                },
+              };
+            }
+
             try {
               const message = createFileMessage(
                 attachment,
-                await getOrCreateDeviceId(),
-                uploadedAt,
+                deviceId,
+                registeredAt,
                 request.messageId,
               );
               return {
@@ -105,7 +143,7 @@ export default defineBackground(() => {
                 type: "files/transfer",
                 transfer: {
                   state: "sent",
-                  result: await appendMessage(getUtcMonth(), message),
+                  result: await replaceMessage(getUtcMonth(), message),
                 },
               };
             } catch (error) {
@@ -113,14 +151,17 @@ export default defineBackground(() => {
                 ok: true,
                 type: "files/transfer",
                 transfer: {
-                  state: "commit-failed",
+                  state: "reconciling",
                   error: getErrorMessage(error),
                   attachment,
-                  createdAt: uploadedAt.toISOString(),
+                  createdAt: registeredAt.toISOString(),
                 },
               };
             }
           }
+          case "files/discard-placeholder":
+            await removeMessage(getUtcMonth(), request.messageId);
+            return { ok: true, type: "files/placeholder-discarded" };
           case "files/retry-commit": {
             try {
               const message = createFileMessage(
@@ -134,7 +175,7 @@ export default defineBackground(() => {
                 type: "files/transfer",
                 transfer: {
                   state: "sent",
-                  result: await appendMessage(getUtcMonth(), message),
+                  result: await replaceMessage(getUtcMonth(), message),
                 },
               };
             } catch (error) {
@@ -142,7 +183,7 @@ export default defineBackground(() => {
                 ok: true,
                 type: "files/transfer",
                 transfer: {
-                  state: "commit-failed",
+                  state: "reconciling",
                   error: getErrorMessage(error),
                   attachment: request.attachment,
                   createdAt: request.createdAt,
@@ -169,13 +210,17 @@ export default defineBackground(() => {
             return {
               ok: true,
               type: "files/local-action",
-              action: await openOrDownloadAttachment(request.attachment, false),
+              ...(await openOrDownloadAttachment(
+                request.attachment,
+                false,
+                request.forceDownload,
+              )),
             };
           case "files/save-as":
             return {
               ok: true,
               type: "files/local-action",
-              action: await openOrDownloadAttachment(request.attachment, true),
+              ...(await openOrDownloadAttachment(request.attachment, true)),
             };
         }
       } catch (error) {

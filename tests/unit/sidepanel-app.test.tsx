@@ -7,6 +7,18 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const pendingTextStore = vi.hoisted(() => ({
+  deletePendingText: vi.fn().mockResolvedValue(undefined),
+  listPendingTexts: vi.fn().mockResolvedValue([]),
+  putPendingText: vi.fn().mockResolvedValue("pending-text"),
+  updatePendingText: vi.fn().mockResolvedValue(1),
+}));
+
+vi.mock(
+  "../../src/infrastructure/indexed-db/pending-texts",
+  () => pendingTextStore,
+);
+
 import { App, groupMessages } from "../../entrypoints/sidepanel/App";
 import { createTextMessage } from "../../src/features/messages/create-text-message";
 
@@ -104,10 +116,12 @@ describe("side panel message composer", () => {
 
     fireEvent.keyDown(composer, { key: "Enter" });
     await waitFor(() =>
-      expect(sendMessage).toHaveBeenCalledWith({
-        type: "messages/send-text",
-        text: "hello",
-      }),
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "messages/send-text",
+          text: "hello",
+        }),
+      ),
     );
   });
 

@@ -3,7 +3,7 @@ import { textMessageSchema, type TextMessage } from "../../domain/message";
 export function createTextMessage(
   text: string,
   now = new Date(),
-  id = crypto.randomUUID(),
+  id: string = crypto.randomUUID(),
   senderDeviceId?: string,
 ): TextMessage {
   return textMessageSchema.parse({

@@ -36,9 +36,17 @@ export type PendingTransferRecord = {
   imageWidth?: number;
   imageHeight?: number;
   thumbHash?: string;
-  status: "uploading" | "upload-failed" | "commit-failed";
+  status: "uploading" | "committing" | "upload-failed" | "commit-failed";
   error?: string;
   attachment?: Attachment;
+};
+
+export type PendingTextRecord = {
+  id: string;
+  createdAt: string;
+  text: string;
+  status: "sending" | "send-failed";
+  error?: string;
 };
 
 export type DownloadRecord = {
@@ -54,6 +62,7 @@ class OneDropDatabase extends Dexie {
   monthCache!: EntityTable<MonthCacheRecord, "month">;
   settings!: EntityTable<SettingRecord, "key">;
   pendingTransfers!: EntityTable<PendingTransferRecord, "id">;
+  pendingTexts!: EntityTable<PendingTextRecord, "id">;
   downloads!: EntityTable<DownloadRecord, "driveItemId">;
 
   constructor() {
@@ -71,6 +80,13 @@ class OneDropDatabase extends Dexie {
       monthCache: "&month",
       settings: "&key",
       pendingTransfers: "&id,createdAt,status",
+      downloads: "&driveItemId,downloadId,lastOpenedAt",
+    });
+    this.version(4).stores({
+      monthCache: "&month",
+      settings: "&key",
+      pendingTransfers: "&id,createdAt,status",
+      pendingTexts: "&id,createdAt,status",
       downloads: "&driveItemId,downloadId,lastOpenedAt",
     });
   }

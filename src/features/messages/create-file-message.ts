@@ -1,7 +1,9 @@
 import {
   fileMessageSchema,
+  uploadingFileMessageSchema,
   type Attachment,
   type FileMessage,
+  type UploadingFileMessage,
 } from "../../domain/message";
 
 export function createFileMessage(
@@ -17,5 +19,21 @@ export function createFileMessage(
     createdAt: now.toISOString(),
     senderDeviceId,
     attachment,
+  });
+}
+
+export function createUploadingFileMessage(
+  pendingAttachment: UploadingFileMessage["pendingAttachment"],
+  senderDeviceId: string,
+  now: Date,
+  id: string,
+): UploadingFileMessage {
+  return uploadingFileMessageSchema.parse({
+    schemaVersion: 1,
+    id,
+    type: "file-uploading",
+    createdAt: now.toISOString(),
+    senderDeviceId,
+    pendingAttachment,
   });
 }

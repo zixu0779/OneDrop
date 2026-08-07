@@ -18,12 +18,21 @@ vi.mock("../../src/infrastructure/onedrive/month-reader", () => ({
 }));
 
 import { createTextMessage } from "../../src/features/messages/create-text-message";
+import type { Message } from "../../src/domain/message";
+import {
+  createFileMessage,
+  createUploadingFileMessage,
+} from "../../src/features/messages/create-file-message";
 import { deleteMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
   readMonthSnapshot,
 } from "../../src/infrastructure/onedrive/month-reader";
-import { appendTextMessage } from "../../src/infrastructure/onedrive/month-writer";
+import {
+  appendTextMessage,
+  removeMessage,
+  replaceMessage,
+} from "../../src/infrastructure/onedrive/month-writer";
 
 const first = createTextMessage(
   "first",
@@ -46,7 +55,7 @@ function largeMessages() {
   );
 }
 
-function loaded(eTag: string, messages = [first]) {
+function loaded(eTag: string, messages: Message[] = [first]) {
   return {
     state: "loaded" as const,
     month: "2026-08",
@@ -195,5 +204,101 @@ describe("appendTextMessage conflict recovery", () => {
     );
     expect(deleteMonthCache).toHaveBeenCalledWith("2026-08");
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces an uploading placeholder in its original chunk", async () => {
+    const id = "01989f5e-7700-7000-8000-000000000031";
+    const sender = "01989f5e-7700-7000-8000-000000000099";
+    const createdAt = new Date("2026-08-03T00:00:00.000Z");
+    const placeholder = createUploadingFileMessage(
+      { name: "photo.png", size: 5, mimeType: "image/png" },
+      sender,
+      createdAt,
+      id,
+    );
+    const ready = createFileMessage(
+      {
+        driveItemId: "drive-item",
+        name: "photo.png",
+        size: 5,
+        mimeType: "image/png",
+      },
+      sender,
+      createdAt,
+      id,
+    );
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(
+      loaded("etag-1", [placeholder]),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json(
+            { id: "month-item-id", eTag: "etag-2" },
+            { status: 200 },
+          ),
+        ),
+    );
+
+    const result = await replaceMessage("2026-08", ready);
+
+    expect(result.state).toBe("loaded");
+    if (result.state === "loaded") {
+      expect(result.messages).toEqual([ready]);
+    }
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+    expect(body.messages).toEqual([ready]);
+  });
+
+  it("removes an abandoned uploading placeholder", async () => {
+    const placeholder = createUploadingFileMessage(
+      { name: "abandoned.pdf", size: 42, mimeType: "application/pdf" },
+      "01989f5e-7700-7000-8000-000000000099",
+      new Date("2026-08-03T00:00:00.000Z"),
+      "01989f5e-7700-7000-8000-000000000041",
+    );
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(
+      loaded("etag-1", [first, placeholder]),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json(
+            { id: "month-item-id", eTag: "etag-2" },
+            { status: 200 },
+          ),
+        ),
+    );
+
+    await removeMessage("2026-08", placeholder.id);
+
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+    expect(body.messages).toEqual([first]);
+  });
+
+  it("never removes an already finalized file message", async () => {
+    const ready = createFileMessage(
+      {
+        driveItemId: "drive-item",
+        name: "ready.pdf",
+        size: 42,
+        mimeType: "application/pdf",
+      },
+      "01989f5e-7700-7000-8000-000000000099",
+      new Date("2026-08-03T00:00:00.000Z"),
+      "01989f5e-7700-7000-8000-000000000042",
+    );
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(
+      loaded("etag-1", [ready]),
+    );
+    vi.stubGlobal("fetch", vi.fn());
+
+    await removeMessage("2026-08", ready.id);
+
+    expect(fetch).not.toHaveBeenCalled();
   });
 });

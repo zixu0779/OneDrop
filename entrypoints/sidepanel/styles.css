@@ -1,5 +1,6 @@
 :root {
   --image-bubble-size: 156px;
+  --file-bubble-width: min(244px, 62vw);
   --message-more-offset: 6px;
   --message-error-offset: 11px;
   color: #18202b;
@@ -40,6 +41,7 @@ body {
 }
 
 .shell {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100vh;
@@ -84,6 +86,93 @@ body {
   border-radius: 22px;
   background: rgb(255 255 255 / 82%);
   box-shadow: 0 18px 50px rgb(16 24 40 / 8%);
+}
+
+.unified-pulse-loader {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+
+.unified-pulse {
+  position: relative;
+  display: grid;
+  width: 84px;
+  height: 84px;
+  place-items: center;
+}
+
+.unified-pulse-core {
+  position: relative;
+  z-index: 3;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgb(130 190 255 / 58%);
+  box-shadow: 0 0 13px rgb(78 148 238 / 52%);
+  animation: unified-core-breathe 0.8s ease-out infinite;
+}
+
+.unified-pulse-ring {
+  position: absolute;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgb(89 161 255 / 52%);
+  border-radius: 50%;
+  opacity: 0;
+  box-shadow: inset 0 0 10px rgb(78 148 238 / 14%);
+  animation: unified-ring-wave 2.4s cubic-bezier(0.2, 0.65, 0.28, 1) infinite;
+}
+
+.unified-pulse-ring-two {
+  animation-delay: 0.8s;
+}
+
+.unified-pulse-ring-three {
+  animation-delay: 1.6s;
+}
+
+@keyframes unified-core-breathe {
+  0% {
+    opacity: 0.64;
+    transform: scale(1);
+    box-shadow: 0 0 13px rgb(78 148 238 / 52%);
+  }
+
+  68%,
+  100% {
+    opacity: 0.26;
+    transform: scale(0.66);
+    box-shadow: 0 0 7px rgb(78 148 238 / 24%);
+  }
+}
+
+@keyframes unified-ring-wave {
+  0% {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+
+  16% {
+    opacity: 0.7;
+  }
+
+  82%,
+  100% {
+    opacity: 0;
+    transform: scale(4.2);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .unified-pulse-core,
+  .unified-pulse-ring {
+    animation: none;
+  }
 }
 
 .eyebrow {
@@ -193,6 +282,7 @@ body {
 
 .account-card {
   position: relative;
+  z-index: 100;
   display: flex;
   flex: none;
   align-items: center;
@@ -244,7 +334,7 @@ body {
 
 .account-popover {
   position: absolute;
-  z-index: 10;
+  z-index: 101;
   top: calc(100% + 7px);
   left: 12px;
   right: 12px;
@@ -375,7 +465,6 @@ body {
   background-clip: padding-box;
 }
 
-.timeline-loading,
 .empty-timeline {
   display: block;
   padding: 56px 12px;
@@ -591,6 +680,10 @@ body {
   content: "";
 }
 
+.message-item-shell:has(.message-local-button)::before {
+  width: 63px;
+}
+
 .message-item-own::before {
   right: 100%;
 }
@@ -603,10 +696,29 @@ body {
   max-width: 100%;
 }
 
-.message-more-button {
+.message-primary-actions {
   position: absolute;
   z-index: 2;
   top: 50%;
+  display: flex;
+  width: max-content;
+  align-items: center;
+  gap: 1px;
+  transform: translateY(-50%);
+}
+
+.message-item-own .message-primary-actions {
+  right: calc(100% + var(--message-more-offset));
+}
+
+.message-item-peer .message-primary-actions {
+  left: calc(100% + var(--message-more-offset));
+}
+
+.message-more-button,
+.message-local-button {
+  position: absolute;
+  z-index: 2;
   display: grid;
   width: 28px;
   height: 28px;
@@ -622,21 +734,41 @@ body {
   letter-spacing: 1px;
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-50%);
   transition:
     opacity 160ms ease,
     color 140ms ease,
     background-color 140ms ease;
 }
 
+.message-primary-actions .message-more-button,
+.message-primary-actions .message-local-button {
+  position: static;
+  flex: 0 0 28px;
+  transform: none;
+}
+
+.message-local-button svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.45;
+}
+
 .message-item-shell:hover .message-more-button,
-.message-item-shell:focus-within .message-more-button {
+.message-item-shell:hover .message-local-button,
+.message-item-shell:focus-within .message-more-button,
+.message-item-shell:focus-within .message-local-button {
   opacity: 1;
   pointer-events: auto;
 }
 
 .message-more-button:hover,
-.message-more-button:focus-visible {
+.message-more-button:focus-visible,
+.message-local-button:hover,
+.message-local-button:focus-visible {
   color: #d4dae2;
   background: rgb(142 152 167 / 14%);
   outline: none;
@@ -750,6 +882,39 @@ body {
 
 .message-attachment-action.attachment-action-working {
   cursor: progress;
+}
+
+.message-attachment-action.attachment-action-disabled {
+  cursor: default;
+}
+
+.uploading-message-bubble {
+  width: var(--file-bubble-width);
+  cursor: default;
+}
+
+.uploading-message-indicator {
+  position: absolute;
+  top: 50%;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  color: #4e94ee;
+  transform: translateY(-50%);
+}
+
+.message-item-own .uploading-message-indicator {
+  right: calc(100% + var(--message-error-offset));
+}
+
+.message-item-peer .uploading-message-indicator {
+  left: calc(100% + var(--message-error-offset));
+}
+
+.uploading-message-indicator svg {
+  width: 16px;
+  height: 16px;
 }
 
 .message-attachment-action.attachment-action-working::before {
@@ -999,7 +1164,7 @@ body {
 .file-attachment {
   position: relative;
   display: grid;
-  width: min(244px, 62vw);
+  width: var(--file-bubble-width);
   min-height: 72px;
   padding: 12px 14px;
   grid-template-columns: 32px minmax(0, 1fr);
@@ -1298,6 +1463,80 @@ body {
   white-space: nowrap;
 }
 
+.pending-text-row {
+  position: relative;
+  display: block;
+  width: fit-content;
+  max-width: 84%;
+}
+
+.pending-text-row::before {
+  position: absolute;
+  top: 0;
+  right: 100%;
+  bottom: 0;
+  width: 126px;
+  content: "";
+}
+
+.pending-text-bubble {
+  max-width: 100%;
+}
+
+.pending-text-primary-actions {
+  position: absolute;
+  top: 50%;
+  right: calc(100% + var(--message-more-offset));
+  display: flex;
+  width: max-content;
+  align-items: center;
+  gap: 1px;
+  transform: translateY(-50%);
+}
+
+.pending-text-row:hover .pending-retry-button,
+.pending-text-row:hover .pending-more-button,
+.pending-text-row:focus-within .pending-retry-button,
+.pending-text-row:focus-within .pending-more-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.pending-text-error {
+  position: absolute;
+  right: calc(100% + var(--message-error-offset));
+  bottom: 0;
+  display: block;
+}
+
+.pending-text-error .attachment-error-control {
+  position: static;
+}
+
+.pending-text-one .pending-text-primary-actions {
+  right: calc(100% + 30px);
+}
+
+.pending-text-one .pending-retry-button {
+  display: none;
+}
+
+.pending-text-one .pending-text-error {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
+}
+
+.pending-text-two .pending-text-primary-actions {
+  top: 0;
+  transform: none;
+}
+
+.pending-text-row .pending-actions-menu {
+  right: calc(100% + 6px);
+  bottom: calc(50% + 18px);
+}
+
 .pending-file-bubble {
   position: relative;
   min-width: 150px;
@@ -1314,7 +1553,7 @@ body {
 
 .pending-document-bubble {
   flex: 0 0 auto;
-  width: min(218px, calc(100vw - 145px));
+  width: var(--file-bubble-width);
 }
 
 .pending-file-bubble:hover {

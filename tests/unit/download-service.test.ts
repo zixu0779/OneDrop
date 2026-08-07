@@ -61,10 +61,11 @@ describe("download service", () => {
       },
     ]);
 
-    await expect(openOrDownloadAttachment(attachment, false)).resolves.toBe(
-      "opened",
-    );
-    expect(browser.downloads.open).toHaveBeenCalledWith(4);
+    await expect(openOrDownloadAttachment(attachment, false)).resolves.toEqual({
+      action: "open",
+      downloadId: 4,
+    });
+    expect(browser.downloads.open).not.toHaveBeenCalled();
     expect(browser.downloads.download).not.toHaveBeenCalled();
   });
 
@@ -79,9 +80,10 @@ describe("download service", () => {
       },
     ]);
 
-    await expect(openOrDownloadAttachment(attachment, false)).resolves.toBe(
-      "downloaded",
-    );
+    await expect(openOrDownloadAttachment(attachment, false)).resolves.toEqual({
+      action: "downloaded",
+      downloadId: 7,
+    });
     expect(browser.downloads.download).toHaveBeenCalledWith(
       expect.objectContaining({
         filename: "report.pdf",
@@ -96,6 +98,23 @@ describe("download service", () => {
         localFilename: "/Downloads/report (1).pdf",
       }),
     );
+  });
+
+  it("forces a fresh download after a registered local file cannot be opened", async () => {
+    searchDownloads.mockResolvedValue([
+      {
+        id: 7,
+        filename: "/Downloads/report (2).pdf",
+        state: "complete",
+        exists: true,
+      },
+    ]);
+
+    await expect(
+      openOrDownloadAttachment(attachment, false, true),
+    ).resolves.toEqual({ action: "downloaded", downloadId: 7 });
+    expect(downloadStore.getDownloadRecord).not.toHaveBeenCalled();
+    expect(browser.downloads.download).toHaveBeenCalledOnce();
   });
 
   it("sanitizes unsafe path characters", () => {

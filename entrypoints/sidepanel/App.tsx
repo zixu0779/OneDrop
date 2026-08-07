@@ -13,7 +13,11 @@ import type {
   RuntimeRequest,
   RuntimeResponse,
 } from "../../src/contracts/runtime-messages";
-import type { Attachment, Message } from "../../src/domain/message";
+import type {
+  Attachment,
+  Message,
+  UploadingFileMessage,
+} from "../../src/domain/message";
 import { MAX_DIRECT_FILE_BYTES } from "../../src/config/files";
 import {
   deletePendingTransfer,
@@ -21,6 +25,19 @@ import {
   putPendingTransfer,
   updatePendingTransfer,
 } from "../../src/infrastructure/indexed-db/pending-transfers";
+import {
+  deleteDownloadRecord,
+  getDownloadRecord,
+  markDownloadOpened,
+} from "../../src/infrastructure/indexed-db/downloads";
+import { getMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
+import { getUtcMonth } from "../../src/features/messages/month";
+import {
+  deletePendingText,
+  listPendingTexts,
+  putPendingText,
+  updatePendingText,
+} from "../../src/infrastructure/indexed-db/pending-texts";
 
 export type PendingFile = {
   id: string;
@@ -28,13 +45,23 @@ export type PendingFile = {
   file?: File;
   previewUrl?: string;
   isImage: boolean;
-  status: "uploading" | "upload-failed" | "commit-failed";
+  status: "uploading" | "committing" | "upload-failed";
   error?: string;
   attachment?: Attachment;
   imageWidth?: number;
   imageHeight?: number;
   thumbHash?: string;
 };
+
+export type PendingText = {
+  id: string;
+  createdAt: string;
+  text: string;
+  status: "sending" | "send-failed";
+  error?: string;
+};
+
+type ReadyMessage = Exclude<Message, { type: "file-uploading" }>;
 
 async function sendRequest(request: RuntimeRequest): Promise<RuntimeResponse> {
   const response = (await browser.runtime.sendMessage(
@@ -68,7 +95,11 @@ export function App() {
   const [isSending, setIsSending] = useState(false);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isTimelineScrolling, setIsTimelineScrolling] = useState(false);
+  const [isPanelVisible, setIsPanelVisible] = useState(
+    typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
+  const [pendingTexts, setPendingTexts] = useState<PendingText[]>([]);
   const [attachmentCheckVersion, setAttachmentCheckVersion] = useState(0);
   const [scrollRevision, setScrollRevision] = useState(0);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -89,6 +120,7 @@ export function App() {
       ? monthResult.messages.map((message) => message.id)
       : []),
     ...pendingFiles.map((pending) => pending.id),
+    ...pendingTexts.map((pending) => pending.id),
   ].join("|");
 
   useLayoutEffect(() => {
@@ -128,6 +160,123 @@ export function App() {
   );
 
   useEffect(() => {
+    const updateVisibility = () =>
+      setIsPanelVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () =>
+      document.removeEventListener("visibilitychange", updateVisibility);
+  }, []);
+
+  const hasUploadingMessages =
+    monthResult?.state === "loaded" &&
+    monthResult.messages.some(
+      (message) =>
+        message.type === "file-uploading" &&
+        message.senderDeviceId !== deviceId,
+    );
+  const committingIdentity = pendingFiles
+    .filter((pending) => pending.status === "committing" && pending.attachment)
+    .map((pending) => pending.id)
+    .join("|");
+
+  useEffect(() => {
+    if (
+      status?.state !== "signed-in" ||
+      !isPanelVisible ||
+      !hasUploadingMessages
+    ) {
+      return;
+    }
+
+    const intervals = [2_000, 5_000, 8_000, 10_000];
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let intervalIndex = 0;
+    let elapsed = 0;
+
+    const schedule = () => {
+      const delayMs = intervals[intervalIndex]!;
+      timer = setTimeout(async () => {
+        elapsed += delayMs;
+        try {
+          const response = await sendRequest({
+            type: "messages/read-current-month",
+          });
+          if (!cancelled && response.ok && response.type === "messages/month") {
+            setMonthResult((current) =>
+              JSON.stringify(current) === JSON.stringify(response.result)
+                ? current
+                : response.result,
+            );
+          }
+        } catch {
+          // A foreground synchronization failure is transient. The next
+          // scheduled check or an explicit refresh will try again.
+        }
+        if (cancelled) return;
+        if (elapsed >= 120_000) return;
+        intervalIndex = Math.min(intervalIndex + 1, intervals.length - 1);
+        schedule();
+      }, delayMs);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [hasUploadingMessages, isPanelVisible, status?.state]);
+
+  useEffect(() => {
+    const reconcileWhenOnline = () => {
+      for (const pending of pendingFiles) {
+        if (pending.status === "committing" && pending.attachment) {
+          void retryFileCommit(pending);
+        } else if (pending.status === "upload-failed") {
+          void sendRequest({
+            type: "files/discard-placeholder",
+            messageId: pending.id,
+          }).catch(() => undefined);
+        }
+      }
+    };
+    window.addEventListener("online", reconcileWhenOnline);
+    return () => window.removeEventListener("online", reconcileWhenOnline);
+  }, [pendingFiles]);
+
+  useEffect(() => {
+    if (!isPanelVisible || !committingIdentity) return;
+    const intervals = [2_000, 5_000, 8_000, 10_000];
+    const pendingCommits = pendingFiles.filter(
+      (pending) => pending.status === "committing" && pending.attachment,
+    );
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let intervalIndex = 0;
+    let elapsed = 0;
+
+    const schedule = () => {
+      const delayMs = intervals[intervalIndex]!;
+      timer = setTimeout(async () => {
+        elapsed += delayMs;
+        for (const pending of pendingCommits) {
+          if (cancelled) return;
+          await retryFileCommit(pending);
+        }
+        if (cancelled || elapsed >= 120_000) return;
+        intervalIndex = Math.min(intervalIndex + 1, intervals.length - 1);
+        schedule();
+      }, delayMs);
+    };
+
+    schedule();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [committingIdentity, isPanelVisible]);
+
+  useEffect(() => {
     async function restore() {
       setIsWorking(true);
 
@@ -150,17 +299,39 @@ export function App() {
     void restore();
   }, []);
 
+  async function readCachedTimeline(): Promise<MonthReadResult | undefined> {
+    try {
+      const month = getUtcMonth();
+      const cached = await getMonthCache(month);
+      if (!cached) return undefined;
+      return {
+        state: "loaded",
+        month,
+        eTag: cached.eTag,
+        messages: cached.document.messages,
+      };
+    } catch {
+      // The cache is an optional startup optimization. A damaged or
+      // unavailable IndexedDB must never prevent a fresh OneDrive sync.
+      return undefined;
+    }
+  }
+
   async function loadOneDriveState(restoreTransfers = true) {
-    const deviceResponse = await sendRequest({ type: "device/id" });
+    const devicePromise = sendRequest({ type: "device/id" });
+    const folderPromise = sendRequest({ type: "onedrive/verify-app-folder" });
+    const cachePromise = readCachedTimeline();
+    const [deviceResponse, cachedTimeline] = await Promise.all([
+      devicePromise,
+      cachePromise,
+    ]);
     if (!deviceResponse.ok || deviceResponse.type !== "device/id") {
       throw new Error("OneDrop could not identify this Edge installation.");
     }
     setDeviceId(deviceResponse.deviceId);
+    if (cachedTimeline) setMonthResult(cachedTimeline);
 
-    const folderResponse = await sendRequest({
-      type: "onedrive/verify-app-folder",
-    });
-
+    const folderResponse = await folderPromise;
     if (!folderResponse.ok || folderResponse.type !== "onedrive/app-folder") {
       throw new Error("OneDrop received an unexpected OneDrive response.");
     }
@@ -174,7 +345,12 @@ export function App() {
     }
 
     setMonthResult(monthResponse.result);
-    if (restoreTransfers) await restorePendingFiles(monthResponse.result);
+    if (restoreTransfers) {
+      await Promise.all([
+        restorePendingFiles(monthResponse.result),
+        restorePendingTexts(monthResponse.result),
+      ]);
+    }
   }
 
   async function run(request: RuntimeRequest) {
@@ -233,15 +409,39 @@ export function App() {
   async function sendText() {
     if (!draft.trim() || isSendingRef.current) return;
 
+    const pending: PendingText = {
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      text: draft.trim(),
+      status: "sending",
+    };
+    await putPendingText(pending);
+    setPendingTexts((items) => [...items, pending]);
+    setDraft("");
+    await sendPendingText(pending);
+  }
+
+  async function sendPendingText(pending: PendingText) {
+    if (isSendingRef.current) return;
+
     isSendingRef.current = true;
     setIsSending(true);
     setIsWorking(true);
     setError(undefined);
+    const sentAt = new Date().toISOString();
+    await updatePendingText(pending.id, { status: "sending" });
+    setPendingTexts((items) =>
+      items.map((item) =>
+        item.id === pending.id ? { ...item, status: "sending" } : item,
+      ),
+    );
 
     try {
       const response = await sendRequest({
         type: "messages/send-text",
-        text: draft,
+        text: pending.text,
+        messageId: pending.id,
+        createdAt: sentAt,
       });
 
       if (!response.ok || response.type !== "messages/month") {
@@ -250,10 +450,23 @@ export function App() {
 
       setMonthResult(response.result);
       setScrollRevision((revision) => revision + 1);
-      setDraft("");
+      await deletePendingText(pending.id);
+      setPendingTexts((items) =>
+        items.filter((item) => item.id !== pending.id),
+      );
     } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Text message send failed",
+      const error =
+        cause instanceof Error ? cause.message : "Text message send failed";
+      await updatePendingText(pending.id, {
+        status: "send-failed",
+        error,
+      });
+      setPendingTexts((items) =>
+        items.map((item) =>
+          item.id === pending.id
+            ? { ...item, status: "send-failed", error }
+            : item,
+        ),
       );
     } finally {
       isSendingRef.current = false;
@@ -404,7 +617,7 @@ export function App() {
 
   async function retryFileCommit(pending: PendingFile) {
     if (!pending.attachment) return;
-    updatePending(pending.id, { status: "uploading" });
+    updatePending(pending.id, { status: "committing" });
     try {
       const response = await sendRequest({
         type: "files/retry-commit",
@@ -415,7 +628,7 @@ export function App() {
       handleFileTransferResponse(pending.id, response);
     } catch (cause) {
       updatePending(pending.id, {
-        status: "commit-failed",
+        status: "committing",
         error: getClientError(cause),
       });
     }
@@ -437,9 +650,9 @@ export function App() {
         status: "upload-failed",
         error: response.transfer.error,
       });
-    } else {
+    } else if (response.transfer.state === "reconciling") {
       updatePending(id, {
-        status: "commit-failed",
+        status: "committing",
         error: response.transfer.error,
         attachment: response.transfer.attachment,
         createdAt: response.transfer.createdAt,
@@ -466,7 +679,9 @@ export function App() {
   async function restorePendingFiles(result: MonthReadResult) {
     const committedIds = new Set(
       result.state === "loaded"
-        ? result.messages.map((message) => message.id)
+        ? result.messages
+            .filter((message) => message.type !== "file-uploading")
+            .map((message) => message.id)
         : [],
     );
     const records = await listPendingTransfers();
@@ -478,7 +693,11 @@ export function App() {
         continue;
       }
       const status =
-        record.status === "uploading" ? "upload-failed" : record.status;
+        record.status === "uploading"
+          ? "upload-failed"
+          : record.status === "commit-failed"
+            ? "committing"
+            : record.status;
       const error =
         record.status === "uploading"
           ? "The transfer was interrupted. Resend to continue."
@@ -508,6 +727,46 @@ export function App() {
       });
     }
     setPendingFiles(restored);
+    for (const pending of restored) {
+      if (pending.status === "committing" && pending.attachment) {
+        void retryFileCommit(pending);
+      } else if (pending.status === "upload-failed") {
+        void sendRequest({
+          type: "files/discard-placeholder",
+          messageId: pending.id,
+        }).catch(() => undefined);
+      }
+    }
+  }
+
+  async function restorePendingTexts(result: MonthReadResult) {
+    const committedIds = new Set(
+      result.state === "loaded"
+        ? result.messages.map((message) => message.id)
+        : [],
+    );
+    const records = await listPendingTexts();
+    const restored: PendingText[] = [];
+    for (const record of records) {
+      if (committedIds.has(record.id)) {
+        await deletePendingText(record.id);
+        continue;
+      }
+      const status =
+        record.status === "sending" ? "send-failed" : record.status;
+      const error =
+        record.status === "sending"
+          ? "The message send was interrupted. Resend to continue."
+          : record.error;
+      if (record.status === "sending") {
+        await updatePendingText(record.id, {
+          status,
+          ...(error ? { error } : {}),
+        });
+      }
+      restored.push({ ...record, status, ...(error ? { error } : {}) });
+    }
+    setPendingTexts(restored);
   }
 
   function handleComposerKeyDown(
@@ -526,15 +785,12 @@ export function App() {
     if (!isWorking && draft.trim()) void sendText();
   }
 
+  const showUnifiedLoader =
+    !error &&
+    (!status || (status.state === "signed-in" && monthResult === undefined));
+
   return (
     <main className="shell">
-      {!status ? (
-        <section className="card" aria-live="polite">
-          <span className="eyebrow">Loading</span>
-          <h2>Reading extension status…</h2>
-        </section>
-      ) : null}
-
       {status?.state === "unconfigured" ? (
         <section className="card" aria-labelledby="configuration-title">
           <span className="eyebrow">Configuration required</span>
@@ -620,11 +876,7 @@ export function App() {
             ) : null}
           </section>
           <section className="conversation" aria-label="OneDrop messages">
-            {!monthResult ? (
-              <div className="timeline-loading" aria-live="polite">
-                Synchronizing messages…
-              </div>
-            ) : (
+            {monthResult ? (
               <>
                 <div
                   className={`message-scroll${isTimelineScrolling ? " is-scrolling" : ""}`}
@@ -638,9 +890,10 @@ export function App() {
                       attachmentCheckVersion={attachmentCheckVersion}
                       deviceId={deviceId}
                       pendingFiles={pendingFiles}
+                      pendingTexts={pendingTexts}
                       result={monthResult}
-                      onCommitRetry={(item) => void retryFileCommit(item)}
                       onResend={(item) => void uploadPendingFile(item)}
+                      onTextResend={(item) => void sendPendingText(item)}
                     />
                   </div>
                 </div>
@@ -691,10 +944,12 @@ export function App() {
                   />
                 </div>
               </>
-            )}
+            ) : null}
           </section>
         </div>
       ) : null}
+
+      {showUnifiedLoader ? <UnifiedPulseLoader /> : null}
 
       {error ? (
         <div className="error" role="alert">
@@ -715,13 +970,28 @@ export function App() {
   );
 }
 
+function UnifiedPulseLoader() {
+  return (
+    <div
+      aria-label="Starting and synchronizing OneDrop"
+      className="unified-pulse-loader"
+      role="status"
+    >
+      <span className="unified-pulse" aria-hidden="true">
+        <span className="unified-pulse-core" />
+        <span className="unified-pulse-ring unified-pulse-ring-one" />
+        <span className="unified-pulse-ring unified-pulse-ring-two" />
+        <span className="unified-pulse-ring unified-pulse-ring-three" />
+      </span>
+    </div>
+  );
+}
+
 export function PendingFileList({
   items,
-  onCommitRetry,
   onResend,
 }: {
   items: PendingFile[];
-  onCommitRetry: (item: PendingFile) => void;
   onResend: (item: PendingFile) => void;
 }) {
   if (items.length === 0) return null;
@@ -729,11 +999,7 @@ export function PendingFileList({
     <ol className="pending-file-list" aria-label="Pending file transfers">
       {items.map((item) => (
         <li key={item.id}>
-          <PendingFileItem
-            item={item}
-            onCommitRetry={onCommitRetry}
-            onResend={onResend}
-          />
+          <PendingFileItem item={item} onResend={onResend} />
         </li>
       ))}
     </ol>
@@ -742,15 +1008,14 @@ export function PendingFileList({
 
 function PendingFileItem({
   item,
-  onCommitRetry,
   onResend,
 }: {
   item: PendingFile;
-  onCommitRetry: (item: PendingFile) => void;
   onResend: (item: PendingFile) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const controlsRef = useRef<HTMLDivElement>(null);
+  const isActive = item.status === "uploading" || item.status === "committing";
 
   useEffect(() => {
     if (!isMenuOpen) return;
@@ -768,24 +1033,20 @@ function PendingFileItem({
 
   function retryTransfer() {
     setIsMenuOpen(false);
-    if (item.status === "commit-failed") {
-      onCommitRetry(item);
-    } else {
-      onResend(item);
-    }
+    onResend(item);
   }
 
   return (
     <div className="pending-transfer-row" ref={controlsRef}>
       <span className="pending-primary-actions">
-        {item.status !== "uploading" ? (
+        {!isActive ? (
           <button
             className="pending-retry-button"
             onClick={retryTransfer}
             type="button"
           >
             <RetryIcon />
-            {item.status === "commit-failed" ? "Retry" : "Resend"}
+            Resend
           </button>
         ) : null}
         <button
@@ -800,14 +1061,16 @@ function PendingFileItem({
       </span>
       {isMenuOpen ? (
         <span className="pending-actions-menu" role="menu">
-          {item.status === "uploading" ? (
+          {isActive ? (
             <button disabled role="menuitem" type="button">
-              Upload in progress
+              {item.status === "committing"
+                ? "Finishing message…"
+                : "Upload in progress"}
             </button>
           ) : (
             <button onClick={retryTransfer} role="menuitem" type="button">
               <RetryIcon />
-              {item.status === "commit-failed" ? "Retry message" : "Resend"}
+              Resend
             </button>
           )}
           <button disabled role="menuitem" type="button">
@@ -816,7 +1079,7 @@ function PendingFileItem({
           </button>
         </span>
       ) : null}
-      {item.status === "uploading" ? (
+      {isActive ? (
         <span className="pending-transfer-spinner">
           <LoadingIcon />
         </span>
@@ -826,7 +1089,7 @@ function PendingFileItem({
         </span>
       )}
       <div
-        className={`pending-file-bubble ${item.isImage ? "pending-image-bubble" : "pending-document-bubble"}${item.status === "uploading" ? "" : " pending-attachment-error"}`}
+        className={`pending-file-bubble ${item.isImage ? "pending-image-bubble" : "pending-document-bubble"}${isActive ? "" : " pending-attachment-error"}`}
       >
         {item.isImage && item.previewUrl ? (
           <div className="pending-image">
@@ -834,12 +1097,8 @@ function PendingFileItem({
               alt={item.file?.name ?? "Pending image"}
               src={item.previewUrl}
             />
-            {item.status !== "uploading" ? (
-              <span className="pending-image-error-copy">
-                {item.status === "commit-failed"
-                  ? "Message not sent"
-                  : "Upload failed"}
-              </span>
+            {!isActive ? (
+              <span className="pending-image-error-copy">Upload failed</span>
             ) : null}
           </div>
         ) : (
@@ -850,17 +1109,11 @@ function PendingFileItem({
             <span className="file-attachment-copy">
               <strong>{item.file?.name ?? item.attachment?.name}</strong>
               <small
-                className={
-                  item.status === "uploading"
-                    ? undefined
-                    : "pending-file-error-copy"
-                }
+                className={isActive ? undefined : "pending-file-error-copy"}
               >
-                {item.status === "uploading"
+                {isActive
                   ? formatBytes(item.file?.size ?? item.attachment?.size ?? 0)
-                  : item.status === "commit-failed"
-                    ? "Message not sent"
-                    : "Upload failed"}
+                  : "Upload failed"}
               </small>
             </span>
           </div>
@@ -879,25 +1132,45 @@ function RetryIcon() {
   );
 }
 
+function OpenLocalIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M8.2 4.5H5.4a1.9 1.9 0 0 0-1.9 1.9v8.2a1.9 1.9 0 0 0 1.9 1.9h8.2a1.9 1.9 0 0 0 1.9-1.9v-2.8" />
+      <path d="M11 3.5h5.5V9M16.2 3.8 9.1 10.9" />
+    </svg>
+  );
+}
+
+function DownloadLocalIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M10 3.2v9.2M6.6 9.2l3.4 3.4 3.4-3.4M4 16.5h12" />
+    </svg>
+  );
+}
+
 function MonthResult({
   attachmentCheckVersion,
   deviceId,
   pendingFiles,
+  pendingTexts,
   result,
-  onCommitRetry,
   onResend,
+  onTextResend,
 }: {
   attachmentCheckVersion: number;
   deviceId: string | undefined;
   pendingFiles: PendingFile[];
+  pendingTexts: PendingText[];
   result: MonthReadResult;
-  onCommitRetry: (item: PendingFile) => void;
   onResend: (item: PendingFile) => void;
+  onTextResend: (item: PendingText) => void;
 }) {
   const timelineGroups = groupTimelineItems(
     result.state === "loaded" ? result.messages : [],
     pendingFiles,
     deviceId,
+    pendingTexts,
   );
 
   return (
@@ -916,12 +1189,23 @@ function MonthResult({
               </time>
               <div className="message-group-bubbles">
                 {group.items.map((item) =>
-                  item.kind === "pending" ? (
+                  item.kind === "pending-file" ? (
                     <PendingFileItem
                       item={item.pending}
                       key={item.pending.id}
-                      onCommitRetry={onCommitRetry}
                       onResend={onResend}
+                    />
+                  ) : item.kind === "pending-text" ? (
+                    <PendingTextItem
+                      item={item.pending}
+                      key={item.pending.id}
+                      onResend={onTextResend}
+                    />
+                  ) : item.message.type === "file-uploading" ? (
+                    <UploadingFileMessageItem
+                      isOwn={group.isOwn}
+                      key={item.message.id}
+                      message={item.message}
                     />
                   ) : (
                     <CommittedMessageItem
@@ -941,6 +1225,124 @@ function MonthResult({
   );
 }
 
+function PendingTextItem({
+  item,
+  onResend,
+}: {
+  item: PendingText;
+  onResend: (item: PendingText) => void;
+}) {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [lineLayout, setLineLayout] = useState<"one" | "two" | "many">("many");
+  const rowRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLParagraphElement>(null);
+
+  useLayoutEffect(() => {
+    const text = textRef.current;
+    if (!text) return;
+    const measure = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(text).lineHeight);
+      const lines = Math.max(1, Math.round(text.scrollHeight / lineHeight));
+      setLineLayout(lines === 1 ? "one" : lines === 2 ? "two" : "many");
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, [item.text]);
+
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !rowRef.current?.contains(event.target)
+      ) {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [isMenuOpen]);
+
+  return (
+    <div className={`pending-text-row pending-text-${lineLayout}`} ref={rowRef}>
+      <div className="message-bubble pending-text-bubble">
+        <p ref={textRef}>{item.text}</p>
+      </div>
+      <span className="pending-text-primary-actions">
+        <button
+          className="pending-retry-button"
+          disabled={item.status === "sending"}
+          onClick={() => onResend(item)}
+          type="button"
+        >
+          {item.status === "sending" ? <LoadingIcon /> : <RetryIcon />}
+          Resend
+        </button>
+        <button
+          aria-expanded={isMenuOpen}
+          aria-label="More message actions"
+          className="pending-more-button"
+          onClick={() => setIsMenuOpen((open) => !open)}
+          type="button"
+        >
+          <span aria-hidden="true">•••</span>
+        </button>
+      </span>
+      {item.status === "send-failed" ? (
+        <span className="pending-text-error">
+          <AttachmentError />
+        </span>
+      ) : null}
+      {isMenuOpen ? (
+        <span className="pending-actions-menu" role="menu">
+          <button onClick={() => onResend(item)} role="menuitem" type="button">
+            <RetryIcon />
+            Resend
+          </button>
+          <button disabled role="menuitem" type="button">
+            Delete message
+            <small>Coming soon</small>
+          </button>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function UploadingFileMessageItem({
+  isOwn,
+  message,
+}: {
+  isOwn: boolean;
+  message: UploadingFileMessage;
+}) {
+  return (
+    <div
+      className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}`}
+    >
+      <div className="message-bubble message-attachment-bubble uploading-message-bubble">
+        <div className="file-attachment">
+          <FileTypeIcon name={message.pendingAttachment.name} />
+          <span className="file-attachment-copy">
+            <strong>{message.pendingAttachment.name}</strong>
+            <small>Sending from another device…</small>
+          </span>
+        </div>
+        <span
+          aria-label="File upload in progress"
+          className="uploading-message-indicator"
+          role="status"
+        >
+          <LoadingIcon />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 function CommittedMessageItem({
   checkVersion,
   isOwn,
@@ -948,14 +1350,52 @@ function CommittedMessageItem({
 }: {
   checkVersion: number;
   isOwn: boolean;
-  message: Message;
+  message: ReadyMessage;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isAttachmentWorking, setIsAttachmentWorking] = useState(false);
+  const [localDownloadId, setLocalDownloadId] = useState<number | null>();
+  const [cloudAvailability, setCloudAvailability] = useState<
+    "checking" | "available" | "missing" | "unknown"
+  >(message.type === "file" ? "checking" : "unknown");
   const shellRef = useRef<HTMLDivElement>(null);
   const isAttachment = message.type === "file";
   const isImage =
     isAttachment && message.attachment.mimeType.startsWith("image/");
+  const isCloudMissing = cloudAvailability === "missing";
+
+  useEffect(() => {
+    let active = true;
+    if (message.type !== "file") return;
+    void getDownloadRecord(message.attachment.driveItemId)
+      .then(async (record) => {
+        if (!record) {
+          if (active) setLocalDownloadId(null);
+          return;
+        }
+        const [download] = await browser.downloads.search({
+          id: record.downloadId,
+        });
+        const isAvailable =
+          download?.state === "complete" && download.exists !== false;
+        if (!isAvailable) {
+          await deleteDownloadRecord(message.attachment.driveItemId);
+          if (active) setLocalDownloadId(null);
+          return;
+        }
+        if (active) setLocalDownloadId(record.downloadId);
+      })
+      .catch(() => {
+        if (active) setLocalDownloadId(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [message]);
+
+  useEffect(() => {
+    if (message.type === "file") setCloudAvailability("checking");
+  }, [checkVersion, message]);
 
   useEffect(() => {
     if (!isMenuOpen) return;
@@ -978,24 +1418,68 @@ function CommittedMessageItem({
     setIsMenuOpen(false);
   }
 
-  async function runAttachmentAction(saveAs: boolean) {
-    if (message.type !== "file" || isAttachmentWorking) return;
-    setIsAttachmentWorking(true);
-    setIsMenuOpen(false);
+  async function requestAttachmentDownload(
+    saveAs: boolean,
+    forceDownload = false,
+  ) {
+    if (message.type !== "file") return;
     try {
-      await sendRequest({
+      const response = await sendRequest({
         type: saveAs ? "files/save-as" : "files/open-local",
         attachment: message.attachment,
+        ...(saveAs ? {} : { forceDownload }),
       });
+      if (response.ok && response.type === "files/local-action") {
+        setLocalDownloadId(response.downloadId);
+      }
     } finally {
       setIsAttachmentWorking(false);
     }
   }
 
+  function runAttachmentAction(saveAs: boolean) {
+    if (message.type !== "file" || isAttachmentWorking || isCloudMissing) {
+      return;
+    }
+    setIsAttachmentWorking(true);
+    setIsMenuOpen(false);
+
+    if (!saveAs && typeof localDownloadId === "number") {
+      const downloadId = localDownloadId;
+      void browser.downloads
+        .open(downloadId)
+        .then(() =>
+          markDownloadOpened(message.attachment.driveItemId, undefined),
+        )
+        .then(() => setIsAttachmentWorking(false))
+        .catch(async () => {
+          const [download] = await browser.downloads.search({ id: downloadId });
+          const isMissing =
+            !download ||
+            download.exists === false ||
+            download.state === "interrupted";
+
+          if (!isMissing) {
+            // Opening can also fail because the OS has no associated app. Do
+            // not create a duplicate while the local file still exists.
+            setIsAttachmentWorking(false);
+            return;
+          }
+
+          await deleteDownloadRecord(message.attachment.driveItemId);
+          setLocalDownloadId(null);
+          await requestAttachmentDownload(false, true);
+        });
+      return;
+    }
+
+    void requestAttachmentDownload(saveAs);
+  }
+
   function handleBubbleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (!isAttachment || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
-    void runAttachmentAction(false);
+    runAttachmentAction(false);
   }
 
   return (
@@ -1007,11 +1491,11 @@ function CommittedMessageItem({
         aria-busy={isAttachment ? isAttachmentWorking : undefined}
         className={`message-bubble${
           message.type === "file"
-            ? ` message-attachment-bubble message-attachment-action${isAttachmentWorking ? " attachment-action-working" : ""}${isImage ? " message-image-bubble" : ""}`
+            ? ` message-attachment-bubble message-attachment-action${isCloudMissing ? " attachment-action-disabled" : ""}${isAttachmentWorking ? " attachment-action-working" : ""}${isImage ? " message-image-bubble" : ""}`
             : ""
         }`}
         onClick={
-          isAttachment
+          isAttachment && !isCloudMissing
             ? (event) => {
                 if (
                   event.target instanceof Element &&
@@ -1019,13 +1503,13 @@ function CommittedMessageItem({
                 ) {
                   return;
                 }
-                void runAttachmentAction(false);
+                runAttachmentAction(false);
               }
             : undefined
         }
         onKeyDown={handleBubbleKeyDown}
-        role={isAttachment ? "button" : undefined}
-        tabIndex={isAttachment ? 0 : undefined}
+        role={isAttachment && !isCloudMissing ? "button" : undefined}
+        tabIndex={isAttachment && !isCloudMissing ? 0 : undefined}
       >
         {message.type === "text" ? (
           <p>{message.text}</p>
@@ -1033,28 +1517,50 @@ function CommittedMessageItem({
           <ImageAttachment
             attachment={message.attachment}
             checkVersion={checkVersion}
+            onAvailabilityChange={setCloudAvailability}
           />
         ) : (
           <FileAttachment
             attachment={message.attachment}
             checkVersion={checkVersion}
+            onAvailabilityChange={setCloudAvailability}
           />
         )}
       </div>
-      <button
-        aria-expanded={isMenuOpen}
-        aria-label="More message actions"
-        className="message-more-button"
-        onClick={() => setIsMenuOpen((open) => !open)}
-        type="button"
-      >
-        <span aria-hidden="true">•••</span>
-      </button>
+      <span className="message-primary-actions">
+        {message.type === "file" &&
+        !isCloudMissing &&
+        localDownloadId !== undefined ? (
+          <button
+            aria-label={
+              localDownloadId === null ? "Download file" : "Open file"
+            }
+            className="message-local-button"
+            onClick={() => runAttachmentAction(false)}
+            type="button"
+          >
+            {localDownloadId === null ? (
+              <DownloadLocalIcon />
+            ) : (
+              <OpenLocalIcon />
+            )}
+          </button>
+        ) : null}
+        <button
+          aria-expanded={isMenuOpen}
+          aria-label="More message actions"
+          className="message-more-button"
+          onClick={() => setIsMenuOpen((open) => !open)}
+          type="button"
+        >
+          <span aria-hidden="true">•••</span>
+        </button>
+      </span>
       {isMenuOpen ? (
         <span className="message-actions-menu" role="menu">
-          {message.type === "file" ? (
+          {message.type === "file" && !isCloudMissing ? (
             <button
-              onClick={() => void runAttachmentAction(true)}
+              onClick={() => runAttachmentAction(true)}
               role="menuitem"
               type="button"
             >
@@ -1081,9 +1587,13 @@ function CommittedMessageItem({
 export function ImageAttachment({
   attachment,
   checkVersion = 0,
+  onAvailabilityChange,
 }: {
   attachment: Attachment;
   checkVersion?: number;
+  onAvailabilityChange?: (
+    availability: "checking" | "available" | "missing" | "unknown",
+  ) => void;
 }) {
   const [dataUrl, setDataUrl] = useState<string>();
   const [isMissing, setIsMissing] = useState(false);
@@ -1092,14 +1602,17 @@ export function ImageAttachment({
 
   useEffect(() => {
     let active = true;
+    onAvailabilityChange?.("checking");
     void (async () => {
       const exists = await checkAttachmentAvailability(attachment.driveItemId);
       if (!active) return;
       if (exists === false) {
+        onAvailabilityChange?.("missing");
         setDataUrl(undefined);
         setIsMissing(true);
         return;
       }
+      onAvailabilityChange?.(exists ? "available" : "unknown");
       setIsMissing(false);
       try {
         const response = await sendRequest({
@@ -1121,7 +1634,12 @@ export function ImageAttachment({
     return () => {
       active = false;
     };
-  }, [attachment.driveItemId, attachment.mimeType, checkVersion]);
+  }, [
+    attachment.driveItemId,
+    attachment.mimeType,
+    checkVersion,
+    onAvailabilityChange,
+  ]);
 
   return (
     <>
@@ -1189,9 +1707,13 @@ function ImagePlaceholderState({
 export function FileAttachment({
   attachment,
   checkVersion = 0,
+  onAvailabilityChange,
 }: {
   attachment: Attachment;
   checkVersion?: number;
+  onAvailabilityChange?: (
+    availability: "checking" | "available" | "missing" | "unknown",
+  ) => void;
 }) {
   const [availability, setAvailability] = useState<
     "checking" | "available" | "missing" | "unknown"
@@ -1200,16 +1722,18 @@ export function FileAttachment({
   useEffect(() => {
     let active = true;
     setAvailability("checking");
+    onAvailabilityChange?.("checking");
     void checkAttachmentAvailability(attachment.driveItemId).then((exists) => {
       if (!active) return;
-      setAvailability(
-        exists === undefined ? "unknown" : exists ? "available" : "missing",
-      );
+      const nextAvailability =
+        exists === undefined ? "unknown" : exists ? "available" : "missing";
+      setAvailability(nextAvailability);
+      onAvailabilityChange?.(nextAvailability);
     });
     return () => {
       active = false;
     };
-  }, [attachment.driveItemId, checkVersion]);
+  }, [attachment.driveItemId, checkVersion, onAvailabilityChange]);
 
   const isMissing = availability === "missing";
 
@@ -1360,7 +1884,8 @@ function delay(milliseconds: number): Promise<void> {
 
 type TimelineItem =
   | { kind: "message"; message: Message }
-  | { kind: "pending"; pending: PendingFile };
+  | { kind: "pending-file"; pending: PendingFile }
+  | { kind: "pending-text"; pending: PendingText };
 
 type TimelineGroup = {
   isOwn: boolean;
@@ -1372,13 +1897,30 @@ export function groupTimelineItems(
   messages: Message[],
   pendingFiles: PendingFile[],
   deviceId: string | undefined,
+  pendingTexts: PendingText[] = [],
 ): TimelineGroup[] {
-  const committedIds = new Set(messages.map((message) => message.id));
+  const localPendingIds = new Set([
+    ...pendingFiles.map((pending) => pending.id),
+    ...pendingTexts.map((pending) => pending.id),
+  ]);
+  const committedIds = new Set(
+    messages
+      .filter((message) => message.type !== "file-uploading")
+      .map((message) => message.id),
+  );
   const items: TimelineItem[] = [
-    ...messages.map((message): TimelineItem => ({ kind: "message", message })),
+    ...messages
+      .filter(
+        (message) =>
+          message.type !== "file-uploading" || !localPendingIds.has(message.id),
+      )
+      .map((message): TimelineItem => ({ kind: "message", message })),
     ...pendingFiles
       .filter((pending) => !committedIds.has(pending.id))
-      .map((pending): TimelineItem => ({ kind: "pending", pending })),
+      .map((pending): TimelineItem => ({ kind: "pending-file", pending })),
+    ...pendingTexts
+      .filter((pending) => !committedIds.has(pending.id))
+      .map((pending): TimelineItem => ({ kind: "pending-text", pending })),
   ].sort(
     (left, right) =>
       getTimelineItemCreatedAt(left).localeCompare(
@@ -1388,7 +1930,7 @@ export function groupTimelineItems(
   const groups: TimelineGroup[] = [];
 
   for (const item of items) {
-    const isPending = item.kind === "pending";
+    const isPending = item.kind !== "message";
     const message = item.kind === "message" ? item.message : undefined;
     const isOwn =
       isPending || Boolean(deviceId && message?.senderDeviceId === deviceId);

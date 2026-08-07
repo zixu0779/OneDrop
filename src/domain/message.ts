@@ -25,12 +25,26 @@ export const fileMessageSchema = messageBaseSchema.extend({
   }),
 });
 
+export const uploadingFileMessageSchema = messageBaseSchema.extend({
+  type: z.literal("file-uploading"),
+  pendingAttachment: z.object({
+    name: z.string().min(1),
+    size: z.number().int().nonnegative(),
+    mimeType: z.string().min(1),
+    imageWidth: z.number().int().positive().optional(),
+    imageHeight: z.number().int().positive().optional(),
+    thumbHash: z.string().min(1).max(256).optional(),
+  }),
+});
+
 export const messageSchema = z.discriminatedUnion("type", [
   textMessageSchema,
   fileMessageSchema,
+  uploadingFileMessageSchema,
 ]);
 
 export type Message = z.infer<typeof messageSchema>;
 export type TextMessage = z.infer<typeof textMessageSchema>;
 export type FileMessage = z.infer<typeof fileMessageSchema>;
+export type UploadingFileMessage = z.infer<typeof uploadingFileMessageSchema>;
 export type Attachment = FileMessage["attachment"];

@@ -17,7 +17,12 @@ export type RuntimeRequest =
   | { type: "device/id" }
   | { type: "onedrive/verify-app-folder" }
   | { type: "messages/read-current-month" }
-  | { type: "messages/send-text"; text: string }
+  | {
+      type: "messages/send-text";
+      text: string;
+      messageId?: string;
+      createdAt?: string;
+    }
   | {
       type: "files/send";
       file: {
@@ -39,9 +44,14 @@ export type RuntimeRequest =
       messageId: string;
       createdAt: string;
     }
+  | { type: "files/discard-placeholder"; messageId: string }
   | { type: "files/read-preview"; driveItemId: string; mimeType: string }
   | { type: "files/check-attachment"; driveItemId: string }
-  | { type: "files/open-local"; attachment: Attachment }
+  | {
+      type: "files/open-local";
+      attachment: Attachment;
+      forceDownload?: boolean;
+    }
   | { type: "files/save-as"; attachment: Attachment };
 
 export type AppFolderSummary = {
@@ -79,7 +89,7 @@ export type RuntimeResponse =
         | { state: "sent"; result: MonthReadResult }
         | { state: "upload-failed"; error: string }
         | {
-            state: "commit-failed";
+            state: "reconciling";
             error: string;
             attachment: Attachment;
             createdAt: string;
@@ -87,9 +97,17 @@ export type RuntimeResponse =
     }
   | { ok: true; type: "files/preview"; dataUrl: string }
   | { ok: true; type: "files/availability"; exists: boolean }
+  | { ok: true; type: "files/placeholder-discarded" }
   | {
       ok: true;
       type: "files/local-action";
-      action: "opened" | "downloaded";
+      action: "downloaded";
+      downloadId: number;
+    }
+  | {
+      ok: true;
+      type: "files/local-action";
+      action: "open";
+      downloadId: number;
     }
   | { ok: false; error: string };

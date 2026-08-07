@@ -52,26 +52,6 @@ describe("file transfer failure UI", () => {
     expect(screen.getByRole("button", { name: "Resend" })).toBeInTheDocument();
   });
 
-  it("uses Retry when only metadata commit failed", () => {
-    renderList({
-      id: "commit",
-      createdAt: "2026-08-03T00:00:00.000Z",
-      file,
-      isImage: false,
-      status: "commit-failed",
-      error: "conflict",
-      attachment: {
-        driveItemId: "uploaded",
-        name: "hello.txt",
-        size: 5,
-        mimeType: "text/plain",
-      },
-    });
-
-    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
-    expect(screen.queryByText("Upload failed")).not.toBeInTheDocument();
-  });
-
   it("keeps a failed transfer before a later committed message", () => {
     const pending: PendingFile = {
       id: "01989f5e-7700-7000-8000-000000000001",
@@ -192,11 +172,5 @@ describe("file transfer failure UI", () => {
 });
 
 function renderList(item: PendingFile) {
-  render(
-    <PendingFileList
-      items={[item]}
-      onCommitRetry={vi.fn()}
-      onResend={vi.fn()}
-    />,
-  );
+  render(<PendingFileList items={[item]} onResend={vi.fn()} />);
 }

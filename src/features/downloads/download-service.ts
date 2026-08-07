@@ -10,10 +10,18 @@ import { readAttachmentDataUrl } from "../../infrastructure/onedrive/file-upload
 export async function openOrDownloadAttachment(
   attachment: Attachment,
   saveAs: boolean,
-): Promise<"opened" | "downloaded"> {
-  if (!saveAs) {
+  forceDownload = false,
+): Promise<
+  | { action: "open"; downloadId: number }
+  | { action: "downloaded"; downloadId: number }
+> {
+  if (!saveAs && !forceDownload) {
     const existing = await openExistingDownload(attachment.driveItemId);
-    if (existing) return existing === "opened" ? "opened" : "downloaded";
+    if (existing) {
+      return existing.isDownloading
+        ? { action: "downloaded", downloadId: existing.downloadId }
+        : { action: "open", downloadId: existing.downloadId };
+    }
   }
 
   const dataUrl = await readAttachmentDataUrl(
@@ -34,12 +42,12 @@ export async function openOrDownloadAttachment(
     ...(item?.filename ? { localFilename: item.filename } : {}),
     createdAt: new Date().toISOString(),
   });
-  return "downloaded";
+  return { action: "downloaded", downloadId };
 }
 
 async function openExistingDownload(
   driveItemId: string,
-): Promise<"opened" | "downloading" | false> {
+): Promise<{ downloadId: number; isDownloading: boolean } | false> {
   const record = await getDownloadRecord(driveItemId);
   if (!record) return false;
 
@@ -49,11 +57,12 @@ async function openExistingDownload(
     return false;
   }
 
-  if (item.state === "in_progress") return "downloading";
+  if (item.state === "in_progress") {
+    return { downloadId: record.downloadId, isDownloading: true };
+  }
 
-  await browser.downloads.open(record.downloadId);
   await markDownloadOpened(driveItemId, item.filename);
-  return "opened";
+  return { downloadId: record.downloadId, isDownloading: false };
 }
 
 export function sanitizeDownloadFilename(name: string): string {

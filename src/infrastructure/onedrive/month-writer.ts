@@ -164,6 +164,189 @@ export async function appendMessage(
   );
 }
 
+export async function replaceMessage(
+  month: string,
+  message: Message,
+): Promise<MonthReadResult> {
+  const accessToken = await getCurrentAccessToken();
+  await ensureMessagesFolder(accessToken);
+  let snapshot: MonthSnapshot | undefined = await getCachedMonthSnapshot(month);
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    snapshot ??= await readMonthSnapshot(month, accessToken);
+    if (snapshot.state === "missing") {
+      throw new Error("The registered file message no longer exists.");
+    }
+
+    const chunkPosition = snapshot.chunks.findIndex((chunk) =>
+      chunk.document.messages.some((item) => item.id === message.id),
+    );
+    if (chunkPosition < 0) {
+      throw new Error("The registered file message no longer exists.");
+    }
+
+    const existing = snapshot.document.messages.find(
+      (item) => item.id === message.id,
+    );
+    if (existing?.type === "file") {
+      return {
+        state: "loaded",
+        month,
+        eTag: snapshot.eTag,
+        messages: snapshot.document.messages,
+      };
+    }
+
+    const target = snapshot.chunks[chunkPosition]!;
+    const document = monthDocumentSchema.parse({
+      ...target.document,
+      messages: target.document.messages.map((item) =>
+        item.id === message.id ? message : item,
+      ),
+    });
+    if (serializedBytes(document) > CHUNK_HARD_LIMIT_BYTES) {
+      throw new Error(
+        "The finalized message is too large for its metadata chunk.",
+      );
+    }
+
+    let response: Response;
+    try {
+      response = await updateMonth(
+        accessToken,
+        target.itemId,
+        target.eTag,
+        JSON.stringify(document),
+      );
+    } catch (error) {
+      await deleteMonthCache(month);
+      throw error;
+    }
+
+    if (response.status === 409 || response.status === 412) {
+      await deleteMonthCache(month);
+      snapshot = undefined;
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(
+        `Monthly message update failed: ${await readGraphError(response)}`,
+      );
+    }
+
+    const item = writtenItemSchema.parse(await response.json());
+    const writtenChunk = {
+      ...target,
+      itemId: item.id,
+      eTag: item.eTag,
+      document,
+    };
+    const nextChunks = snapshot.chunks.map((chunk, index) =>
+      index === chunkPosition ? writtenChunk : chunk,
+    );
+    const aggregateDocument = monthDocumentSchema.parse({
+      ...snapshot.document,
+      messages: snapshot.document.messages.map((item) =>
+        item.id === message.id ? message : item,
+      ),
+    });
+    await putMonthCache({
+      month,
+      itemId: item.id,
+      eTag: item.eTag,
+      document: aggregateDocument,
+      chunks: nextChunks,
+    });
+    return {
+      state: "loaded",
+      month,
+      eTag: item.eTag,
+      messages: aggregateDocument.messages,
+    };
+  }
+
+  throw new Error(
+    "The monthly message document changed repeatedly. Try sending again.",
+  );
+}
+
+export async function removeMessage(
+  month: string,
+  messageId: string,
+): Promise<void> {
+  const accessToken = await getCurrentAccessToken();
+  let snapshot: MonthSnapshot | undefined = await getCachedMonthSnapshot(month);
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    snapshot ??= await readMonthSnapshot(month, accessToken);
+    if (snapshot.state === "missing") return;
+    const chunkPosition = snapshot.chunks.findIndex((chunk) =>
+      chunk.document.messages.some(
+        (message) =>
+          message.id === messageId && message.type === "file-uploading",
+      ),
+    );
+    if (chunkPosition < 0) return;
+    const target = snapshot.chunks[chunkPosition]!;
+    const document = monthDocumentSchema.parse({
+      ...target.document,
+      messages: target.document.messages.filter(
+        (message) =>
+          message.id !== messageId || message.type !== "file-uploading",
+      ),
+    });
+
+    let response: Response;
+    try {
+      response = await updateMonth(
+        accessToken,
+        target.itemId,
+        target.eTag,
+        JSON.stringify(document),
+      );
+    } catch (error) {
+      await deleteMonthCache(month);
+      throw error;
+    }
+    if (response.status === 409 || response.status === 412) {
+      await deleteMonthCache(month);
+      snapshot = undefined;
+      continue;
+    }
+    if (!response.ok) {
+      throw new Error(
+        `Monthly placeholder removal failed: ${await readGraphError(response)}`,
+      );
+    }
+    const item = writtenItemSchema.parse(await response.json());
+    const writtenChunk = {
+      ...target,
+      itemId: item.id,
+      eTag: item.eTag,
+      document,
+    };
+    const nextChunks = snapshot.chunks.map((chunk, index) =>
+      index === chunkPosition ? writtenChunk : chunk,
+    );
+    const aggregateDocument = monthDocumentSchema.parse({
+      ...snapshot.document,
+      messages: snapshot.document.messages.filter(
+        (message) =>
+          message.id !== messageId || message.type !== "file-uploading",
+      ),
+    });
+    await putMonthCache({
+      month,
+      itemId: item.id,
+      eTag: item.eTag,
+      document: aggregateDocument,
+      chunks: nextChunks,
+    });
+    return;
+  }
+  throw new Error("The placeholder changed repeatedly. Try again later.");
+}
+
 export function mergeTextMessage(
   month: string,
   existingMessages: Message[],

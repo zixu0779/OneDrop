@@ -1,9 +1,16 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../src/infrastructure/indexed-db/downloads", () => ({
+  deleteDownloadRecord: vi.fn().mockResolvedValue(undefined),
+  getDownloadRecord: vi.fn().mockResolvedValue(undefined),
+  markDownloadOpened: vi.fn().mockResolvedValue(1),
+}));
+
 import {
   FileAttachment,
   ImageAttachment,
+  CommittedMessageItem,
   PendingFileList,
   groupTimelineItems,
   type PendingFile,
@@ -136,6 +143,56 @@ describe("file transfer failure UI", () => {
 
     expect(
       screen.getByLabelText("Checking file availability"),
+    ).toBeInTheDocument();
+  });
+
+  it("reveals normal attachment actions after availability checking finishes", async () => {
+    let resolveCheck: ((value: unknown) => void) | undefined;
+    vi.stubGlobal("browser", {
+      downloads: { search: vi.fn() },
+      runtime: {
+        sendMessage: vi.fn().mockImplementation(
+          () =>
+            new Promise((resolve) => {
+              resolveCheck = resolve;
+            }),
+        ),
+      },
+    });
+
+    render(
+      <CommittedMessageItem
+        checkVersion={0}
+        isOwn
+        message={{
+          schemaVersion: 1,
+          id: "01989f5e-7700-7000-8000-000000000050",
+          type: "file",
+          createdAt: "2026-08-03T00:00:00.000Z",
+          attachment: {
+            driveItemId: "available-file",
+            name: "available.pdf",
+            size: 1024,
+            mimeType: "application/pdf",
+          },
+        }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "More message actions" }),
+    ).not.toBeInTheDocument();
+    resolveCheck?.({
+      ok: true,
+      type: "files/availability",
+      exists: true,
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "More message actions" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Download file" }),
     ).toBeInTheDocument();
   });
 

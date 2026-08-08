@@ -917,6 +917,218 @@ body {
   height: 16px;
 }
 
+.corrupt-record-notice {
+  position: relative;
+  z-index: 18;
+  margin: 0 12px 8px;
+  padding: 10px 12px;
+  border: 1px solid rgb(239 177 62 / 42%);
+  border-radius: 12px;
+  background: #433218;
+  color: #e8e3d9;
+  font-size: 13px;
+}
+
+.notification-stack {
+  position: relative;
+  z-index: 18;
+  margin: 0 12px 8px;
+  padding-bottom: 6px;
+  overflow: hidden;
+}
+
+.notification-stack .corrupt-record-notice {
+  margin: 0;
+}
+
+.notification-stack > .corrupt-record-notice:first-child {
+  z-index: 3;
+  animation: notification-promote 180ms ease-out;
+}
+
+.notification-stack > .corrupt-record-notice:nth-child(2) {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  pointer-events: none;
+  transform: translateY(3px) scale(0.99);
+  transform-origin: top center;
+}
+
+.notification-stack > .corrupt-record-notice:nth-child(n + 3) {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  pointer-events: none;
+  transform: translateY(6px) scale(0.98);
+  transform-origin: top center;
+}
+
+@keyframes notification-promote {
+  from {
+    opacity: 0.7;
+    transform: translateY(5px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.notice-processing {
+  min-height: 92px;
+}
+
+.notice-processing-overlay {
+  position: absolute;
+  z-index: 4;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: inherit;
+  color: #75aef8;
+  background: rgb(32 39 49 / 82%);
+  backdrop-filter: blur(2px);
+}
+
+.notice-processing-overlay .loading-spinner {
+  width: 22px;
+  height: 22px;
+  border-width: 2px;
+}
+
+.corrupt-record-notice p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+.corrupt-record-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #75aef8;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.message-primary-actions-ready {
+  animation: message-actions-ready 180ms ease-out;
+}
+
+.operation-dialog-backdrop {
+  position: fixed;
+  z-index: 100;
+  inset: 0;
+  display: grid;
+  padding: 24px;
+  place-items: center;
+  background: rgb(5 8 13 / 58%);
+  backdrop-filter: blur(2px);
+}
+
+.operation-dialog {
+  width: min(290px, 100%);
+  padding: 18px;
+  border: 1px solid rgb(142 152 167 / 25%);
+  border-radius: 14px;
+  color: #e8edf5;
+  background: #202731;
+  box-shadow: 0 18px 46px rgb(0 0 0 / 38%);
+}
+
+.operation-dialog p {
+  margin: 0 0 16px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.operation-dialog button {
+  display: block;
+  min-width: 72px;
+  margin: 0 auto;
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 8px;
+  color: white;
+  background: #3578d4;
+  cursor: pointer;
+}
+
+@keyframes message-actions-ready {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.corrupt-record-actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.corrupt-record-actions button {
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: rgb(255 255 255 / 10%);
+  color: inherit;
+  cursor: pointer;
+}
+
+.corrupt-record-actions button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 17%);
+}
+
+.corrupt-record-actions .corrupt-record-delete {
+  color: #ff8c84;
+}
+
+.message-conflict-notice ul {
+  display: grid;
+  margin: 7px 0 0;
+  padding: 0;
+  gap: 3px;
+  list-style: none;
+}
+
+.conflict-record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  gap: 6px;
+}
+
+.conflict-record-actions button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  color: inherit;
+  background: rgb(255 255 255 / 10%);
+  cursor: pointer;
+  flex: 1 1 112px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.conflict-record-actions button:last-child {
+  flex-basis: 158px;
+  text-align: center;
+}
+
+.conflict-record-actions button:hover:not(:disabled) {
+  background: rgb(255 255 255 / 17%);
+}
+
 .message-attachment-action.attachment-action-working::before {
   position: absolute;
   z-index: 11;

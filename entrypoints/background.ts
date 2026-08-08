@@ -25,9 +25,16 @@ import {
 import {
   appendMessage,
   removeMessage,
+  resolveMessageConflict,
   replaceMessage,
 } from "../src/infrastructure/onedrive/month-writer";
 import { openOrDownloadAttachment } from "../src/features/downloads/download-service";
+import {
+  deleteCorruptMonthFile,
+  getCorruptMonthFileFolderUrl,
+} from "../src/infrastructure/onedrive/corrupt-month-file";
+import { deleteMonthCache } from "../src/infrastructure/indexed-db/sync-cache";
+import { rebuildTestData } from "../src/dev/rebuild-test-data";
 
 export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(() => {
@@ -54,6 +61,12 @@ export default defineBackground(() => {
               type: "device/id",
               deviceId: await getOrCreateDeviceId(),
             };
+          case "dev/rebuild-test-data":
+            if (!import.meta.env.DEV) {
+              throw new Error("Test data rebuilding is development-only.");
+            }
+            await rebuildTestData();
+            return { ok: true, type: "dev/test-data-rebuilt" };
           case "onedrive/verify-app-folder":
             return {
               ok: true,
@@ -65,6 +78,28 @@ export default defineBackground(() => {
               ok: true,
               type: "messages/month",
               result: await readMonthDocument(getUtcMonth()),
+            };
+          case "messages/delete-corrupt-file":
+            await deleteCorruptMonthFile(request.itemId);
+            await deleteMonthCache(getUtcMonth());
+            return { ok: true, type: "messages/corrupt-file-deleted" };
+          case "messages/open-corrupt-file-location":
+            await browser.tabs.create({
+              url: await getCorruptMonthFileFolderUrl(request.itemId),
+            });
+            return {
+              ok: true,
+              type: "messages/corrupt-file-location-opened",
+            };
+          case "messages/resolve-conflict":
+            return {
+              ok: true,
+              type: "messages/conflict-resolved",
+              result: await resolveMessageConflict(
+                getUtcMonth(),
+                request.messageId,
+                request.keepItemId,
+              ),
             };
           case "messages/send-text": {
             const message = createTextMessage(

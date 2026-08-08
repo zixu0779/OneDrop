@@ -15,9 +15,15 @@ import {
 } from "../indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
+  readMonthDocument,
   readMonthSnapshot,
   type MonthSnapshot,
 } from "./month-reader";
+import {
+  getMessageLines,
+  serializedDocumentBytes,
+  serializeMonthDocument,
+} from "./month-serialization";
 
 const MAX_ATTEMPTS = 5;
 export const CHUNK_SOFT_LIMIT_BYTES = 256 * 1024;
@@ -87,7 +93,7 @@ export async function appendMessage(
     if (chunkIndex > 9_999) {
       throw new Error("The current month reached OneDrop's chunk count limit.");
     }
-    const body = JSON.stringify(document);
+    const body = serializeMonthDocument(document);
 
     let response: Response;
 
@@ -135,6 +141,7 @@ export async function appendMessage(
       itemId: item.id,
       eTag: item.eTag,
       document,
+      messageLines: getMessageLines(body, document),
     };
     const nextChunks = shouldCreateChunk
       ? [...chunks, writtenChunk]
@@ -209,6 +216,7 @@ export async function replaceMessage(
         "The finalized message is too large for its metadata chunk.",
       );
     }
+    const body = serializeMonthDocument(document);
 
     let response: Response;
     try {
@@ -216,7 +224,7 @@ export async function replaceMessage(
         accessToken,
         target.itemId,
         target.eTag,
-        JSON.stringify(document),
+        body,
       );
     } catch (error) {
       await deleteMonthCache(month);
@@ -240,6 +248,7 @@ export async function replaceMessage(
       itemId: item.id,
       eTag: item.eTag,
       document,
+      messageLines: getMessageLines(body, document),
     };
     const nextChunks = snapshot.chunks.map((chunk, index) =>
       index === chunkPosition ? writtenChunk : chunk,
@@ -295,6 +304,7 @@ export async function removeMessage(
           message.id !== messageId || message.type !== "file-uploading",
       ),
     });
+    const body = serializeMonthDocument(document);
 
     let response: Response;
     try {
@@ -302,7 +312,7 @@ export async function removeMessage(
         accessToken,
         target.itemId,
         target.eTag,
-        JSON.stringify(document),
+        body,
       );
     } catch (error) {
       await deleteMonthCache(month);
@@ -324,6 +334,7 @@ export async function removeMessage(
       itemId: item.id,
       eTag: item.eTag,
       document,
+      messageLines: getMessageLines(body, document),
     };
     const nextChunks = snapshot.chunks.map((chunk, index) =>
       index === chunkPosition ? writtenChunk : chunk,
@@ -345,6 +356,60 @@ export async function removeMessage(
     return;
   }
   throw new Error("The placeholder changed repeatedly. Try again later.");
+}
+
+export async function resolveMessageConflict(
+  month: string,
+  messageId: string,
+  keepItemId: string,
+): Promise<MonthReadResult> {
+  const accessToken = await getCurrentAccessToken();
+  const snapshot = await readMonthSnapshot(month, accessToken, true);
+  if (snapshot.state === "missing") {
+    throw new Error("The conflicting message no longer exists.");
+  }
+  const conflict = snapshot.messageConflicts?.find(
+    (item) => item.messageId === messageId,
+  );
+  if (!conflict) return readMonthDocument(month);
+  if (!conflict.versions.some((version) => version.itemId === keepItemId)) {
+    throw new Error("The selected message version no longer exists.");
+  }
+
+  for (const version of conflict.versions) {
+    if (version.itemId === keepItemId) continue;
+    const target = snapshot.chunks.find(
+      (chunk) => chunk.itemId === version.itemId,
+    );
+    if (!target) {
+      throw new Error("A conflicting record file changed. Check again.");
+    }
+    const document = monthDocumentSchema.parse({
+      ...target.document,
+      messages: target.document.messages.filter(
+        (message) => message.id !== messageId,
+      ),
+    });
+    const body = serializeMonthDocument(document);
+    const response = await updateMonth(
+      accessToken,
+      target.itemId,
+      target.eTag,
+      body,
+    );
+    if (response.status === 409 || response.status === 412) {
+      await deleteMonthCache(month);
+      throw new Error("A conflicting record file changed. Check again.");
+    }
+    if (!response.ok) {
+      throw new Error(
+        `Message conflict resolution failed: ${await readGraphError(response)}`,
+      );
+    }
+  }
+
+  await deleteMonthCache(month);
+  return readMonthDocument(month);
 }
 
 export function mergeTextMessage(
@@ -508,7 +573,7 @@ function createChunk(
 function serializedBytes(
   document: z.infer<typeof monthDocumentSchema>,
 ): number {
-  return new TextEncoder().encode(JSON.stringify(document)).byteLength;
+  return serializedDocumentBytes(document);
 }
 
 function updateMonth(

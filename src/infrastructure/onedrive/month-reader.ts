@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 import { oneDropConfig } from "../../config/onedrop";
-import type { MonthReadResult } from "../../contracts/runtime-messages";
+import type {
+  CorruptMonthFile,
+  MessageConflict,
+  MonthReadResult,
+} from "../../contracts/runtime-messages";
 import {
   monthDocumentSchema,
   type MonthDocument,
@@ -15,6 +19,7 @@ import {
   getMonthCache,
   putMonthCache,
 } from "../indexed-db/sync-cache";
+import { getMessageLines } from "./month-serialization";
 
 const monthPattern = /^\d{4}-\d{2}$/u;
 const chunkNamePattern = /^(\d{4})\.json$/u;
@@ -29,8 +34,10 @@ const childrenPageSchema = z.object({
   "@odata.nextLink": z.string().url().optional(),
 });
 
+class DamagedMonthDocumentError extends Error {}
+
 export type MonthSnapshot =
-  | { state: "missing"; month: string }
+  | { state: "missing"; month: string; corruptFiles?: CorruptMonthFile[] }
   | {
       state: "loaded";
       month: string;
@@ -38,13 +45,15 @@ export type MonthSnapshot =
       eTag: string;
       document: MonthDocument;
       chunks: CachedChunk[];
+      corruptFiles?: CorruptMonthFile[];
+      messageConflicts?: MessageConflict[];
     };
 
 export async function readMonthDocument(
   month: string,
 ): Promise<MonthReadResult> {
   const accessToken = await getCurrentAccessToken();
-  const snapshot = await readMonthSnapshot(month, accessToken);
+  const snapshot = await readMonthSnapshot(month, accessToken, true);
 
   return snapshot.state === "missing"
     ? snapshot
@@ -53,25 +62,49 @@ export async function readMonthDocument(
         month,
         eTag: snapshot.eTag,
         messages: snapshot.document.messages,
+        ...((snapshot.corruptFiles?.length ?? 0) > 0
+          ? { corruptFiles: snapshot.corruptFiles }
+          : {}),
+        ...((snapshot.messageConflicts?.length ?? 0) > 0
+          ? { messageConflicts: snapshot.messageConflicts }
+          : {}),
       };
 }
 
 export async function readMonthSnapshot(
   month: string,
   accessToken: string,
+  allowCorruptFiles = false,
 ): Promise<MonthSnapshot> {
   assertMonth(month);
   const cached = await getCachedMonthSnapshot(month);
-  const chunks = await readChunks(month, accessToken, cached?.chunks ?? []);
+  const { chunks, corruptFiles } = await readChunks(
+    month,
+    accessToken,
+    cached?.chunks ?? [],
+  );
+
+  if (!allowCorruptFiles && corruptFiles.length > 0) {
+    throw new Error(
+      `OneDrive contains a damaged monthly record file: ${corruptFiles[0]!.name}.`,
+    );
+  }
 
   if (chunks.length === 0) {
     await deleteMonthCache(month);
-    return { state: "missing", month };
+    return {
+      state: "missing",
+      month,
+      ...(corruptFiles.length > 0 ? { corruptFiles } : {}),
+    };
   }
 
-  const messages = mergeMessages(
-    chunks.flatMap((chunk) => chunk.document.messages),
-  );
+  const { messages, messageConflicts } = mergeMessages(chunks);
+  if (!allowCorruptFiles && messageConflicts.length > 0) {
+    throw new Error(
+      `OneDrive contains conflicting versions of message ${messageConflicts[0]!.messageId}.`,
+    );
+  }
   const active = chunks.at(-1)!;
   const document = monthDocumentSchema.parse({
     schemaVersion: 1,
@@ -85,6 +118,8 @@ export async function readMonthSnapshot(
     eTag: active.eTag,
     document,
     chunks,
+    corruptFiles,
+    messageConflicts,
   };
 
   await putMonthCache(snapshot);
@@ -116,7 +151,10 @@ export async function getCachedMonthSnapshot(
     itemId: cached.itemId,
     eTag: cached.eTag,
     document: document.data,
-    chunks: chunks.data,
+    chunks: chunks.data.map(({ messageLines, ...chunk }) => ({
+      ...chunk,
+      ...(messageLines ? { messageLines } : {}),
+    })),
   };
 }
 
@@ -125,13 +163,14 @@ const cachedChunkSchema = z.object({
   itemId: z.string().min(1),
   eTag: z.string().min(1),
   document: monthDocumentSchema,
+  messageLines: z.record(z.string(), z.number().int().positive()).optional(),
 });
 
 async function readChunks(
   month: string,
   accessToken: string,
   cachedChunks: CachedChunk[],
-): Promise<CachedChunk[]> {
+): Promise<{ chunks: CachedChunk[]; corruptFiles: CorruptMonthFile[] }> {
   let url: string | undefined =
     `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}:/children?$select=id,name,eTag&$top=200`;
   const items: z.infer<typeof driveItemSchema>[] = [];
@@ -140,7 +179,7 @@ async function readChunks(
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
-    if (response.status === 404) return [];
+    if (response.status === 404) return { chunks: [], corruptFiles: [] };
     if (!response.ok) {
       throw new Error(
         `Monthly chunk listing failed: ${await readGraphError(response)}`,
@@ -158,27 +197,42 @@ async function readChunks(
     cachedChunks.map((chunk) => [chunk.itemId, chunk]),
   );
   const chunks: CachedChunk[] = [];
+  const corruptFiles: CorruptMonthFile[] = [];
 
   for (const item of items) {
     const match = item.name?.match(chunkNamePattern);
     if (!match) continue;
     const index = Number(match[1]);
     const cached = cachedById.get(item.id);
-    const document =
-      cached?.eTag === item.eTag
-        ? cached.document
-        : await downloadDocument(item.id, month, accessToken);
-    chunks.push({ index, itemId: item.id, eTag: item.eTag, document });
+    try {
+      const downloaded =
+        cached?.eTag === item.eTag && cached.messageLines
+          ? { document: cached.document, messageLines: cached.messageLines }
+          : await downloadDocument(item.id, month, accessToken);
+      chunks.push({
+        index,
+        itemId: item.id,
+        eTag: item.eTag,
+        document: downloaded.document,
+        messageLines: downloaded.messageLines,
+      });
+    } catch (error) {
+      if (!(error instanceof DamagedMonthDocumentError)) throw error;
+      corruptFiles.push({ itemId: item.id, name: item.name ?? "Unknown file" });
+    }
   }
 
-  return chunks.sort((left, right) => left.index - right.index);
+  return {
+    chunks: chunks.sort((left, right) => left.index - right.index),
+    corruptFiles,
+  };
 }
 
 async function downloadDocument(
   itemId: string,
   month: string,
   accessToken: string,
-): Promise<MonthDocument> {
+): Promise<{ document: MonthDocument; messageLines: Record<string, number> }> {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(itemId)}/content`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -188,31 +242,80 @@ async function downloadDocument(
       `Monthly message download failed: ${await readGraphError(response)}`,
     );
   }
-  const document = monthDocumentSchema.parse(await response.json());
+  let document: MonthDocument;
+  let serialized: string;
+  try {
+    serialized = await response.text();
+    document = monthDocumentSchema.parse(JSON.parse(serialized));
+  } catch (error) {
+    throw new DamagedMonthDocumentError("Invalid monthly message document.", {
+      cause: error,
+    });
+  }
   if (document.month !== month) {
-    throw new Error(
+    throw new DamagedMonthDocumentError(
       `Monthly message document mismatch: expected ${month}, received ${document.month}.`,
     );
   }
-  return document;
+  return { document, messageLines: getMessageLines(serialized, document) };
 }
 
-function mergeMessages(messages: Message[]): Message[] {
-  const byId = new Map<string, Message>();
-  for (const message of messages) {
-    const existing = byId.get(message.id);
-    if (existing && JSON.stringify(existing) !== JSON.stringify(message)) {
-      throw new Error(
-        `OneDrive contains conflicting message ID ${message.id}.`,
-      );
-    }
-    byId.set(message.id, message);
+function mergeMessages(chunks: CachedChunk[]): {
+  messages: Message[];
+  messageConflicts: MessageConflict[];
+} {
+  const byId = new Map<
+    string,
+    { message: Message; itemId: string; name: string; line: number }
+  >();
+  const conflictsById = new Map<string, MessageConflict>();
+  for (const chunk of chunks) {
+    const name = `${chunk.index.toString().padStart(4, "0")}.json`;
+    chunk.document.messages.forEach((message, index) => {
+      const source = {
+        message,
+        itemId: chunk.itemId,
+        name,
+        line: chunk.messageLines?.[message.id] ?? index + 1,
+      };
+      const existing = byId.get(message.id);
+      if (!existing) {
+        byId.set(message.id, source);
+        return;
+      }
+      if (JSON.stringify(existing.message) === JSON.stringify(message)) return;
+      const conflict = conflictsById.get(message.id) ?? {
+        messageId: message.id,
+        versions: [
+          {
+            itemId: existing.itemId,
+            name: existing.name,
+            line: existing.line,
+          },
+        ],
+      };
+      if (
+        !conflict.versions.some((version) => version.itemId === chunk.itemId)
+      ) {
+        conflict.versions.push({
+          itemId: chunk.itemId,
+          name,
+          line: chunk.messageLines?.[message.id] ?? index + 1,
+        });
+      }
+      conflictsById.set(message.id, conflict);
+    });
   }
-  return [...byId.values()].sort(
-    (left, right) =>
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.id.localeCompare(right.id),
-  );
+  return {
+    messages: [...byId.values()]
+      .map(({ message }) => message)
+      .sort(
+        (left, right) =>
+          left.createdAt.localeCompare(right.createdAt) ||
+          left.id.localeCompare(right.id),
+      ),
+    messageConflicts: [...conflictsById.values()],
+  };
 }
 
 function assertMonth(month: string): void {

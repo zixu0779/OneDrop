@@ -8,6 +8,7 @@ export type CachedChunk = {
   itemId: string;
   eTag: string;
   document: MonthDocument;
+  messageLines?: Record<string, number>;
 };
 
 export type MonthCacheRecord = {

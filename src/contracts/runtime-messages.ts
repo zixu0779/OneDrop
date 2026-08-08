@@ -16,7 +16,15 @@ export type RuntimeRequest =
   | { type: "auth/sign-out" }
   | { type: "device/id" }
   | { type: "onedrive/verify-app-folder" }
+  | { type: "dev/rebuild-test-data" }
   | { type: "messages/read-current-month" }
+  | { type: "messages/delete-corrupt-file"; itemId: string }
+  | { type: "messages/open-corrupt-file-location"; itemId: string }
+  | {
+      type: "messages/resolve-conflict";
+      messageId: string;
+      keepItemId: string;
+    }
   | {
       type: "messages/send-text";
       text: string;
@@ -60,13 +68,31 @@ export type AppFolderSummary = {
   webUrl?: string;
 };
 
+export type CorruptMonthFile = { itemId: string; name: string };
+export type MessageConflictVersion = {
+  itemId: string;
+  name: string;
+  line: number;
+};
+export type MessageConflict = {
+  messageId: string;
+  versions: MessageConflictVersion[];
+};
+
 export type MonthReadResult =
-  | { state: "missing"; month: string }
+  | {
+      state: "missing";
+      month: string;
+      corruptFiles?: CorruptMonthFile[];
+      messageConflicts?: MessageConflict[];
+    }
   | {
       state: "loaded";
       month: string;
       eTag: string;
       messages: Message[];
+      corruptFiles?: CorruptMonthFile[];
+      messageConflicts?: MessageConflict[];
     };
 
 export type RuntimeResponse =
@@ -77,11 +103,15 @@ export type RuntimeResponse =
       type: "onedrive/app-folder";
       appFolder: AppFolderSummary;
     }
+  | { ok: true; type: "dev/test-data-rebuilt" }
   | {
       ok: true;
       type: "messages/month";
       result: MonthReadResult;
     }
+  | { ok: true; type: "messages/corrupt-file-deleted" }
+  | { ok: true; type: "messages/corrupt-file-location-opened" }
+  | { ok: true; type: "messages/conflict-resolved"; result: MonthReadResult }
   | {
       ok: true;
       type: "files/transfer";

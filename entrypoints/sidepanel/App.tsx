@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import { rgbaToThumbHash, thumbHashToDataURL } from "thumbhash";
 
 import type {
@@ -101,6 +102,10 @@ export function App() {
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [pendingTexts, setPendingTexts] = useState<PendingText[]>([]);
   const [attachmentCheckVersion, setAttachmentCheckVersion] = useState(0);
+  const [processingNoticeKey, setProcessingNoticeKey] = useState<string>();
+  const [unresponsiveUploadIds, setUnresponsiveUploadIds] = useState<
+    Set<string>
+  >(new Set());
   const [scrollRevision, setScrollRevision] = useState(0);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -174,6 +179,17 @@ export function App() {
         message.type === "file-uploading" &&
         message.senderDeviceId !== deviceId,
     );
+  const remoteUploadingIds =
+    monthResult?.state === "loaded"
+      ? monthResult.messages
+          .filter(
+            (message) =>
+              message.type === "file-uploading" &&
+              message.senderDeviceId !== deviceId,
+          )
+          .map((message) => message.id)
+      : [];
+  const remoteUploadingIdentity = remoteUploadingIds.join("|");
   const committingIdentity = pendingFiles
     .filter((pending) => pending.status === "committing" && pending.attachment)
     .map((pending) => pending.id)
@@ -214,7 +230,14 @@ export function App() {
           // scheduled check or an explicit refresh will try again.
         }
         if (cancelled) return;
-        if (elapsed >= 120_000) return;
+        if (elapsed >= 120_000) {
+          setUnresponsiveUploadIds((current) => {
+            const next = new Set(current);
+            for (const id of remoteUploadingIds) next.add(id);
+            return next;
+          });
+          return;
+        }
         intervalIndex = Math.min(intervalIndex + 1, intervals.length - 1);
         schedule();
       }, delayMs);
@@ -225,7 +248,20 @@ export function App() {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [hasUploadingMessages, isPanelVisible, status?.state]);
+  }, [
+    hasUploadingMessages,
+    isPanelVisible,
+    remoteUploadingIdentity,
+    status?.state,
+  ]);
+
+  useEffect(() => {
+    const active = new Set(remoteUploadingIds);
+    setUnresponsiveUploadIds((current) => {
+      const next = new Set([...current].filter((id) => active.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [remoteUploadingIdentity]);
 
   useEffect(() => {
     const reconcileWhenOnline = () => {
@@ -403,6 +439,107 @@ export function App() {
       );
     } finally {
       setIsWorking(false);
+    }
+  }
+
+  async function rebuildDevelopmentTestData() {
+    setIsWorking(true);
+    setError(undefined);
+    setIsAccountOpen(false);
+    try {
+      const response = await sendRequest({ type: "dev/rebuild-test-data" });
+      if (!response.ok || response.type !== "dev/test-data-rebuilt") {
+        throw new Error("OneDrop could not rebuild the test data.");
+      }
+      await loadOneDriveState();
+    } catch (cause) {
+      setError(getClientError(cause));
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
+  async function readCurrentMonth(): Promise<MonthReadResult> {
+    const response = await sendRequest({ type: "messages/read-current-month" });
+    if (!response.ok || response.type !== "messages/month") {
+      throw new Error("OneDrop could not reread the record file.");
+    }
+    return response.result;
+  }
+
+  async function retryNotice(noticeKey: string) {
+    setIsWorking(true);
+    setProcessingNoticeKey(noticeKey);
+    setError(undefined);
+    try {
+      setMonthResult(await readCurrentMonth());
+    } catch (cause) {
+      setError(getClientError(cause));
+    } finally {
+      setIsWorking(false);
+      setProcessingNoticeKey(undefined);
+    }
+  }
+
+  async function deleteCorruptFile(itemId: string) {
+    const noticeKey = `corrupt:${itemId}`;
+    setIsWorking(true);
+    setProcessingNoticeKey(noticeKey);
+    setError(undefined);
+    try {
+      const deleted = await sendRequest({
+        type: "messages/delete-corrupt-file",
+        itemId,
+      });
+      if (!deleted.ok || deleted.type !== "messages/corrupt-file-deleted") {
+        throw new Error("OneDrop could not delete the damaged record file.");
+      }
+      setMonthResult(await readCurrentMonth());
+    } catch (cause) {
+      setError(getClientError(cause));
+    } finally {
+      setIsWorking(false);
+      setProcessingNoticeKey(undefined);
+    }
+  }
+
+  async function openCorruptFileLocation(itemId: string) {
+    try {
+      const response = await sendRequest({
+        type: "messages/open-corrupt-file-location",
+        itemId,
+      });
+      if (
+        !response.ok ||
+        response.type !== "messages/corrupt-file-location-opened"
+      ) {
+        throw new Error("OneDrop could not open the record location.");
+      }
+    } catch (cause) {
+      setError(getClientError(cause));
+    }
+  }
+
+  async function resolveConflict(messageId: string, keepItemId: string) {
+    const noticeKey = `conflict:${messageId}`;
+    setIsWorking(true);
+    setProcessingNoticeKey(noticeKey);
+    setError(undefined);
+    try {
+      const response = await sendRequest({
+        type: "messages/resolve-conflict",
+        messageId,
+        keepItemId,
+      });
+      if (!response.ok || response.type !== "messages/conflict-resolved") {
+        throw new Error("OneDrop could not resolve the message conflict.");
+      }
+      setMonthResult(response.result);
+    } catch (cause) {
+      setError(getClientError(cause));
+    } finally {
+      setIsWorking(false);
+      setProcessingNoticeKey(undefined);
     }
   }
 
@@ -872,9 +1009,122 @@ export function App() {
                 <button className="account-popover-add" disabled type="button">
                   Add account — coming later
                 </button>
+                {import.meta.env.DEV ? (
+                  <button
+                    className="account-popover-add"
+                    disabled={isWorking}
+                    onClick={() => void rebuildDevelopmentTestData()}
+                    type="button"
+                  >
+                    Rebuild test data
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </section>
+          {(monthResult?.corruptFiles?.length ?? 0) +
+            (monthResult?.messageConflicts?.length ?? 0) >
+          0 ? (
+            <div className="notification-stack">
+              {monthResult?.corruptFiles?.map((file) => {
+                const noticeKey = `corrupt:${file.itemId}`;
+                const isProcessing = processingNoticeKey === noticeKey;
+                return (
+                  <aside
+                    className={`corrupt-record-notice${isProcessing ? " notice-processing" : ""}`}
+                    key={noticeKey}
+                  >
+                    <p>
+                      Message record (
+                      <button
+                        className="corrupt-record-link"
+                        onClick={() =>
+                          void openCorruptFileLocation(file.itemId)
+                        }
+                        type="button"
+                      >
+                        <span aria-hidden="true">↗</span>
+                        {file.name}
+                      </button>
+                      ) is damaged. Other messages are still available.
+                    </p>
+                    <div className="corrupt-record-actions">
+                      <button
+                        disabled={isWorking}
+                        onClick={() => void retryNotice(noticeKey)}
+                        type="button"
+                      >
+                        I&apos;ve fixed it
+                      </button>
+                      <button
+                        className="corrupt-record-delete"
+                        disabled={isWorking}
+                        onClick={() => void deleteCorruptFile(file.itemId)}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    {isProcessing ? <NoticeProcessingOverlay /> : null}
+                  </aside>
+                );
+              })}
+              {monthResult?.messageConflicts?.map((conflict) => {
+                const noticeKey = `conflict:${conflict.messageId}`;
+                const isProcessing = processingNoticeKey === noticeKey;
+                return (
+                  <aside
+                    className={`corrupt-record-notice message-conflict-notice${isProcessing ? " notice-processing" : ""}`}
+                    key={noticeKey}
+                  >
+                    <p>A message has conflicting versions:</p>
+                    <ul>
+                      {conflict.versions.map((version) => (
+                        <li key={version.itemId}>
+                          <button
+                            className="corrupt-record-link"
+                            onClick={() =>
+                              void openCorruptFileLocation(version.itemId)
+                            }
+                            type="button"
+                          >
+                            <span aria-hidden="true">↗</span>
+                            {version.name}
+                          </button>{" "}
+                          — line {version.line}
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="conflict-record-actions">
+                      {conflict.versions.map((version) => (
+                        <button
+                          disabled={isWorking}
+                          key={version.itemId}
+                          onClick={() =>
+                            void resolveConflict(
+                              conflict.messageId,
+                              version.itemId,
+                            )
+                          }
+                          type="button"
+                        >
+                          Keep {version.name}
+                        </button>
+                      ))}
+                      <button
+                        disabled={isWorking}
+                        onClick={() => void retryNotice(noticeKey)}
+                        type="button"
+                      >
+                        I&apos;ve fixed it — check again
+                      </button>
+                    </div>
+                    {isProcessing ? <NoticeProcessingOverlay /> : null}
+                  </aside>
+                );
+              })}
+            </div>
+          ) : null}
           <section className="conversation" aria-label="OneDrop messages">
             {monthResult ? (
               <>
@@ -892,6 +1142,7 @@ export function App() {
                       pendingFiles={pendingFiles}
                       pendingTexts={pendingTexts}
                       result={monthResult}
+                      unresponsiveUploadIds={unresponsiveUploadIds}
                       onResend={(item) => void uploadPendingFile(item)}
                       onTextResend={(item) => void sendPendingText(item)}
                     />
@@ -1155,6 +1406,7 @@ function MonthResult({
   pendingFiles,
   pendingTexts,
   result,
+  unresponsiveUploadIds,
   onResend,
   onTextResend,
 }: {
@@ -1163,6 +1415,7 @@ function MonthResult({
   pendingFiles: PendingFile[];
   pendingTexts: PendingText[];
   result: MonthReadResult;
+  unresponsiveUploadIds: Set<string>;
   onResend: (item: PendingFile) => void;
   onTextResend: (item: PendingText) => void;
 }) {
@@ -1206,6 +1459,12 @@ function MonthResult({
                       isOwn={group.isOwn}
                       key={item.message.id}
                       message={item.message}
+                      unresponsive={
+                        unresponsiveUploadIds.has(item.message.id) ||
+                        Date.now() -
+                          new Date(item.message.createdAt).getTime() >=
+                          120_000
+                      }
                     />
                   ) : (
                     <CommittedMessageItem
@@ -1315,9 +1574,11 @@ function PendingTextItem({
 function UploadingFileMessageItem({
   isOwn,
   message,
+  unresponsive,
 }: {
   isOwn: boolean;
   message: UploadingFileMessage;
+  unresponsive: boolean;
 }) {
   return (
     <div
@@ -1328,22 +1589,35 @@ function UploadingFileMessageItem({
           <FileTypeIcon name={message.pendingAttachment.name} />
           <span className="file-attachment-copy">
             <strong>{message.pendingAttachment.name}</strong>
-            <small>Sending from another device…</small>
+            <small>
+              {unresponsive ? "No response" : "Sending from another device…"}
+            </small>
           </span>
         </div>
-        <span
-          aria-label="File upload in progress"
-          className="uploading-message-indicator"
-          role="status"
-        >
-          <LoadingIcon />
-        </span>
+        {unresponsive ? (
+          <span
+            aria-label="File upload did not respond"
+            className="attachment-error-control uploading-message-indicator"
+          >
+            <span aria-hidden="true" className="attachment-error">
+              !
+            </span>
+          </span>
+        ) : (
+          <span
+            aria-label="File upload in progress"
+            className="uploading-message-indicator"
+            role="status"
+          >
+            <LoadingIcon />
+          </span>
+        )}
       </div>
     </div>
   );
 }
 
-function CommittedMessageItem({
+export function CommittedMessageItem({
   checkVersion,
   isOwn,
   message,
@@ -1354,6 +1628,8 @@ function CommittedMessageItem({
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isAttachmentWorking, setIsAttachmentWorking] = useState(false);
+  const [attachmentOperationError, setAttachmentOperationError] =
+    useState<string>();
   const [localDownloadId, setLocalDownloadId] = useState<number | null>();
   const [cloudAvailability, setCloudAvailability] = useState<
     "checking" | "available" | "missing" | "unknown"
@@ -1363,6 +1639,9 @@ function CommittedMessageItem({
   const isImage =
     isAttachment && message.attachment.mimeType.startsWith("image/");
   const isCloudMissing = cloudAvailability === "missing";
+  const attachmentDriveItemId =
+    message.type === "file" ? message.attachment.driveItemId : undefined;
+  const areSideActionsReady = !isAttachment || cloudAvailability !== "checking";
 
   useEffect(() => {
     let active = true;
@@ -1391,11 +1670,11 @@ function CommittedMessageItem({
     return () => {
       active = false;
     };
-  }, [message]);
+  }, [attachmentDriveItemId]);
 
   useEffect(() => {
-    if (message.type === "file") setCloudAvailability("checking");
-  }, [checkVersion, message]);
+    if (attachmentDriveItemId) setCloudAvailability("checking");
+  }, [attachmentDriveItemId, checkVersion]);
 
   useEffect(() => {
     if (!isMenuOpen) return;
@@ -1431,13 +1710,24 @@ function CommittedMessageItem({
       });
       if (response.ok && response.type === "files/local-action") {
         setLocalDownloadId(response.downloadId);
+      } else {
+        throw new Error("Unexpected local file response.");
       }
+    } catch {
+      setAttachmentOperationError(
+        saveAs
+          ? "Couldn’t save this file."
+          : "Download failed. Please try again.",
+      );
     } finally {
       setIsAttachmentWorking(false);
     }
   }
 
-  function runAttachmentAction(saveAs: boolean) {
+  function runAttachmentAction(
+    saveAs: boolean,
+    source: "bubble" | "quick" = "bubble",
+  ) {
     if (message.type !== "file" || isAttachmentWorking || isCloudMissing) {
       return;
     }
@@ -1463,11 +1753,19 @@ function CommittedMessageItem({
             // Opening can also fail because the OS has no associated app. Do
             // not create a duplicate while the local file still exists.
             setIsAttachmentWorking(false);
+            setAttachmentOperationError("Couldn’t open this file.");
             return;
           }
 
           await deleteDownloadRecord(message.attachment.driveItemId);
           setLocalDownloadId(null);
+          if (source === "quick") {
+            setIsAttachmentWorking(false);
+            setAttachmentOperationError(
+              "The local file no longer exists. Please download it again.",
+            );
+            return;
+          }
           await requestAttachmentDownload(false, true);
         });
       return;
@@ -1527,35 +1825,37 @@ function CommittedMessageItem({
           />
         )}
       </div>
-      <span className="message-primary-actions">
-        {message.type === "file" &&
-        !isCloudMissing &&
-        localDownloadId !== undefined ? (
+      {areSideActionsReady ? (
+        <span className="message-primary-actions message-primary-actions-ready">
+          {message.type === "file" &&
+          !isCloudMissing &&
+          localDownloadId !== undefined ? (
+            <button
+              aria-label={
+                localDownloadId === null ? "Download file" : "Open file"
+              }
+              className="message-local-button"
+              onClick={() => runAttachmentAction(false, "quick")}
+              type="button"
+            >
+              {localDownloadId === null ? (
+                <DownloadLocalIcon />
+              ) : (
+                <OpenLocalIcon />
+              )}
+            </button>
+          ) : null}
           <button
-            aria-label={
-              localDownloadId === null ? "Download file" : "Open file"
-            }
-            className="message-local-button"
-            onClick={() => runAttachmentAction(false)}
+            aria-expanded={isMenuOpen}
+            aria-label="More message actions"
+            className="message-more-button"
+            onClick={() => setIsMenuOpen((open) => !open)}
             type="button"
           >
-            {localDownloadId === null ? (
-              <DownloadLocalIcon />
-            ) : (
-              <OpenLocalIcon />
-            )}
+            <span aria-hidden="true">•••</span>
           </button>
-        ) : null}
-        <button
-          aria-expanded={isMenuOpen}
-          aria-label="More message actions"
-          className="message-more-button"
-          onClick={() => setIsMenuOpen((open) => !open)}
-          type="button"
-        >
-          <span aria-hidden="true">•••</span>
-        </button>
-      </span>
+        </span>
+      ) : null}
       {isMenuOpen ? (
         <span className="message-actions-menu" role="menu">
           {message.type === "file" && !isCloudMissing ? (
@@ -1580,7 +1880,45 @@ function CommittedMessageItem({
           </button>
         </span>
       ) : null}
+      {attachmentOperationError ? (
+        <CenteredOperationDialog
+          id={`attachment-operation-error-${message.id}`}
+          message={attachmentOperationError}
+          onClose={() => setAttachmentOperationError(undefined)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function CenteredOperationDialog({
+  id,
+  message,
+  onClose,
+}: {
+  id: string;
+  message: string;
+  onClose: () => void;
+}) {
+  return createPortal(
+    <div
+      aria-labelledby={id}
+      aria-modal="true"
+      className="operation-dialog-backdrop"
+      onClick={onClose}
+      role="dialog"
+    >
+      <div
+        className="operation-dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p id={id}>{message}</p>
+        <button autoFocus onClick={onClose} type="button">
+          OK
+        </button>
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -2073,6 +2411,18 @@ function RefreshIcon() {
 
 function LoadingIcon() {
   return <span className="loading-spinner" aria-hidden="true" />;
+}
+
+function NoticeProcessingOverlay() {
+  return (
+    <span
+      aria-label="Processing notification"
+      className="notice-processing-overlay"
+      role="status"
+    >
+      <LoadingIcon />
+    </span>
+  );
 }
 
 function resizeComposer(element: HTMLTextAreaElement | null): void {

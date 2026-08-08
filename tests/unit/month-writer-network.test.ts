@@ -14,6 +14,7 @@ vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
 
 vi.mock("../../src/infrastructure/onedrive/month-reader", () => ({
   getCachedMonthSnapshot: vi.fn(),
+  readMonthDocument: vi.fn(),
   readMonthSnapshot: vi.fn(),
 }));
 
@@ -26,11 +27,13 @@ import {
 import { deleteMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
+  readMonthDocument,
   readMonthSnapshot,
 } from "../../src/infrastructure/onedrive/month-reader";
 import {
   appendTextMessage,
   removeMessage,
+  resolveMessageConflict,
   replaceMessage,
 } from "../../src/infrastructure/onedrive/month-writer";
 
@@ -300,5 +303,75 @@ describe("appendTextMessage conflict recovery", () => {
     await removeMessage("2026-08", ready.id);
 
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps the selected version and removes only the conflicting duplicate", async () => {
+    const conflicting = createTextMessage(
+      "conflicting",
+      new Date(first.createdAt),
+      first.id,
+    );
+    vi.mocked(readMonthSnapshot).mockResolvedValue({
+      state: "loaded",
+      month: "2026-08",
+      itemId: "chunk-2",
+      eTag: "etag-2",
+      document: {
+        schemaVersion: 1,
+        month: "2026-08",
+        messages: [first],
+      },
+      chunks: [
+        {
+          index: 1,
+          itemId: "chunk-1",
+          eTag: "etag-1",
+          document: {
+            schemaVersion: 1,
+            month: "2026-08",
+            messages: [first],
+          },
+        },
+        {
+          index: 2,
+          itemId: "chunk-2",
+          eTag: "etag-2",
+          document: {
+            schemaVersion: 1,
+            month: "2026-08",
+            messages: [conflicting, second],
+          },
+        },
+      ],
+      messageConflicts: [
+        {
+          messageId: first.id,
+          versions: [
+            { itemId: "chunk-1", name: "0001.json", line: 1 },
+            { itemId: "chunk-2", name: "0002.json", line: 1 },
+          ],
+        },
+      ],
+    });
+    vi.mocked(readMonthDocument).mockResolvedValue({
+      state: "loaded",
+      month: "2026-08",
+      eTag: "etag-3",
+      messages: [first, second],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ id: "chunk-2", eTag: "etag-3" }, { status: 200 }),
+        ),
+    );
+
+    const result = await resolveMessageConflict("2026-08", first.id, "chunk-1");
+
+    expect(result.state).toBe("loaded");
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+    expect(body.messages).toEqual([second]);
   });
 });

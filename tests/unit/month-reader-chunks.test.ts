@@ -75,6 +75,91 @@ describe("chunked month reader", () => {
     );
   });
 
+  it("skips a damaged chunk for display while retaining healthy messages", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [
+              { id: "chunk-1", name: "0001.json", eTag: "tag-1" },
+              { id: "chunk-2", name: "0002.json", eTag: "tag-2" },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(Response.json(document([firstMessage])))
+        .mockResolvedValueOnce(Response.json({ invalid: true })),
+    );
+
+    const snapshot = await readMonthSnapshot("2026-08", "access-token", true);
+
+    expect(snapshot.state).toBe("loaded");
+    if (snapshot.state === "loaded") {
+      expect(snapshot.document.messages).toEqual([firstMessage]);
+      expect(snapshot.corruptFiles).toEqual([
+        { itemId: "chunk-2", name: "0002.json" },
+      ]);
+    }
+  });
+
+  it("blocks writes from using a snapshot with a damaged chunk", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [{ id: "chunk-1", name: "0001.json", eTag: "tag-1" }],
+          }),
+        )
+        .mockResolvedValueOnce(Response.json({ invalid: true })),
+    );
+
+    await expect(readMonthSnapshot("2026-08", "access-token")).rejects.toThrow(
+      "damaged monthly record file",
+    );
+  });
+
+  it("reports both files and positions for conflicting message versions", async () => {
+    const conflictingMessage = createTextMessage(
+      "changed elsewhere",
+      new Date(firstMessage.createdAt),
+      firstMessage.id,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [
+              { id: "chunk-1", name: "0001.json", eTag: "tag-1" },
+              { id: "chunk-2", name: "0002.json", eTag: "tag-2" },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(Response.json(document([firstMessage])))
+        .mockResolvedValueOnce(Response.json(document([conflictingMessage]))),
+    );
+
+    const snapshot = await readMonthSnapshot("2026-08", "access-token", true);
+
+    expect(snapshot.state).toBe("loaded");
+    if (snapshot.state === "loaded") {
+      expect(snapshot.document.messages).toEqual([firstMessage]);
+      expect(snapshot.messageConflicts).toEqual([
+        {
+          messageId: firstMessage.id,
+          versions: [
+            { itemId: "chunk-1", name: "0001.json", line: 1 },
+            { itemId: "chunk-2", name: "0002.json", line: 1 },
+          ],
+        },
+      ]);
+    }
+  });
+
   it("invalidates an old local snapshot that has no chunk metadata", async () => {
     vi.mocked(getMonthCache).mockResolvedValueOnce({
       month: "2026-08",

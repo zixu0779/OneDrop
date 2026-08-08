@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/infrastructure/indexed-db/downloads", () => ({
@@ -12,15 +12,21 @@ import {
   ImageAttachment,
   CommittedMessageItem,
   PendingFileList,
+  UploadingFileMessageItem,
   groupTimelineItems,
   type PendingFile,
 } from "../../entrypoints/sidepanel/App";
+import {
+  deleteDownloadRecord,
+  getDownloadRecord,
+} from "../../src/infrastructure/indexed-db/downloads";
 
 const file = new File(["hello"], "hello.txt", { type: "text/plain" });
 
 describe("file transfer failure UI", () => {
   afterEach(() => {
     cleanup();
+    vi.clearAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -225,6 +231,93 @@ describe("file transfer failure UI", () => {
     expect(
       screen.queryByRole("button", { name: "Attachment error" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("reports a deleted local file on the first quick-open attempt", async () => {
+    vi.mocked(getDownloadRecord).mockResolvedValueOnce({
+      driveItemId: "downloaded-file",
+      downloadId: 42,
+      cloudName: "downloaded.pdf",
+      createdAt: "2026-08-03T00:00:00.000Z",
+    });
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: 42, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 42, state: "complete", exists: false }]);
+    const open = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("browser", {
+      downloads: { open, search },
+      runtime: {
+        sendMessage: vi.fn().mockResolvedValue({
+          ok: true,
+          type: "files/availability",
+          exists: true,
+        }),
+      },
+    });
+
+    render(
+      <CommittedMessageItem
+        checkVersion={0}
+        isOwn
+        message={{
+          schemaVersion: 1,
+          id: "01989f5e-7700-7000-8000-000000000060",
+          type: "file",
+          createdAt: "2026-08-03T00:00:00.000Z",
+          attachment: {
+            driveItemId: "downloaded-file",
+            name: "downloaded.pdf",
+            size: 1024,
+            mimeType: "application/pdf",
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open file" }));
+
+    expect(
+      await screen.findByText(
+        "The local file no longer exists. Please download it again.",
+      ),
+    ).toBeInTheDocument();
+    expect(open).not.toHaveBeenCalled();
+    expect(deleteDownloadRecord).toHaveBeenCalledWith("downloaded-file");
+    expect(
+      screen.getByRole("button", { name: "Download file" }),
+    ).toBeInTheDocument();
+  });
+
+  it("gives an unresponsive transfer its own refresh and menu controls", () => {
+    const onRefresh = vi.fn();
+    render(
+      <UploadingFileMessageItem
+        isOwn
+        isRefreshing={false}
+        message={{
+          schemaVersion: 1,
+          id: "01989f5e-7700-7000-8000-000000000070",
+          type: "file-uploading",
+          createdAt: "2026-08-03T00:00:00.000Z",
+          pendingAttachment: {
+            name: "unresponsive.zip",
+            size: 4096,
+            mimeType: "application/zip",
+          },
+        }}
+        onRefresh={onRefresh}
+        unresponsive
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh this transfer" }),
+    );
+    expect(onRefresh).toHaveBeenCalledOnce();
+    expect(
+      screen.getByRole("button", { name: "More message actions" }),
+    ).toBeInTheDocument();
   });
 });
 

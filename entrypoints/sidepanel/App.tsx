@@ -1,5 +1,8 @@
 import {
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  type WheelEvent as ReactWheelEvent,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -64,6 +67,14 @@ export type PendingText = {
 
 type ReadyMessage = Exclude<Message, { type: "file-uploading" }>;
 
+function getNotificationDepth(
+  index: number,
+  activeIndex: number,
+  count: number,
+): number {
+  return count === 0 ? 0 : (index - activeIndex + count) % count;
+}
+
 async function sendRequest(request: RuntimeRequest): Promise<RuntimeResponse> {
   const response = (await browser.runtime.sendMessage(
     request,
@@ -103,9 +114,29 @@ export function App() {
   const [pendingTexts, setPendingTexts] = useState<PendingText[]>([]);
   const [attachmentCheckVersion, setAttachmentCheckVersion] = useState(0);
   const [processingNoticeKey, setProcessingNoticeKey] = useState<string>();
+  const [openingRecordItemId, setOpeningRecordItemId] = useState<string>();
+  const [recordLocationError, setRecordLocationError] = useState<string>();
+  const [activeNoticeIndex, setActiveNoticeIndex] = useState(0);
+  const [noticeDragOffset, setNoticeDragOffset] = useState(0);
+  const [isNoticeDragging, setIsNoticeDragging] = useState(false);
+  const [noticeCycleDirection, setNoticeCycleDirection] = useState<
+    1 | -1 | null
+  >(null);
+  const [noticeCycleMotion, setNoticeCycleMotion] = useState<"up" | "down">(
+    "up",
+  );
+  const [noticeCycleGesture, setNoticeCycleGesture] = useState<
+    "wheel" | "drag-up" | "drag-down"
+  >("wheel");
+  const [dismissedNoticeKeys, setDismissedNoticeKeys] = useState<Set<string>>(
+    new Set(),
+  );
   const [unresponsiveUploadIds, setUnresponsiveUploadIds] = useState<
     Set<string>
   >(new Set());
+  const [refreshingUploadIds, setRefreshingUploadIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [scrollRevision, setScrollRevision] = useState(0);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -115,6 +146,116 @@ export function App() {
   const isTimelineHoveredRef = useRef(false);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reselectPendingIdRef = useRef<string | null>(null);
+  const noticeDragStartYRef = useRef<number | null>(null);
+  const noticeWheelLockedRef = useRef(false);
+  const noticeCycleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  const visibleCorruptFiles = (monthResult?.corruptFiles ?? []).filter(
+    (file) => !dismissedNoticeKeys.has(`corrupt:${file.itemId}`),
+  );
+  const visibleMessageConflicts = (monthResult?.messageConflicts ?? []).filter(
+    (conflict) => !dismissedNoticeKeys.has(`conflict:${conflict.messageId}`),
+  );
+  const corruptNoticeCount = visibleCorruptFiles.length;
+  const conflictNoticeCount = visibleMessageConflicts.length;
+  const notificationCount = corruptNoticeCount + conflictNoticeCount;
+
+  useEffect(() => {
+    setActiveNoticeIndex((index) =>
+      notificationCount === 0 ? 0 : index % notificationCount,
+    );
+  }, [notificationCount]);
+
+  useEffect(
+    () => () => {
+      if (noticeCycleTimerRef.current) {
+        clearTimeout(noticeCycleTimerRef.current);
+      }
+    },
+    [],
+  );
+
+  function cycleNotifications(
+    direction: 1 | -1,
+    motion: "up" | "down" = "up",
+    gesture: "wheel" | "drag-up" | "drag-down" = "wheel",
+  ) {
+    if (notificationCount < 2 || isWorking || noticeCycleDirection !== null) {
+      return;
+    }
+
+    setNoticeCycleGesture(gesture);
+    setNoticeCycleMotion(motion);
+    setNoticeCycleDirection(direction);
+    noticeCycleTimerRef.current = setTimeout(() => {
+      setActiveNoticeIndex(
+        (index) => (index + direction + notificationCount) % notificationCount,
+      );
+      setNoticeCycleDirection(null);
+      setNoticeDragOffset(0);
+      noticeCycleTimerRef.current = null;
+    }, 680);
+  }
+
+  function handleNotificationWheel(event: ReactWheelEvent<HTMLDivElement>) {
+    if (
+      Math.abs(event.deltaY) < 8 ||
+      noticeWheelLockedRef.current ||
+      noticeCycleDirection !== null
+    )
+      return;
+    event.preventDefault();
+    noticeWheelLockedRef.current = true;
+    const direction = event.deltaY > 0 ? 1 : -1;
+    setNoticeDragOffset(0);
+    cycleNotifications(direction, event.deltaY > 0 ? "down" : "up");
+    window.setTimeout(() => {
+      noticeWheelLockedRef.current = false;
+    }, 820);
+  }
+
+  function handleNotificationPointerDown(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
+    if (noticeCycleDirection !== null) return;
+    if (event.target instanceof Element && event.target.closest("button"))
+      return;
+    noticeDragStartYRef.current = event.clientY;
+    setIsNoticeDragging(true);
+    setNoticeDragOffset(0);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleNotificationPointerMove(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
+    const startY = noticeDragStartYRef.current;
+    if (startY === null) return;
+    event.preventDefault();
+    const distance = Math.max(-96, Math.min(96, event.clientY - startY));
+    setNoticeDragOffset(distance);
+  }
+
+  function handleNotificationPointerUp(
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) {
+    const startY = noticeDragStartYRef.current;
+    noticeDragStartYRef.current = null;
+    setIsNoticeDragging(false);
+    if (startY === null) return;
+    const distance = event.clientY - startY;
+    if (Math.abs(distance) >= 32) {
+      cycleNotifications(
+        distance < 0 ? 1 : -1,
+        "up",
+        distance < 0 ? "drag-up" : "drag-down",
+      );
+      return;
+    }
+    setNoticeDragOffset(0);
+  }
 
   useLayoutEffect(() => {
     resizeComposer(composerRef.current);
@@ -366,6 +507,16 @@ export function App() {
     }
     setDeviceId(deviceResponse.deviceId);
     if (cachedTimeline) setMonthResult(cachedTimeline);
+    if (restoreTransfers) {
+      const localReconciliationResult: MonthReadResult = cachedTimeline ?? {
+        state: "missing",
+        month: getUtcMonth(),
+      };
+      await Promise.allSettled([
+        restorePendingFiles(localReconciliationResult),
+        restorePendingTexts(localReconciliationResult),
+      ]);
+    }
 
     const folderResponse = await folderPromise;
     if (!folderResponse.ok || folderResponse.type !== "onedrive/app-folder") {
@@ -430,6 +581,7 @@ export function App() {
   async function refreshTimeline() {
     setIsWorking(true);
     setError(undefined);
+    setDismissedNoticeKeys(new Set());
     try {
       await loadOneDriveState(false);
       setAttachmentCheckVersion((version) => version + 1);
@@ -439,6 +591,46 @@ export function App() {
       );
     } finally {
       setIsWorking(false);
+    }
+  }
+
+  async function refreshUploadingMessage(messageId: string) {
+    setRefreshingUploadIds((current) => new Set(current).add(messageId));
+    try {
+      const response = await sendRequest({
+        type: "messages/read-current-month",
+      });
+      if (!response.ok || response.type !== "messages/month") return;
+      const refreshedResult = response.result;
+      if (refreshedResult.state !== "loaded") return;
+      const refreshedMessage = refreshedResult.messages.find(
+        (message) => message.id === messageId,
+      );
+
+      setMonthResult((current) => {
+        if (!current || current.state !== "loaded") return current;
+        return {
+          ...current,
+          messages: refreshedMessage
+            ? current.messages.map((message) =>
+                message.id === messageId ? refreshedMessage : message,
+              )
+            : current.messages.filter((message) => message.id !== messageId),
+        };
+      });
+      if (!refreshedMessage || refreshedMessage.type !== "file-uploading") {
+        setUnresponsiveUploadIds((current) => {
+          const next = new Set(current);
+          next.delete(messageId);
+          return next;
+        });
+      }
+    } finally {
+      setRefreshingUploadIds((current) => {
+        const next = new Set(current);
+        next.delete(messageId);
+        return next;
+      });
     }
   }
 
@@ -504,6 +696,9 @@ export function App() {
   }
 
   async function openCorruptFileLocation(itemId: string) {
+    if (openingRecordItemId) return;
+    setOpeningRecordItemId(itemId);
+    setRecordLocationError(undefined);
     try {
       const response = await sendRequest({
         type: "messages/open-corrupt-file-location",
@@ -515,8 +710,12 @@ export function App() {
       ) {
         throw new Error("OneDrop could not open the record location.");
       }
-    } catch (cause) {
-      setError(getClientError(cause));
+    } catch {
+      setRecordLocationError(
+        "OneDrop couldn't open the OneDrive folder. Check your connection and try again.",
+      );
+    } finally {
+      setOpeningRecordItemId(undefined);
     }
   }
 
@@ -684,6 +883,9 @@ export function App() {
     }
 
     const isResend = pending.status !== "uploading";
+    const transferCreatedAt = isResend
+      ? new Date().toISOString()
+      : pending.createdAt;
     updatePending(pending.id, { status: "uploading" });
     if (isResend) await delay(320);
 
@@ -740,7 +942,7 @@ export function App() {
           ...(pending.thumbHash ? { thumbHash: pending.thumbHash } : {}),
         },
         messageId: pending.id,
-        createdAt: pending.createdAt,
+        createdAt: transferCreatedAt,
         ...(isResend ? { reuseExisting: true } : {}),
       });
       handleFileTransferResponse(pending.id, response);
@@ -863,7 +1065,12 @@ export function App() {
         ...(record.isImage ? { previewUrl: URL.createObjectURL(file) } : {}),
       });
     }
-    setPendingFiles(restored);
+    setPendingFiles((current) => {
+      for (const pending of current) {
+        if (pending.previewUrl) URL.revokeObjectURL(pending.previewUrl);
+      }
+      return restored;
+    });
     for (const pending of restored) {
       if (pending.status === "committing" && pending.attachment) {
         void retryFileCommit(pending);
@@ -1022,73 +1229,165 @@ export function App() {
               </div>
             ) : null}
           </section>
-          {(monthResult?.corruptFiles?.length ?? 0) +
-            (monthResult?.messageConflicts?.length ?? 0) >
-          0 ? (
-            <div className="notification-stack">
-              {monthResult?.corruptFiles?.map((file) => {
+          {notificationCount > 0 ? (
+            <div
+              aria-label={`Notifications, ${activeNoticeIndex + 1} of ${notificationCount}`}
+              className={`notification-stack notification-count-${Math.min(notificationCount, 4)}${isNoticeDragging ? " is-dragging" : ""}${noticeCycleDirection !== null ? ` is-cycling is-cycling-${noticeCycleDirection > 0 ? "forward" : "backward"} is-cycle-motion-${noticeCycleMotion} is-cycle-${noticeCycleGesture}` : ""}`}
+              onPointerCancel={() => {
+                noticeDragStartYRef.current = null;
+                setIsNoticeDragging(false);
+                setNoticeDragOffset(0);
+              }}
+              onPointerDown={handleNotificationPointerDown}
+              onPointerMove={handleNotificationPointerMove}
+              onPointerUp={handleNotificationPointerUp}
+              onWheel={handleNotificationWheel}
+              style={
+                {
+                  "--notification-drag-y": `${noticeDragOffset}px`,
+                  "--notification-drag-back-y": `${noticeDragOffset * 0.18}px`,
+                } as CSSProperties
+              }
+            >
+              {visibleCorruptFiles.map((file, index) => {
                 const noticeKey = `corrupt:${file.itemId}`;
                 const isProcessing = processingNoticeKey === noticeKey;
+                const depth = getNotificationDepth(
+                  index,
+                  activeNoticeIndex,
+                  notificationCount,
+                );
+                const cycleTargetIndex =
+                  noticeCycleDirection === null
+                    ? -1
+                    : (activeNoticeIndex +
+                        noticeCycleDirection +
+                        notificationCount) %
+                      notificationCount;
                 return (
                   <aside
-                    className={`corrupt-record-notice${isProcessing ? " notice-processing" : ""}`}
+                    aria-hidden={depth !== 0}
+                    className={`corrupt-record-notice record-damage-notice notification-depth-${Math.min(depth, 3)}${index === cycleTargetIndex ? " notification-cycle-target" : ""}${isProcessing ? " notice-processing" : ""}`}
+                    inert={depth !== 0}
                     key={noticeKey}
                   >
-                    <p>
-                      Message record (
+                    <button
+                      aria-label="Remind me later"
+                      className="notice-dismiss-button"
+                      onClick={() =>
+                        setDismissedNoticeKeys((current) => {
+                          const next = new Set(current);
+                          next.add(noticeKey);
+                          return next;
+                        })
+                      }
+                      title="Remind me later"
+                      type="button"
+                    >
+                      <CloseIcon />
+                    </button>
+                    <div className="corrupt-record-summary">
+                      <p className="corrupt-record-title">
+                        A message record is damaged and OneDrop could not read
+                        its contents.
+                      </p>
+                      <p className="corrupt-record-detail">
+                        Other messages are still available.
+                      </p>
+                    </div>
+                    <div className="corrupt-record-footer">
                       <button
                         className="corrupt-record-link"
+                        disabled={openingRecordItemId === file.itemId}
                         onClick={() =>
                           void openCorruptFileLocation(file.itemId)
                         }
                         type="button"
                       >
-                        <span aria-hidden="true">↗</span>
+                        {openingRecordItemId === file.itemId ? (
+                          <LoadingIcon />
+                        ) : (
+                          <span aria-hidden="true">↗</span>
+                        )}
                         {file.name}
                       </button>
-                      ) is damaged. Other messages are still available.
-                    </p>
-                    <div className="corrupt-record-actions">
-                      <button
-                        disabled={isWorking}
-                        onClick={() => void retryNotice(noticeKey)}
-                        type="button"
-                      >
-                        I&apos;ve fixed it
-                      </button>
-                      <button
-                        className="corrupt-record-delete"
-                        disabled={isWorking}
-                        onClick={() => void deleteCorruptFile(file.itemId)}
-                        type="button"
-                      >
-                        Delete
-                      </button>
+                      <div className="corrupt-record-actions">
+                        <button
+                          disabled={isWorking}
+                          onClick={() => void retryNotice(noticeKey)}
+                          type="button"
+                        >
+                          I&apos;ve fixed it — check again
+                        </button>
+                        <button
+                          className="corrupt-record-delete"
+                          disabled={isWorking}
+                          onClick={() => void deleteCorruptFile(file.itemId)}
+                          type="button"
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </div>
                     {isProcessing ? <NoticeProcessingOverlay /> : null}
                   </aside>
                 );
               })}
-              {monthResult?.messageConflicts?.map((conflict) => {
+              {visibleMessageConflicts.map((conflict, index) => {
                 const noticeKey = `conflict:${conflict.messageId}`;
                 const isProcessing = processingNoticeKey === noticeKey;
+                const depth = getNotificationDepth(
+                  corruptNoticeCount + index,
+                  activeNoticeIndex,
+                  notificationCount,
+                );
+                const absoluteIndex = corruptNoticeCount + index;
+                const cycleTargetIndex =
+                  noticeCycleDirection === null
+                    ? -1
+                    : (activeNoticeIndex +
+                        noticeCycleDirection +
+                        notificationCount) %
+                      notificationCount;
                 return (
                   <aside
-                    className={`corrupt-record-notice message-conflict-notice${isProcessing ? " notice-processing" : ""}`}
+                    aria-hidden={depth !== 0}
+                    className={`corrupt-record-notice message-conflict-notice notification-depth-${Math.min(depth, 3)}${absoluteIndex === cycleTargetIndex ? " notification-cycle-target" : ""}${isProcessing ? " notice-processing" : ""}`}
+                    inert={depth !== 0}
                     key={noticeKey}
                   >
+                    <button
+                      aria-label="Remind me later"
+                      className="notice-dismiss-button"
+                      onClick={() =>
+                        setDismissedNoticeKeys((current) => {
+                          const next = new Set(current);
+                          next.add(noticeKey);
+                          return next;
+                        })
+                      }
+                      title="Remind me later"
+                      type="button"
+                    >
+                      <CloseIcon />
+                    </button>
                     <p>A message has conflicting versions:</p>
                     <ul>
                       {conflict.versions.map((version) => (
                         <li key={version.itemId}>
                           <button
                             className="corrupt-record-link"
+                            disabled={openingRecordItemId === version.itemId}
                             onClick={() =>
                               void openCorruptFileLocation(version.itemId)
                             }
                             type="button"
                           >
-                            <span aria-hidden="true">↗</span>
+                            {openingRecordItemId === version.itemId ? (
+                              <LoadingIcon />
+                            ) : (
+                              <span aria-hidden="true">↗</span>
+                            )}
                             {version.name}
                           </button>{" "}
                           — line {version.line}
@@ -1142,8 +1441,12 @@ export function App() {
                       pendingFiles={pendingFiles}
                       pendingTexts={pendingTexts}
                       result={monthResult}
+                      refreshingUploadIds={refreshingUploadIds}
                       unresponsiveUploadIds={unresponsiveUploadIds}
                       onResend={(item) => void uploadPendingFile(item)}
+                      onUploadingRefresh={(messageId) =>
+                        void refreshUploadingMessage(messageId)
+                      }
                       onTextResend={(item) => void sendPendingText(item)}
                     />
                   </div>
@@ -1217,6 +1520,13 @@ export function App() {
           ) : null}
         </div>
       ) : null}
+      {recordLocationError ? (
+        <CenteredOperationDialog
+          id="record-location-error"
+          message={recordLocationError}
+          onClose={() => setRecordLocationError(undefined)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -1289,8 +1599,8 @@ function PendingFileItem({
 
   return (
     <div className="pending-transfer-row" ref={controlsRef}>
-      <span className="pending-primary-actions">
-        {!isActive ? (
+      {!isActive ? (
+        <span className="pending-primary-actions">
           <button
             className="pending-retry-button"
             onClick={retryTransfer}
@@ -1299,17 +1609,17 @@ function PendingFileItem({
             <RetryIcon />
             Resend
           </button>
-        ) : null}
-        <button
-          aria-expanded={isMenuOpen}
-          aria-label="More transfer actions"
-          className="pending-more-button"
-          onClick={() => setIsMenuOpen((open) => !open)}
-          type="button"
-        >
-          <span aria-hidden="true">•••</span>
-        </button>
-      </span>
+          <button
+            aria-expanded={isMenuOpen}
+            aria-label="More transfer actions"
+            className="pending-more-button"
+            onClick={() => setIsMenuOpen((open) => !open)}
+            type="button"
+          >
+            <span aria-hidden="true">•••</span>
+          </button>
+        </span>
+      ) : null}
       {isMenuOpen ? (
         <span className="pending-actions-menu" role="menu">
           {isActive ? (
@@ -1408,8 +1718,10 @@ function MonthResult({
   pendingFiles,
   pendingTexts,
   result,
+  refreshingUploadIds,
   unresponsiveUploadIds,
   onResend,
+  onUploadingRefresh,
   onTextResend,
 }: {
   attachmentCheckVersion: number;
@@ -1417,8 +1729,10 @@ function MonthResult({
   pendingFiles: PendingFile[];
   pendingTexts: PendingText[];
   result: MonthReadResult;
+  refreshingUploadIds: Set<string>;
   unresponsiveUploadIds: Set<string>;
   onResend: (item: PendingFile) => void;
+  onUploadingRefresh: (messageId: string) => void;
   onTextResend: (item: PendingText) => void;
 }) {
   const timelineGroups = groupTimelineItems(
@@ -1461,6 +1775,8 @@ function MonthResult({
                       isOwn={group.isOwn}
                       key={item.message.id}
                       message={item.message}
+                      isRefreshing={refreshingUploadIds.has(item.message.id)}
+                      onRefresh={() => onUploadingRefresh(item.message.id)}
                       unresponsive={
                         unresponsiveUploadIds.has(item.message.id) ||
                         Date.now() -
@@ -1553,7 +1869,11 @@ function PendingTextItem({
         </button>
       </span>
       {item.status === "send-failed" ? (
-        <span className="pending-text-error">
+        <span
+          aria-label="Upload failed"
+          className="pending-text-error"
+          title="Upload failed"
+        >
           <AttachmentError />
         </span>
       ) : null}
@@ -1573,20 +1893,41 @@ function PendingTextItem({
   );
 }
 
-function UploadingFileMessageItem({
+export function UploadingFileMessageItem({
+  isRefreshing,
   isOwn,
   message,
+  onRefresh,
   unresponsive,
 }: {
+  isRefreshing: boolean;
   isOwn: boolean;
   message: UploadingFileMessage;
+  onRefresh: () => void;
   unresponsive: boolean;
 }) {
   const isImage = message.pendingAttachment.mimeType.startsWith("image/");
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const shellRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isMenuOpen) return;
+    const close = (event: PointerEvent) => {
+      if (
+        event.target instanceof Node &&
+        !shellRef.current?.contains(event.target)
+      ) {
+        setIsMenuOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", close);
+    return () => document.removeEventListener("pointerdown", close);
+  }, [isMenuOpen]);
 
   return (
     <div
       className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}`}
+      ref={shellRef}
     >
       <div
         className={`message-bubble message-attachment-bubble uploading-message-bubble${isImage ? " message-image-bubble" : ""}${unresponsive ? " unresponsive-message-bubble" : ""}`}
@@ -1633,6 +1974,36 @@ function UploadingFileMessageItem({
           </span>
         )}
       </div>
+      {unresponsive ? (
+        <span className="message-primary-actions message-primary-actions-ready">
+          <button
+            aria-label="Refresh this transfer"
+            className="message-local-button"
+            disabled={isRefreshing}
+            onClick={onRefresh}
+            type="button"
+          >
+            {isRefreshing ? <LoadingIcon /> : <RefreshIcon />}
+          </button>
+          <button
+            aria-expanded={isMenuOpen}
+            aria-label="More message actions"
+            className="message-more-button"
+            onClick={() => setIsMenuOpen((open) => !open)}
+            type="button"
+          >
+            <span aria-hidden="true">•••</span>
+          </button>
+        </span>
+      ) : null}
+      {isMenuOpen ? (
+        <span className="message-actions-menu" role="menu">
+          <button disabled role="menuitem" type="button">
+            Delete message
+            <small>Coming soon</small>
+          </button>
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -1756,38 +2127,35 @@ export function CommittedMessageItem({
 
     if (!saveAs && typeof localDownloadId === "number") {
       const downloadId = localDownloadId;
-      void browser.downloads
-        .open(downloadId)
-        .then(() =>
-          markDownloadOpened(message.attachment.driveItemId, undefined),
-        )
-        .then(() => setIsAttachmentWorking(false))
-        .catch(async () => {
+      void (async () => {
+        try {
           const [download] = await browser.downloads.search({ id: downloadId });
           const isMissing =
             !download ||
             download.exists === false ||
             download.state === "interrupted";
 
-          if (!isMissing) {
-            // Opening can also fail because the OS has no associated app. Do
-            // not create a duplicate while the local file still exists.
-            setIsAttachmentWorking(false);
-            setAttachmentOperationError("Couldn’t open this file.");
+          if (isMissing) {
+            await deleteDownloadRecord(message.attachment.driveItemId);
+            setLocalDownloadId(null);
+            if (source === "quick") {
+              setAttachmentOperationError(
+                "The local file no longer exists. Please download it again.",
+              );
+              return;
+            }
+            await requestAttachmentDownload(false, true);
             return;
           }
 
-          await deleteDownloadRecord(message.attachment.driveItemId);
-          setLocalDownloadId(null);
-          if (source === "quick") {
-            setIsAttachmentWorking(false);
-            setAttachmentOperationError(
-              "The local file no longer exists. Please download it again.",
-            );
-            return;
-          }
-          await requestAttachmentDownload(false, true);
-        });
+          await browser.downloads.open(downloadId);
+          await markDownloadOpened(message.attachment.driveItemId, undefined);
+        } catch {
+          setAttachmentOperationError("Couldn’t open this file.");
+        } finally {
+          setIsAttachmentWorking(false);
+        }
+      })();
       return;
     }
 
@@ -2426,7 +2794,15 @@ function PlusIcon() {
 function RefreshIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M20 7v5h-5M4 17v-5h5M6.1 8.2A7 7 0 0 1 18.7 10M17.9 15.8A7 7 0 0 1 5.3 14" />
+      <path d="M8 4.5 4 7l4 2.5M16 14.5l4 2.5-4 2.5M20 9.3C17.6 2.6 9.2 1.6 4 7M4 14.7c2.4 6.7 10.8 7.7 16 2.3" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="m5.5 5.5 9 9m0-9-9 9" />
     </svg>
   );
 }

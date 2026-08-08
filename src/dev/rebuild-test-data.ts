@@ -202,17 +202,25 @@ async function createMessagesFolder(
 }
 
 async function seedLocalFailures(createdAt: Date): Promise<void> {
-  await oneDropDatabase.pendingTexts.put({
-    id: crypto.randomUUID(),
-    createdAt: createdAt.toISOString(),
-    text: "Text message that failed to send",
-    status: "send-failed",
-    error: "Test failure",
-  });
+  const failedTexts = [
+    "Failed text",
+    "Text message that failed to send",
+    "A somewhat longer text message that failed to send during testing",
+    "This deliberately long text message failed to send and should wrap across three or more lines so every responsive side-control layout can be tested.",
+  ];
+  await oneDropDatabase.pendingTexts.bulkPut(
+    failedTexts.map((text, index) => ({
+      id: crypto.randomUUID(),
+      createdAt: new Date(createdAt.getTime() + index * 60_000).toISOString(),
+      text,
+      status: "send-failed" as const,
+      error: "Test failure",
+    })),
+  );
   await oneDropDatabase.pendingTransfers.bulkPut([
     {
       id: crypto.randomUUID(),
-      createdAt: new Date(createdAt.getTime() + 60_000).toISOString(),
+      createdAt: new Date(createdAt.getTime() + 4 * 60_000).toISOString(),
       name: "failed-document.pdf",
       mimeType: "application/pdf",
       size: 24,
@@ -224,7 +232,7 @@ async function seedLocalFailures(createdAt: Date): Promise<void> {
     },
     {
       id: crypto.randomUUID(),
-      createdAt: new Date(createdAt.getTime() + 120_000).toISOString(),
+      createdAt: new Date(createdAt.getTime() + 5 * 60_000).toISOString(),
       name: "failed-image.png",
       mimeType: "image/png",
       size: base64ByteLength(onePixelPng),

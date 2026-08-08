@@ -962,52 +962,458 @@ body {
   font-size: 13px;
 }
 
+.notice-dismiss-button {
+  position: absolute;
+  z-index: 5;
+  top: 7px;
+  right: 7px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: #a79f92;
+  background: transparent;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease;
+}
+
+.notice-dismiss-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+}
+
+.notice-dismiss-button:hover,
+.notice-dismiss-button:focus-visible {
+  color: #f0ece5;
+  background: rgb(237 228 213 / 12%);
+  outline: none;
+}
+
+.record-damage-notice .corrupt-record-summary,
+.message-conflict-notice > p {
+  padding-right: 28px;
+}
+
 .notification-stack {
   position: absolute;
   z-index: 90;
-  top: 52px;
+  top: 54px;
   right: 0;
   left: 0;
-  padding: 0 12px 8px;
+  display: grid;
+  padding: 0 12px 18px;
   overflow: visible;
+  cursor: grab;
+  touch-action: pan-x;
+  user-select: none;
 }
 
 .notification-stack .corrupt-record-notice {
-  margin: 0;
-}
-
-.notification-stack > .corrupt-record-notice:first-child {
-  z-index: 3;
-  animation: notification-promote 180ms ease-out;
-}
-
-.notification-stack > .corrupt-record-notice:nth-child(2) {
-  position: absolute;
-  z-index: 2;
-  inset: 0;
-  pointer-events: none;
-  transform: translateY(3px) scale(0.99);
-  transform-origin: top center;
-}
-
-.notification-stack > .corrupt-record-notice:nth-child(n + 3) {
-  position: absolute;
+  grid-area: 1 / 1;
   z-index: 1;
-  inset: 0;
-  pointer-events: none;
-  transform: translateY(6px) scale(0.98);
+  min-height: 0;
+  height: auto;
+  align-self: stretch;
+  margin: 0;
+  box-shadow: 0 12px 28px rgb(0 0 0 / 24%);
   transform-origin: top center;
+  transition:
+    transform 210ms ease,
+    opacity 180ms ease,
+    filter 180ms ease;
 }
 
-@keyframes notification-promote {
-  from {
+.notification-stack.is-dragging .corrupt-record-notice {
+  transition: none;
+}
+
+.notification-stack:active {
+  cursor: grabbing;
+}
+
+.notification-stack .notification-depth-0 {
+  z-index: 4;
+  pointer-events: auto;
+  transform: translateY(var(--notification-drag-y, 0));
+}
+
+.notification-stack .notification-depth-1 {
+  z-index: 3;
+  pointer-events: none;
+  transform: translateY(calc(7px + var(--notification-drag-back-y, 0)))
+    scale(0.985);
+  filter: brightness(0.84);
+}
+
+.notification-stack .notification-depth-2 {
+  z-index: 2;
+  pointer-events: none;
+  transform: translateY(calc(13px + var(--notification-drag-back-y, 0)))
+    scale(0.97);
+  filter: brightness(0.68);
+}
+
+.notification-stack .notification-depth-3 {
+  z-index: 1;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(17px) scale(0.96);
+}
+
+.notification-stack.is-cycling {
+  pointer-events: none;
+}
+
+.notification-stack.is-cycling .corrupt-record-notice {
+  transition: none;
+  animation-duration: 680ms;
+  animation-fill-mode: both;
+}
+
+.notification-stack.is-cycling .notification-depth-0 {
+  animation-name: notification-front-to-tail;
+}
+
+.notification-stack.notification-count-2.is-cycling .notification-depth-0,
+.notification-stack.is-cycling-backward .notification-depth-0 {
+  animation-name: notification-front-to-first-back;
+}
+
+.notification-stack.is-cycling-forward .notification-cycle-target {
+  animation-name: notification-first-back-to-front;
+}
+
+.notification-stack.notification-count-2.is-cycling-backward
+  .notification-cycle-target {
+  animation-name: notification-first-back-to-front;
+}
+
+.notification-stack.notification-count-3.is-cycling-backward
+  .notification-cycle-target,
+.notification-stack.notification-count-4.is-cycling-backward
+  .notification-cycle-target {
+  animation-name: notification-tail-to-front;
+}
+
+.notification-stack.notification-count-3.is-cycling-forward
+  .notification-depth-2,
+.notification-stack.notification-count-4.is-cycling-forward
+  .notification-depth-2,
+.notification-stack.is-cycling-backward
+  .notification-depth-1:not(.notification-cycle-target) {
+  animation-name: notification-back-shift;
+}
+
+@keyframes notification-front-to-tail {
+  0% {
+    z-index: 4;
+    opacity: 1;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.58, 0.02, 0.82, 0.34);
+  }
+
+  52% {
+    z-index: 4;
+    opacity: 1;
+    filter: brightness(0.98);
+    transform: translateY(-72px) scale(0.99);
+    animation-timing-function: cubic-bezier(0.2, 0.76, 0.28, 1);
+  }
+
+  53% {
+    z-index: 1;
+  }
+
+  100% {
+    z-index: 1;
+    opacity: 0;
+    filter: brightness(0.68);
+    transform: translateY(17px) scale(0.96);
+  }
+}
+
+@keyframes notification-front-to-first-back {
+  0% {
+    z-index: 4;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.58, 0.02, 0.82, 0.34);
+  }
+
+  52% {
+    z-index: 4;
+    filter: brightness(0.98);
+    transform: translateY(-72px) scale(0.99);
+    animation-timing-function: cubic-bezier(0.2, 0.76, 0.28, 1);
+  }
+
+  53% {
+    z-index: 2;
+  }
+
+  100% {
+    z-index: 3;
+    filter: brightness(0.84);
+    transform: translateY(7px) scale(0.985);
+  }
+}
+
+@keyframes notification-first-back-to-front {
+  0% {
+    z-index: 3;
+    filter: brightness(0.84);
+    transform: translateY(calc(7px + var(--notification-drag-back-y, 0)))
+      scale(0.985);
+  }
+
+  52% {
+    z-index: 3;
+    filter: brightness(0.9);
+    transform: translateY(6px) scale(0.99);
+  }
+
+  53% {
+    z-index: 4;
+  }
+
+  100% {
+    z-index: 4;
+    filter: brightness(1);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes notification-tail-to-front {
+  0% {
+    z-index: 2;
     opacity: 0.7;
-    transform: translateY(5px) scale(0.985);
+    filter: brightness(0.68);
+    transform: translateY(13px) scale(0.97);
+  }
+
+  52% {
+    z-index: 3;
+    opacity: 1;
+    filter: brightness(0.84);
+    transform: translateY(7px) scale(0.985);
+  }
+
+  100% {
+    z-index: 4;
+    opacity: 1;
+    filter: brightness(1);
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes notification-back-shift {
+  from {
+    filter: brightness(0.84);
+    transform: translateY(7px) scale(0.985);
   }
 
   to {
+    filter: brightness(0.68);
+    transform: translateY(13px) scale(0.97);
+  }
+}
+
+.notification-stack.is-cycle-motion-down .notification-depth-0 {
+  animation-name: notification-front-to-tail-down;
+}
+
+.notification-stack.notification-count-2.is-cycle-motion-down
+  .notification-depth-0,
+.notification-stack.is-cycling-backward.is-cycle-motion-down
+  .notification-depth-0 {
+  animation-name: notification-front-to-first-back-down;
+}
+
+@keyframes notification-front-to-tail-down {
+  0% {
+    z-index: 4;
     opacity: 1;
-    transform: none;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.58, 0.02, 0.82, 0.34);
+  }
+
+  52% {
+    z-index: 4;
+    opacity: 1;
+    filter: brightness(0.98);
+    transform: translateY(72px) scale(0.99);
+    animation-timing-function: cubic-bezier(0.2, 0.76, 0.28, 1);
+  }
+
+  53% {
+    z-index: 1;
+  }
+
+  100% {
+    z-index: 1;
+    opacity: 0;
+    filter: brightness(0.68);
+    transform: translateY(17px) scale(0.96);
+  }
+}
+
+@keyframes notification-front-to-first-back-down {
+  0% {
+    z-index: 4;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.58, 0.02, 0.82, 0.34);
+  }
+
+  52% {
+    z-index: 4;
+    filter: brightness(0.98);
+    transform: translateY(72px) scale(0.99);
+    animation-timing-function: cubic-bezier(0.2, 0.76, 0.28, 1);
+  }
+
+  53% {
+    z-index: 2;
+  }
+
+  100% {
+    z-index: 3;
+    filter: brightness(0.84);
+    transform: translateY(7px) scale(0.985);
+  }
+}
+
+.notification-stack.is-cycle-drag-down .notification-depth-0 {
+  animation-name: notification-front-to-tail-drag-down;
+}
+
+.notification-stack.notification-count-2.is-cycle-drag-down
+  .notification-depth-0,
+.notification-stack.is-cycling-backward.is-cycle-drag-down
+  .notification-depth-0 {
+  animation-name: notification-front-to-first-back-drag-down;
+}
+
+.notification-stack.is-cycle-drag-up .notification-depth-0 {
+  animation-name: notification-front-to-tail-drag-up;
+}
+
+.notification-stack.notification-count-2.is-cycle-drag-up .notification-depth-0,
+.notification-stack.is-cycling-backward.is-cycle-drag-up .notification-depth-0 {
+  animation-name: notification-front-to-first-back-drag-up;
+}
+
+@keyframes notification-front-to-tail-drag-down {
+  0% {
+    z-index: 4;
+    opacity: 1;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.58, 0.02, 0.82, 0.34);
+  }
+
+  18% {
+    transform: translateY(-5px) scale(1);
+  }
+
+  52% {
+    z-index: 4;
+    opacity: 1;
+    filter: brightness(0.98);
+    transform: translateY(-72px) scale(0.99);
+    animation-timing-function: cubic-bezier(0.2, 0.76, 0.28, 1);
+  }
+
+  53% {
+    z-index: 1;
+  }
+
+  100% {
+    z-index: 1;
+    opacity: 0;
+    filter: brightness(0.68);
+    transform: translateY(17px) scale(0.96);
+  }
+}
+
+@keyframes notification-front-to-first-back-drag-down {
+  0% {
+    z-index: 4;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.58, 0.02, 0.82, 0.34);
+  }
+
+  18% {
+    transform: translateY(-5px) scale(1);
+  }
+
+  52% {
+    z-index: 4;
+    filter: brightness(0.98);
+    transform: translateY(-72px) scale(0.99);
+    animation-timing-function: cubic-bezier(0.2, 0.76, 0.28, 1);
+  }
+
+  53% {
+    z-index: 2;
+  }
+
+  100% {
+    z-index: 3;
+    filter: brightness(0.84);
+    transform: translateY(7px) scale(0.985);
+  }
+}
+
+@keyframes notification-front-to-tail-drag-up {
+  0% {
+    z-index: 4;
+    opacity: 1;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.2, 0.72, 0.28, 1);
+  }
+
+  52% {
+    z-index: 1;
+  }
+
+  100% {
+    z-index: 1;
+    opacity: 0;
+    filter: brightness(0.68);
+    transform: translateY(17px) scale(0.96);
+  }
+}
+
+@keyframes notification-front-to-first-back-drag-up {
+  0% {
+    z-index: 4;
+    filter: brightness(1);
+    transform: translateY(var(--notification-drag-y, 0)) scale(1);
+    animation-timing-function: cubic-bezier(0.2, 0.72, 0.28, 1);
+  }
+
+  52% {
+    z-index: 2;
+  }
+
+  100% {
+    z-index: 3;
+    filter: brightness(0.84);
+    transform: translateY(7px) scale(0.985);
   }
 }
 
@@ -1038,18 +1444,55 @@ body {
   line-height: 1.4;
 }
 
+.record-damage-notice {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.corrupt-record-summary {
+  text-align: left;
+}
+
+.corrupt-record-detail {
+  margin-top: 4px !important;
+}
+
+.corrupt-record-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.record-damage-notice .corrupt-record-actions {
+  margin-top: 0;
+}
+
 .corrupt-record-link {
   display: inline-flex;
   align-items: baseline;
-  gap: 3px;
+  gap: 2px;
   padding: 0;
   border: 0;
+  border-bottom: 1px solid currentColor;
   background: none;
   color: #75aef8;
   cursor: pointer;
   font: inherit;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration: none;
+}
+
+.corrupt-record-link:disabled {
+  cursor: wait;
+}
+
+.corrupt-record-link .loading-spinner {
+  width: 11px;
+  height: 11px;
+  border-width: 1.5px;
 }
 
 .message-primary-actions-ready {
@@ -1189,7 +1632,16 @@ body {
   width: var(--image-bubble-size);
   height: var(--image-bubble-size);
   max-width: none;
+  border: 1px solid rgb(142 152 167 / 58%);
   overflow: visible;
+  transition: border-color 160ms ease;
+}
+
+.pending-image-bubble {
+  width: var(--image-bubble-size);
+  height: var(--image-bubble-size);
+  border: 1px solid rgb(142 152 167 / 58%);
+  transition: border-color 160ms ease;
 }
 
 .message-attachment-bubble:has(> .file-attachment:hover),
@@ -1219,22 +1671,19 @@ body {
 
 .message-image-bubble::after,
 .pending-image-bubble::after {
-  border: 0;
-  box-shadow: inset 0 0 0 1px rgb(142 152 167 / 58%);
+  content: none;
 }
 
-.message-attachment-bubble:has(> .image-attachment:hover)::after,
-.pending-image-bubble:hover::after {
-  border: 0;
-  box-shadow: inset 0 0 0 1px rgb(48 119 212 / 78%);
+.message-image-bubble:has(> .image-attachment:hover),
+.pending-image-bubble:hover {
+  border-color: rgb(48 119 212 / 78%);
 }
 
-.message-attachment-bubble:has(> .attachment-error-control):has(
+.message-image-bubble:has(> .attachment-error-control):has(
     > .image-attachment:hover
-  )::after,
-.pending-image-bubble.pending-attachment-error:hover::after {
-  border: 0;
-  box-shadow: inset 0 0 0 1px rgb(240 68 56 / 82%);
+  ),
+.pending-image-bubble.pending-attachment-error:hover {
+  border-color: rgb(240 68 56 / 82%);
 }
 
 .message-attachment-bubble:has(> .attachment-error-control):has(
@@ -1266,12 +1715,17 @@ body {
   overflow: hidden;
 }
 
+.message-image-bubble .image-attachment {
+  width: 100%;
+  height: 100%;
+}
+
 .image-attachment .image-preview {
   position: absolute;
-  inset: 1px;
+  inset: 0;
   display: block;
-  width: calc(100% - 2px);
-  height: calc(100% - 2px);
+  width: 100%;
+  height: 100%;
   min-width: 0;
   min-height: 0;
   max-width: none;
@@ -1736,6 +2190,11 @@ body {
   max-width: 84%;
 }
 
+.pending-text-two,
+.pending-text-many {
+  max-width: min(84%, calc(100% - 104px));
+}
+
 .pending-text-row::before {
   position: absolute;
   top: 0;
@@ -1784,7 +2243,7 @@ body {
 }
 
 .pending-text-one .pending-text-primary-actions {
-  right: calc(100% + var(--message-more-offset));
+  right: calc(100% + var(--message-more-offset) + 22px);
 }
 
 .pending-text-one .pending-retry-button {
@@ -1793,7 +2252,7 @@ body {
 
 .pending-text-one .pending-text-error {
   top: 50%;
-  right: calc(100% + var(--message-more-offset) + 29px);
+  right: calc(100% + var(--message-more-offset));
   bottom: auto;
   transform: translateY(-50%);
 }
@@ -1838,8 +2297,8 @@ body {
 
 .pending-image {
   position: relative;
-  width: var(--image-bubble-size);
-  height: var(--image-bubble-size);
+  width: 100%;
+  height: 100%;
   border-radius: inherit;
   overflow: hidden;
 }

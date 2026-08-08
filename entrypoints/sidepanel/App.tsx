@@ -1358,7 +1358,9 @@ function PendingFileItem({
               name={item.file?.name ?? item.attachment?.name ?? "File"}
             />
             <span className="file-attachment-copy">
-              <strong>{item.file?.name ?? item.attachment?.name}</strong>
+              <span className="file-attachment-name">
+                <strong>{item.file?.name ?? item.attachment?.name}</strong>
+              </span>
               <small
                 className={isActive ? undefined : "pending-file-error-copy"}
               >
@@ -1580,29 +1582,47 @@ function UploadingFileMessageItem({
   message: UploadingFileMessage;
   unresponsive: boolean;
 }) {
+  const isImage = message.pendingAttachment.mimeType.startsWith("image/");
+
   return (
     <div
       className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}`}
     >
-      <div className="message-bubble message-attachment-bubble uploading-message-bubble">
-        <div className="file-attachment">
-          <FileTypeIcon name={message.pendingAttachment.name} />
-          <span className="file-attachment-copy">
-            <strong>{message.pendingAttachment.name}</strong>
-            <small>
-              {unresponsive ? "No response" : "Sending from another device…"}
-            </small>
-          </span>
-        </div>
-        {unresponsive ? (
-          <span
-            aria-label="File upload did not respond"
-            className="attachment-error-control uploading-message-indicator"
-          >
-            <span aria-hidden="true" className="attachment-error">
-              !
+      <div
+        className={`message-bubble message-attachment-bubble uploading-message-bubble${isImage ? " message-image-bubble" : ""}${unresponsive ? " unresponsive-message-bubble" : ""}`}
+      >
+        {isImage ? (
+          <div className="image-attachment">
+            <ImagePlaceholderState
+              kind={unresponsive ? "preview" : "loading"}
+              label={
+                unresponsive
+                  ? "No response"
+                  : isOwn
+                    ? "Uploading…"
+                    : "Receiving…"
+              }
+            />
+          </div>
+        ) : (
+          <div className="file-attachment">
+            <FileTypeIcon name={message.pendingAttachment.name} />
+            <span className="file-attachment-copy">
+              <span className="file-attachment-name">
+                <strong>{message.pendingAttachment.name}</strong>
+              </span>
+              <small className="remote-transfer-copy">
+                {unresponsive
+                  ? "No response"
+                  : isOwn
+                    ? "Uploading…"
+                    : "Receiving…"}
+              </small>
             </span>
-          </span>
+          </div>
+        )}
+        {unresponsive ? (
+          <AttachmentError />
         ) : (
           <span
             aria-label="File upload in progress"
@@ -2080,7 +2100,9 @@ export function FileAttachment({
       <div className="file-attachment">
         <FileTypeIcon name={attachment.name} />
         <span className="file-attachment-copy">
-          <strong>{attachment.name}</strong>
+          <span className="file-attachment-name">
+            <strong>{attachment.name}</strong>
+          </span>
           <small className={isMissing ? "file-missing-copy" : undefined}>
             {isMissing ? "Not found in OneDrive" : formatBytes(attachment.size)}
           </small>

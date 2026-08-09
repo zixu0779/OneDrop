@@ -38,6 +38,33 @@ describe("message tombstones", () => {
     expect(deleteMonthCache).toHaveBeenCalledWith("2026-08");
   });
 
+  it("creates the tombstones folder through the app root item id", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        Response.json({ id: "app-root-id", name: "OneDrop" }),
+      )
+      .mockResolvedValueOnce(Response.json({ id: "tombstones-folder" }))
+      .mockResolvedValueOnce(new Response(null, { status: 404 }))
+      .mockResolvedValueOnce(
+        Response.json({ id: "tombstone-file", eTag: "tombstone-tag" }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await writeMessageTombstone("2026-08", messageId);
+
+    expect(fetchMock.mock.calls[2]![0]).toContain(
+      "/me/drive/items/app-root-id/children",
+    );
+    expect(JSON.parse(String(fetchMock.mock.calls[2]![1]?.body))).toMatchObject(
+      {
+        name: "tombstones",
+        folder: {},
+      },
+    );
+  });
+
   it("re-reads and merges after a concurrent first-document create", async () => {
     const otherMessageId = "01989f5e-7700-7000-8000-000000000002";
     const fetchMock = vi

@@ -104,6 +104,10 @@ export function App() {
   const [error, setError] = useState<string>();
   const [isWorking, setIsWorking] = useState(false);
   const [monthResult, setMonthResult] = useState<MonthReadResult>();
+  const [historicalMonthResults, setHistoricalMonthResults] = useState<
+    MonthReadResult[]
+  >([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [deviceId, setDeviceId] = useState<string>();
   const [draft, setDraft] = useState("");
   const [isSending, setIsSending] = useState(false);
@@ -120,6 +124,10 @@ export function App() {
   const [processingNoticeKey, setProcessingNoticeKey] = useState<string>();
   const [openingRecordItemId, setOpeningRecordItemId] = useState<string>();
   const [recordLocationError, setRecordLocationError] = useState<string>();
+  const [pendingDeleteMessage, setPendingDeleteMessage] = useState<{
+    messageId: string;
+    month: string;
+  }>();
   const [activeNoticeIndex, setActiveNoticeIndex] = useState(0);
   const [noticeDragOffset, setNoticeDragOffset] = useState(0);
   const [isNoticeDragging, setIsNoticeDragging] = useState(false);
@@ -148,6 +156,8 @@ export function App() {
   const accountCardRef = useRef<HTMLElement>(null);
   const isSendingRef = useRef(false);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const historyScrollHeightRef = useRef<number | undefined>(undefined);
+  const historyLoadingRef = useRef(false);
   const reselectPendingIdRef = useRef<string | null>(null);
   const noticeDragStartYRef = useRef<number | null>(null);
   const noticeWheelLockedRef = useRef(false);
@@ -276,6 +286,14 @@ export function App() {
     const timeline = timelineScrollRef.current;
     if (timeline) timeline.scrollTop = timeline.scrollHeight;
   }, [timelineIdentity, scrollRevision]);
+
+  useLayoutEffect(() => {
+    const timeline = timelineScrollRef.current;
+    const previousHeight = historyScrollHeightRef.current;
+    if (!timeline || previousHeight === undefined) return;
+    timeline.scrollTop += timeline.scrollHeight - previousHeight;
+    historyScrollHeightRef.current = undefined;
+  }, [historicalMonthResults]);
 
   useEffect(() => {
     if (!isAccountOpen) return;
@@ -498,6 +516,7 @@ export function App() {
   }
 
   async function loadOneDriveState(restoreTransfers = true) {
+    setHistoricalMonthResults([]);
     const devicePromise = sendRequest({ type: "device/id" });
     const folderPromise = sendRequest({ type: "onedrive/verify-app-folder" });
     const cachePromise = readCachedTimeline();
@@ -551,6 +570,7 @@ export function App() {
       const nextStatus = await sendAuthRequest(request);
       setStatus(nextStatus);
       setMonthResult(undefined);
+      setHistoricalMonthResults([]);
 
       if (request.type === "auth/sign-in" && nextStatus.state === "signed-in") {
         await loadOneDriveState();
@@ -814,30 +834,75 @@ export function App() {
     }
   }
 
-  async function deleteTimelineMessage(messageId: string) {
+  async function deleteTimelineMessage(messageId: string, month: string) {
+    const previousMonthResult = monthResult;
+    const previousHistoricalMonthResults = historicalMonthResults;
+    const previousPendingTexts = pendingTexts;
+    const previousPendingFiles = pendingFiles;
+    setPendingDeleteMessage(undefined);
+    const removeFromResult = (current: MonthReadResult): MonthReadResult => {
+      if (current.state !== "loaded") return current;
+      const { messageConflicts, ...rest } = current;
+      return {
+        ...rest,
+        messages: current.messages.filter(
+          (message) => message.id !== messageId,
+        ),
+        ...(messageConflicts
+          ? {
+              messageConflicts: messageConflicts.filter(
+                (conflict) => conflict.messageId !== messageId,
+              ),
+            }
+          : {}),
+      };
+    };
+    if (month === getUtcMonth()) {
+      setMonthResult((current) =>
+        current ? removeFromResult(current) : current,
+      );
+    } else {
+      setHistoricalMonthResults((results) =>
+        results.map((result) =>
+          result.month === month ? removeFromResult(result) : result,
+        ),
+      );
+    }
+    setPendingTexts((items) => items.filter((item) => item.id !== messageId));
+    setPendingFiles((items) => items.filter((item) => item.id !== messageId));
     setIsWorking(true);
     setError(undefined);
     try {
       const response = await sendRequest({
         type: "messages/delete",
         messageId,
-        month: getUtcMonth(),
+        month,
       });
       if (!response.ok || response.type !== "messages/deleted") {
         throw new Error("OneDrop received an unexpected delete response.");
       }
-      setMonthResult(response.result);
+      if (month === getUtcMonth()) {
+        setMonthResult(response.result);
+      } else {
+        setHistoricalMonthResults((results) =>
+          results.map((result) =>
+            result.month === month ? response.result : result,
+          ),
+        );
+      }
       await Promise.all([
         deletePendingText(messageId),
         deletePendingTransfer(messageId),
       ]);
-      setPendingTexts((items) => items.filter((item) => item.id !== messageId));
-      setPendingFiles((items) => {
-        const removed = items.find((item) => item.id === messageId);
-        if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
-        return items.filter((item) => item.id !== messageId);
-      });
+      const removed = previousPendingFiles.find(
+        (item) => item.id === messageId,
+      );
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
     } catch (cause) {
+      setMonthResult(previousMonthResult);
+      setHistoricalMonthResults(previousHistoricalMonthResults);
+      setPendingTexts(previousPendingTexts);
+      setPendingFiles(previousPendingFiles);
       setError(getClientError(cause));
     } finally {
       setIsWorking(false);
@@ -847,6 +912,65 @@ export function App() {
   function handleTimelineScroll() {
     setIsTimelineScrolling(true);
     scheduleScrollbarHide();
+    if (!isWorking && (timelineScrollRef.current?.scrollTop ?? 1) <= 24) {
+      void loadPreviousMonth();
+    }
+  }
+
+  function blockTimelineActionWhileWorking(
+    event: ReactMouseEvent<HTMLElement>,
+  ) {
+    if (!isWorking) return;
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest(
+        'button, input, [role="button"], [role="menuitem"], [role="menu"]',
+      )
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function blockTimelineKeyActionWhileWorking(
+    event: ReactKeyboardEvent<HTMLElement>,
+  ) {
+    if (!isWorking || (event.key !== "Enter" && event.key !== " ")) return;
+    const target = event.target;
+    if (
+      target instanceof Element &&
+      target.closest('button, [role="button"], [role="menuitem"]')
+    ) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  async function loadPreviousMonth() {
+    if (historyLoadingRef.current || !monthResult) return;
+    const oldestMonth = historicalMonthResults[0]?.month ?? monthResult.month;
+    const month = getPreviousMonth(oldestMonth);
+    historyLoadingRef.current = true;
+    setIsLoadingHistory(true);
+    setError(undefined);
+    historyScrollHeightRef.current = timelineScrollRef.current?.scrollHeight;
+    try {
+      const response = await sendRequest({
+        type: "messages/read-month",
+        month,
+      });
+      if (!response.ok || response.type !== "messages/month") {
+        throw new Error("OneDrop received an unexpected history response.");
+      }
+      setHistoricalMonthResults((results) => [response.result, ...results]);
+    } catch (cause) {
+      historyScrollHeightRef.current = undefined;
+      setError(getClientError(cause));
+    } finally {
+      historyLoadingRef.current = false;
+      setIsLoadingHistory(false);
+    }
   }
 
   function handleTimelineMouseMove(event: ReactMouseEvent<HTMLDivElement>) {
@@ -1455,7 +1579,13 @@ export function App() {
               })}
             </div>
           ) : null}
-          <section className="conversation" aria-label="OneDrop messages">
+          <section
+            aria-busy={isWorking}
+            aria-label="OneDrop messages"
+            className="conversation"
+            onClickCapture={blockTimelineActionWhileWorking}
+            onKeyDownCapture={blockTimelineKeyActionWhileWorking}
+          >
             {monthResult ? (
               <>
                 <div
@@ -1467,6 +1597,34 @@ export function App() {
                   ref={timelineScrollRef}
                 >
                   <div className="message-content">
+                    {isLoadingHistory ? (
+                      <span className="history-loading">Loading...</span>
+                    ) : null}
+                    {historicalMonthResults.map((result) => (
+                      <MonthResult
+                        attachmentCheckVersion={attachmentCheckVersion}
+                        deviceId={deviceId}
+                        key={result.month}
+                        pendingFiles={[]}
+                        pendingTexts={[]}
+                        result={result}
+                        refreshingUploadIds={refreshingUploadIds}
+                        showEmpty={false}
+                        compact
+                        unresponsiveUploadIds={unresponsiveUploadIds}
+                        onResend={(item) => void uploadPendingFile(item)}
+                        onDelete={(messageId) =>
+                          setPendingDeleteMessage({
+                            messageId,
+                            month: result.month,
+                          })
+                        }
+                        onUploadingRefresh={(messageId) =>
+                          void refreshUploadingMessage(messageId)
+                        }
+                        onTextResend={(item) => void sendPendingText(item)}
+                      />
+                    ))}
                     <MonthResult
                       attachmentCheckVersion={attachmentCheckVersion}
                       deviceId={deviceId}
@@ -1477,7 +1635,10 @@ export function App() {
                       unresponsiveUploadIds={unresponsiveUploadIds}
                       onResend={(item) => void uploadPendingFile(item)}
                       onDelete={(messageId) =>
-                        void deleteTimelineMessage(messageId)
+                        setPendingDeleteMessage({
+                          messageId,
+                          month: monthResult.month,
+                        })
                       }
                       onUploadingRefresh={(messageId) =>
                         void refreshUploadingMessage(messageId)
@@ -1560,6 +1721,20 @@ export function App() {
           id="record-location-error"
           message={recordLocationError}
           onClose={() => setRecordLocationError(undefined)}
+        />
+      ) : null}
+      {pendingDeleteMessage ? (
+        <CenteredConfirmationDialog
+          confirmLabel="Delete"
+          id="delete-message-confirmation"
+          message="Are you sure you want to delete this message from all devices?"
+          onCancel={() => setPendingDeleteMessage(undefined)}
+          onConfirm={() =>
+            void deleteTimelineMessage(
+              pendingDeleteMessage.messageId,
+              pendingDeleteMessage.month,
+            )
+          }
         />
       ) : null}
     </main>
@@ -1678,7 +1853,10 @@ function PendingFileItem({
             </button>
           )}
           <button
-            onClick={() => onDelete(item.id)}
+            onClick={() => {
+              setIsMenuOpen(false);
+              onDelete(item.id);
+            }}
             role="menuitem"
             type="button"
           >
@@ -1774,6 +1952,8 @@ function MonthResult({
   onResend,
   onUploadingRefresh,
   onTextResend,
+  showEmpty = true,
+  compact = false,
 }: {
   attachmentCheckVersion: number;
   deviceId: string | undefined;
@@ -1786,6 +1966,8 @@ function MonthResult({
   onResend: (item: PendingFile) => void;
   onUploadingRefresh: (messageId: string) => void;
   onTextResend: (item: PendingText) => void;
+  showEmpty?: boolean;
+  compact?: boolean;
 }) {
   const timelineGroups = groupTimelineItems(
     result.state === "loaded" ? result.messages : [],
@@ -1795,10 +1977,13 @@ function MonthResult({
   );
 
   return (
-    <div className="month-result" aria-live="polite">
-      {timelineGroups.length === 0 ? (
+    <div
+      className={`month-result${compact ? " month-result-compact" : ""}`}
+      aria-live="polite"
+    >
+      {timelineGroups.length === 0 && showEmpty ? (
         <span className="empty-timeline">No messages yet</span>
-      ) : (
+      ) : timelineGroups.length > 0 ? (
         <ol className="message-list">
           {timelineGroups.map((group) => (
             <li
@@ -1853,7 +2038,7 @@ function MonthResult({
             </li>
           ))}
         </ol>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -2032,7 +2217,10 @@ function PendingTextItem({
             Resend
           </button>
           <button
-            onClick={() => onDelete(item.id)}
+            onClick={() => {
+              setIsMenuOpen(false);
+              onDelete(item.id);
+            }}
             role="menuitem"
             type="button"
           >
@@ -2149,7 +2337,14 @@ export function UploadingFileMessageItem({
       ) : null}
       {isMenuOpen ? (
         <span className="message-actions-menu" role="menu">
-          <button onClick={onDelete} role="menuitem" type="button">
+          <button
+            onClick={() => {
+              setIsMenuOpen(false);
+              onDelete();
+            }}
+            role="menuitem"
+            type="button"
+          >
             Delete message
           </button>
         </span>
@@ -2414,7 +2609,14 @@ export function CommittedMessageItem({
           >
             {message.type === "text" ? "Copy text" : "Copy file name"}
           </button>
-          <button onClick={onDelete} role="menuitem" type="button">
+          <button
+            onClick={() => {
+              setIsMenuOpen(false);
+              onDelete();
+            }}
+            role="menuitem"
+            type="button"
+          >
             Delete message
           </button>
         </span>
@@ -2455,6 +2657,50 @@ function CenteredOperationDialog({
         <button autoFocus onClick={onClose} type="button">
           OK
         </button>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function CenteredConfirmationDialog({
+  confirmLabel,
+  id,
+  message,
+  onCancel,
+  onConfirm,
+}: {
+  confirmLabel: string;
+  id: string;
+  message: string;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return createPortal(
+    <div
+      aria-labelledby={id}
+      aria-modal="true"
+      className="operation-dialog-backdrop"
+      onClick={onCancel}
+      role="dialog"
+    >
+      <div
+        className="operation-dialog"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <p id={id}>{message}</p>
+        <div className="operation-dialog-actions">
+          <button autoFocus onClick={onCancel} type="button">
+            Cancel
+          </button>
+          <button
+            className="operation-dialog-danger"
+            onClick={onConfirm}
+            type="button"
+          >
+            {confirmLabel}
+          </button>
+        </div>
       </div>
     </div>,
     document.body,
@@ -3122,6 +3368,12 @@ async function fileToBase64(file: File): Promise<string> {
     );
   }
   return btoa(binary);
+}
+
+function getPreviousMonth(month: string): string {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const date = new Date(Date.UTC(year!, monthNumber! - 2, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function getClientError(cause: unknown): string {

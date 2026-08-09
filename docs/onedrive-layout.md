@@ -1,6 +1,6 @@
 # OneDrive storage contract
 
-Status: root checks, cached monthly reads, active-month chunk writes, small-file attachments, and logical single-message deletion are implemented; archive compaction and physical attachment cleanup remain deferred.
+Status: root checks, cached monthly reads, lazy historical-month loading, active-month chunk writes, small-file attachments, and logical single-message deletion are implemented; archive compaction and physical attachment cleanup remain deferred.
 
 The root App Folder lookup, current-month read, text message write, small-file upload, and current-month tombstone paths are implemented.
 
@@ -18,7 +18,7 @@ The `/special/approot` endpoint is the identity boundary for this lookup. The cl
 
 The obsolete `messages/YYYY-MM.json` layout is outside the protocol: OneDrop does not probe, read, migrate, or delete those files. Historical documents are not rewritten by normal send behavior. OneDrop does not automatically replay failed or offline sends into historical months.
 
-The reader enumerates the current UTC month's chunk directory with Graph pagination. HTTP 404 is interpreted as an empty timeline, not an error. Every chunk must expose an ETag and pass the versioned Zod schema. A malformed chunk is isolated so healthy chunks can still be displayed, while writes to that month remain blocked until the user repairs or deletes the damaged file from the pinned recovery notice.
+The reader enumerates a requested UTC month's chunk directory with Graph pagination. The Side Panel initially requests the current month, then requests one earlier month whenever the timeline reaches its top. Historical results are prepended while preserving the visible scroll position. HTTP 404 is interpreted as an empty month, not an error. Every chunk must expose an ETag and pass the versioned Zod schema. A malformed chunk is isolated so healthy chunks can still be displayed, while writes to that month remain blocked until the user repairs or deletes the damaged file from the pinned recovery notice.
 
 The first text send creates the month folder and `0001.json`. Subsequent sends replace the active chunk only when its previously read ETag still matches. Once adding a message would exceed the 256 KiB soft target, the writer creates the deterministic successor instead. Every individual chunk has a 320 KiB hard ceiling. A validated snapshot and folder IDs are cached in IndexedDB. Old cache records that contain no chunk metadata are invalidated automatically. The normal subsequent-send path therefore performs one conditional upload. Create and update conflicts invalidate the snapshot, then re-read, merge by immutable message ID, and retry within a fixed budget.
 

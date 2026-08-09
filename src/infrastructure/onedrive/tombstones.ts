@@ -9,6 +9,7 @@ import {
 import { getCurrentAccessToken } from "../../features/auth/auth-service";
 import { readGraphError } from "../graph/graph-error";
 import { deleteMonthCache } from "../indexed-db/sync-cache";
+import { verifyAppFolder } from "./app-folder";
 
 const MAX_ATTEMPTS = 5;
 const itemSchema = z.object({ id: z.string().min(1), eTag: z.string().min(1) });
@@ -123,8 +124,9 @@ async function ensureTombstonesFolder(accessToken: string): Promise<void> {
       `Tombstones folder lookup failed: ${await readGraphError(existing)}`,
     );
   }
+  const appRoot = await verifyAppFolder();
   const created = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/children`,
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(appRoot.id)}/children`,
     {
       method: "POST",
       headers: {

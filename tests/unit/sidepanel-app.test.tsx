@@ -76,6 +76,25 @@ const sendMessage = vi.fn(async (request: { type: string }) => {
           ],
         },
       };
+    case "messages/read-month":
+      return {
+        ok: true,
+        type: "messages/month",
+        result: {
+          state: "loaded",
+          month: "2026-07",
+          eTag: "history-etag",
+          messages: [
+            {
+              schemaVersion: 1,
+              id: "01989f5e-7700-7000-8000-000000000003",
+              type: "text",
+              text: "from July",
+              createdAt: "2026-07-31T23:00:00.000Z",
+            },
+          ],
+        },
+      };
     default:
       throw new Error("Unexpected request");
   }
@@ -184,6 +203,67 @@ describe("side panel message composer", () => {
     fireEvent.keyDown(composer, { key: "Enter" });
 
     await waitFor(() => expect(timeline!.scrollTop).toBe(500));
+  });
+
+  it("loads the previous month when the timeline reaches the top", async () => {
+    await screenForComposer();
+    const timeline = document.querySelector<HTMLElement>(".message-scroll");
+    expect(timeline).not.toBeNull();
+    timeline!.scrollTop = 0;
+
+    fireEvent.scroll(timeline!);
+
+    expect(await screen.findByText("from July")).toBeInTheDocument();
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "messages/read-month",
+      month: "2026-07",
+    });
+  });
+
+  it("blocks message actions and history loading while synchronization runs", async () => {
+    await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const monthResponse = await originalImplementation({
+      type: "messages/read-current-month",
+    });
+    let finishSynchronization!: () => void;
+    const synchronization = new Promise<typeof monthResponse>((resolve) => {
+      finishSynchronization = () => resolve(monthResponse);
+    });
+    sendMessage.mockImplementation((request: { type: string }) =>
+      request.type === "messages/read-current-month"
+        ? synchronization
+        : originalImplementation(request),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh messages and files" }),
+    );
+
+    const conversation = screen.getByRole("region", {
+      name: "OneDrop messages",
+    });
+    await waitFor(() =>
+      expect(conversation).toHaveAttribute("aria-busy", "true"),
+    );
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "More message actions" })[0]!,
+    );
+    expect(screen.queryByRole("menuitem", { name: "Copy text" })).toBeNull();
+
+    const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
+    timeline.scrollTop = 0;
+    fireEvent.scroll(timeline);
+    expect(sendMessage).not.toHaveBeenCalledWith({
+      type: "messages/read-month",
+      month: "2026-07",
+    });
+
+    finishSynchronization();
+    await waitFor(() =>
+      expect(conversation).toHaveAttribute("aria-busy", "false"),
+    );
   });
 
   it("does not send Enter while an IME composition is active", async () => {

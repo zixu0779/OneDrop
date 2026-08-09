@@ -80,6 +80,12 @@ export default defineBackground(() => {
               type: "messages/month",
               result: await readMonthDocument(getUtcMonth()),
             };
+          case "messages/read-month":
+            return {
+              ok: true,
+              type: "messages/month",
+              result: await readMonthDocument(request.month),
+            };
           case "messages/delete":
             await writeMessageTombstone(request.month, request.messageId);
             return {

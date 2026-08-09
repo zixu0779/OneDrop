@@ -18,6 +18,7 @@ export type RuntimeRequest =
   | { type: "onedrive/verify-app-folder" }
   | { type: "dev/rebuild-test-data" }
   | { type: "messages/read-current-month" }
+  | { type: "messages/read-month"; month: string }
   | { type: "messages/delete"; messageId: string; month: string }
   | { type: "messages/delete-corrupt-file"; itemId: string }
   | { type: "messages/open-corrupt-file-location"; itemId: string }

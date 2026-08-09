@@ -474,6 +474,14 @@ body {
   font-size: 13px;
 }
 
+.history-loading {
+  display: block;
+  padding: 8px 12px;
+  color: #667085;
+  text-align: center;
+  font-size: 12px;
+}
+
 .verification-step,
 .folder-result,
 .month-result {
@@ -510,6 +518,14 @@ body {
   margin-top: 0;
   padding: 0;
   background: transparent;
+}
+
+.month-result + .month-result {
+  margin-top: 14px;
+}
+
+.month-result-compact {
+  min-height: 0;
 }
 
 .month-result code {
@@ -1540,6 +1556,20 @@ body {
   color: white;
   background: #3578d4;
   cursor: pointer;
+}
+
+.operation-dialog-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+}
+
+.operation-dialog-actions button {
+  margin: 0;
+}
+
+.operation-dialog-actions .operation-dialog-danger {
+  background: #d83b35;
 }
 
 @keyframes message-actions-ready {

@@ -171,8 +171,36 @@ export async function rebuildTestData(): Promise<void> {
 
   for (const message of remoteMessages) await appendMessage(month, message);
 
+  await seedHistoricalMessages(month, ownDeviceId, peerDeviceId);
   await seedLocalFailures(at(10));
   await createConflictAndDamage(accessToken, month, ownText, peerDeviceId);
+}
+
+async function seedHistoricalMessages(
+  currentMonth: string,
+  ownDeviceId: string,
+  peerDeviceId: string,
+): Promise<void> {
+  let month = currentMonth;
+  for (let monthOffset = 1; monthOffset <= 2; monthOffset += 1) {
+    month = getPreviousMonth(month);
+    const [year, monthNumber] = month.split("-").map(Number);
+    for (let index = 0; index < 12; index += 1) {
+      const createdAt = new Date(
+        Date.UTC(year!, monthNumber! - 1, 12 + index, 9 + (index % 4), 0),
+      );
+      const senderDeviceId = index % 2 === 0 ? ownDeviceId : peerDeviceId;
+      await appendMessage(
+        month,
+        createTextMessage(
+          `Historical test message ${index + 1} of 12 — ${month}`,
+          createdAt,
+          crypto.randomUUID(),
+          senderDeviceId,
+        ),
+      );
+    }
+  }
 }
 
 async function createMessagesFolder(
@@ -288,7 +316,12 @@ async function deleteTestFolders(
   if (!response.ok) throw new Error("Unable to list OneDrop test folders.");
   const children = childrenSchema.parse(await response.json()).value;
   for (const child of children) {
-    if (child.name !== "messages" && child.name !== "files") continue;
+    if (
+      child.name !== "messages" &&
+      child.name !== "files" &&
+      child.name !== "tombstones"
+    )
+      continue;
     const deleted = await fetch(
       `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(child.id)}`,
       {
@@ -325,6 +358,12 @@ async function putRecordFile(
 function base64ByteLength(value: string): number {
   return Uint8Array.from(atob(value), (character) => character.charCodeAt(0))
     .byteLength;
+}
+
+function getPreviousMonth(month: string): string {
+  const [year, monthNumber] = month.split("-").map(Number);
+  const date = new Date(Date.UTC(year!, monthNumber! - 2, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function base64Blob(value: string, type: string): Blob {

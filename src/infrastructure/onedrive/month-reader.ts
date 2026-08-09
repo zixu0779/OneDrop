@@ -20,6 +20,7 @@ import {
   putMonthCache,
 } from "../indexed-db/sync-cache";
 import { getMessageLines } from "./month-serialization";
+import { readTombstoneIds } from "./tombstones";
 
 const monthPattern = /^\d{4}-\d{2}$/u;
 const chunkNamePattern = /^(\d{4})\.json$/u;
@@ -99,7 +100,17 @@ export async function readMonthSnapshot(
     };
   }
 
-  const { messages, messageConflicts } = mergeMessages(chunks);
+  const {
+    messages: unfilteredMessages,
+    messageConflicts: unfilteredConflicts,
+  } = mergeMessages(chunks);
+  const deletedMessageIds = await readTombstoneIds(month, accessToken);
+  const messages = unfilteredMessages.filter(
+    (message) => !deletedMessageIds.has(message.id),
+  );
+  const messageConflicts = unfilteredConflicts.filter(
+    (conflict) => !deletedMessageIds.has(conflict.messageId),
+  );
   if (!allowCorruptFiles && messageConflicts.length > 0) {
     throw new Error(
       `OneDrive contains conflicting versions of message ${messageConflicts[0]!.messageId}.`,

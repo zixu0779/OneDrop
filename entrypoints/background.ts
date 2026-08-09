@@ -35,6 +35,7 @@ import {
 } from "../src/infrastructure/onedrive/corrupt-month-file";
 import { deleteMonthCache } from "../src/infrastructure/indexed-db/sync-cache";
 import { rebuildTestData } from "../src/dev/rebuild-test-data";
+import { writeMessageTombstone } from "../src/infrastructure/onedrive/tombstones";
 
 export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(() => {
@@ -78,6 +79,13 @@ export default defineBackground(() => {
               ok: true,
               type: "messages/month",
               result: await readMonthDocument(getUtcMonth()),
+            };
+          case "messages/delete":
+            await writeMessageTombstone(request.month, request.messageId);
+            return {
+              ok: true,
+              type: "messages/deleted",
+              result: await readMonthDocument(request.month),
             };
           case "messages/delete-corrupt-file":
             await deleteCorruptMonthFile(request.itemId);

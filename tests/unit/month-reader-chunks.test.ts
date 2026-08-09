@@ -6,6 +6,10 @@ vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
   putMonthCache: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../src/infrastructure/onedrive/tombstones", () => ({
+  readTombstoneIds: vi.fn().mockResolvedValue(new Set()),
+}));
+
 import { createTextMessage } from "../../src/features/messages/create-text-message";
 import {
   deleteMonthCache,
@@ -15,6 +19,7 @@ import {
   getCachedMonthSnapshot,
   readMonthSnapshot,
 } from "../../src/infrastructure/onedrive/month-reader";
+import { readTombstoneIds } from "../../src/infrastructure/onedrive/tombstones";
 
 const firstMessage = createTextMessage(
   "first",
@@ -73,6 +78,32 @@ describe("chunked month reader", () => {
     await expect(readMonthSnapshot("2026-08", "access-token")).resolves.toEqual(
       { state: "missing", month: "2026-08" },
     );
+  });
+
+  it("filters messages recorded by a monthly tombstone", async () => {
+    vi.mocked(readTombstoneIds).mockResolvedValueOnce(
+      new Set([firstMessage.id]),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [{ id: "chunk-1", name: "0001.json", eTag: "tag-1" }],
+          }),
+        )
+        .mockResolvedValueOnce(
+          Response.json(document([firstMessage, chunkMessage])),
+        ),
+    );
+
+    const snapshot = await readMonthSnapshot("2026-08", "access-token");
+
+    expect(snapshot.state).toBe("loaded");
+    if (snapshot.state === "loaded") {
+      expect(snapshot.document.messages).toEqual([chunkMessage]);
+    }
   });
 
   it("skips a damaged chunk for display while retaining healthy messages", async () => {

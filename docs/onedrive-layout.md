@@ -1,8 +1,8 @@
 # OneDrive storage contract
 
-Status: root checks, cached monthly reads, active-month chunk writes, and small-file attachments are implemented; archive compaction and deletion remain deferred.
+Status: root checks, cached monthly reads, active-month chunk writes, small-file attachments, and logical single-message deletion are implemented; archive compaction and physical attachment cleanup remain deferred.
 
-The root App Folder lookup, current-month read, text message write, and small-file upload paths are implemented. Tombstones remain deferred.
+The root App Folder lookup, current-month read, text message write, small-file upload, and current-month tombstone paths are implemented.
 
 ## Root
 
@@ -38,7 +38,7 @@ New image records may additionally store the original pixel dimensions and a Bas
 
 ## Deletion
 
-Deletion implementation is deferred, but its product scope is limited to individual messages. OneDrop will not offer deletion of an entire month. Versioned tombstones will identify the message ID, original month, and deletion timestamp so the same rule can filter active chunks and archive files. The tombstone write protocol must use the same bounded conflict handling as message metadata.
+Deletion is limited to individual messages. OneDrop does not offer deletion of an entire month. Versioned tombstones in `tombstones/YYYY-MM.json` identify the message ID, original month, and deletion timestamp. Existing tombstone documents are replaced with their exact ETag; create and update conflicts are re-read and retried within a five-attempt budget. Current-month readers apply tombstones before returning messages or conflict notices. Deletion is logical: message chunks, OneDrive attachments, and user-downloaded files are not physically removed. Archive filtering and later safe compaction must apply the same tombstones before historical loading ships.
 
 ## Schema evolution
 

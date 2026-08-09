@@ -1,7 +1,9 @@
 import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
   type WheelEvent as ReactWheelEvent,
   useEffect,
   useLayoutEffect,
@@ -107,6 +109,8 @@ export function App() {
   const [isSending, setIsSending] = useState(false);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isTimelineScrolling, setIsTimelineScrolling] = useState(false);
+  const [isTimelineScrollbarHovered, setIsTimelineScrollbarHovered] =
+    useState(false);
   const [isPanelVisible, setIsPanelVisible] = useState(
     typeof document === "undefined" || document.visibilityState !== "hidden",
   );
@@ -143,7 +147,6 @@ export function App() {
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const accountCardRef = useRef<HTMLElement>(null);
   const isSendingRef = useRef(false);
-  const isTimelineHoveredRef = useRef(false);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const reselectPendingIdRef = useRef<string | null>(null);
   const noticeDragStartYRef = useRef<number | null>(null);
@@ -811,26 +814,54 @@ export function App() {
     }
   }
 
+  async function deleteTimelineMessage(messageId: string) {
+    setIsWorking(true);
+    setError(undefined);
+    try {
+      const response = await sendRequest({
+        type: "messages/delete",
+        messageId,
+        month: getUtcMonth(),
+      });
+      if (!response.ok || response.type !== "messages/deleted") {
+        throw new Error("OneDrop received an unexpected delete response.");
+      }
+      setMonthResult(response.result);
+      await Promise.all([
+        deletePendingText(messageId),
+        deletePendingTransfer(messageId),
+      ]);
+      setPendingTexts((items) => items.filter((item) => item.id !== messageId));
+      setPendingFiles((items) => {
+        const removed = items.find((item) => item.id === messageId);
+        if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+        return items.filter((item) => item.id !== messageId);
+      });
+    } catch (cause) {
+      setError(getClientError(cause));
+    } finally {
+      setIsWorking(false);
+    }
+  }
+
   function handleTimelineScroll() {
     setIsTimelineScrolling(true);
     scheduleScrollbarHide();
   }
 
-  function handleTimelineMouseEnter() {
-    isTimelineHoveredRef.current = true;
-    if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
-    setIsTimelineScrolling(true);
+  function handleTimelineMouseMove(event: ReactMouseEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    setIsTimelineScrollbarHovered(event.clientX >= bounds.right - 16);
   }
 
   function handleTimelineMouseLeave() {
-    isTimelineHoveredRef.current = false;
-    scheduleScrollbarHide();
+    setIsTimelineScrollbarHovered(false);
   }
 
   function scheduleScrollbarHide() {
     if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
     scrollTimerRef.current = setTimeout(() => {
-      if (!isTimelineHoveredRef.current) setIsTimelineScrolling(false);
+      setIsTimelineScrolling(false);
     }, 1_800);
   }
 
@@ -1428,10 +1459,11 @@ export function App() {
             {monthResult ? (
               <>
                 <div
-                  className={`message-scroll${isTimelineScrolling ? " is-scrolling" : ""}`}
-                  onMouseEnter={handleTimelineMouseEnter}
+                  className={`message-scroll${isTimelineScrolling || isTimelineScrollbarHovered ? " is-scrolling" : ""}`}
                   onMouseLeave={handleTimelineMouseLeave}
+                  onMouseMove={handleTimelineMouseMove}
                   onScroll={handleTimelineScroll}
+                  onWheel={handleTimelineScroll}
                   ref={timelineScrollRef}
                 >
                   <div className="message-content">
@@ -1444,6 +1476,9 @@ export function App() {
                       refreshingUploadIds={refreshingUploadIds}
                       unresponsiveUploadIds={unresponsiveUploadIds}
                       onResend={(item) => void uploadPendingFile(item)}
+                      onDelete={(messageId) =>
+                        void deleteTimelineMessage(messageId)
+                      }
                       onUploadingRefresh={(messageId) =>
                         void refreshUploadingMessage(messageId)
                       }
@@ -1550,9 +1585,11 @@ function UnifiedPulseLoader() {
 
 export function PendingFileList({
   items,
+  onDelete = () => undefined,
   onResend,
 }: {
   items: PendingFile[];
+  onDelete?: (messageId: string) => void;
   onResend: (item: PendingFile) => void;
 }) {
   if (items.length === 0) return null;
@@ -1560,7 +1597,11 @@ export function PendingFileList({
     <ol className="pending-file-list" aria-label="Pending file transfers">
       {items.map((item) => (
         <li key={item.id}>
-          <PendingFileItem item={item} onResend={onResend} />
+          <PendingFileItem
+            item={item}
+            onDelete={onDelete}
+            onResend={onResend}
+          />
         </li>
       ))}
     </ol>
@@ -1569,9 +1610,11 @@ export function PendingFileList({
 
 function PendingFileItem({
   item,
+  onDelete,
   onResend,
 }: {
   item: PendingFile;
+  onDelete: (messageId: string) => void;
   onResend: (item: PendingFile) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -1634,9 +1677,12 @@ function PendingFileItem({
               Resend
             </button>
           )}
-          <button disabled role="menuitem" type="button">
+          <button
+            onClick={() => onDelete(item.id)}
+            role="menuitem"
+            type="button"
+          >
             Delete message
-            <small>Coming soon</small>
           </button>
         </span>
       ) : null}
@@ -1645,9 +1691,13 @@ function PendingFileItem({
           <LoadingIcon />
         </span>
       ) : (
-        <span aria-label="Transfer error" className="pending-transfer-error">
+        <FloatingErrorTooltip
+          ariaLabel="Transfer error"
+          className="pending-transfer-error"
+          message="Upload failed"
+        >
           <span aria-hidden="true">!</span>
-        </span>
+        </FloatingErrorTooltip>
       )}
       <div
         className={`pending-file-bubble ${item.isImage ? "pending-image-bubble" : "pending-document-bubble"}${isActive ? "" : " pending-attachment-error"}`}
@@ -1668,9 +1718,9 @@ function PendingFileItem({
               name={item.file?.name ?? item.attachment?.name ?? "File"}
             />
             <span className="file-attachment-copy">
-              <span className="file-attachment-name">
-                <strong>{item.file?.name ?? item.attachment?.name}</strong>
-              </span>
+              <FileAttachmentName
+                name={item.file?.name ?? item.attachment?.name ?? "File"}
+              />
               <small
                 className={isActive ? undefined : "pending-file-error-copy"}
               >
@@ -1720,6 +1770,7 @@ function MonthResult({
   result,
   refreshingUploadIds,
   unresponsiveUploadIds,
+  onDelete,
   onResend,
   onUploadingRefresh,
   onTextResend,
@@ -1731,6 +1782,7 @@ function MonthResult({
   result: MonthReadResult;
   refreshingUploadIds: Set<string>;
   unresponsiveUploadIds: Set<string>;
+  onDelete: (messageId: string) => void;
   onResend: (item: PendingFile) => void;
   onUploadingRefresh: (messageId: string) => void;
   onTextResend: (item: PendingText) => void;
@@ -1762,12 +1814,14 @@ function MonthResult({
                     <PendingFileItem
                       item={item.pending}
                       key={item.pending.id}
+                      onDelete={onDelete}
                       onResend={onResend}
                     />
                   ) : item.kind === "pending-text" ? (
                     <PendingTextItem
                       item={item.pending}
                       key={item.pending.id}
+                      onDelete={onDelete}
                       onResend={onTextResend}
                     />
                   ) : item.message.type === "file-uploading" ? (
@@ -1775,6 +1829,7 @@ function MonthResult({
                       isOwn={group.isOwn}
                       key={item.message.id}
                       message={item.message}
+                      onDelete={() => onDelete(item.message.id)}
                       isRefreshing={refreshingUploadIds.has(item.message.id)}
                       onRefresh={() => onUploadingRefresh(item.message.id)}
                       unresponsive={
@@ -1790,6 +1845,7 @@ function MonthResult({
                       isOwn={group.isOwn}
                       key={item.message.id}
                       message={item.message}
+                      onDelete={() => onDelete(item.message.id)}
                     />
                   ),
                 )}
@@ -1804,28 +1860,114 @@ function MonthResult({
 
 function PendingTextItem({
   item,
+  onDelete,
   onResend,
 }: {
   item: PendingText;
+  onDelete: (messageId: string) => void;
   onResend: (item: PendingText) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [lineLayout, setLineLayout] = useState<"one" | "two" | "many">("many");
+  const [forcedBreakAt, setForcedBreakAt] = useState<number>();
+  const bubbleRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLParagraphElement>(null);
 
   useLayoutEffect(() => {
     const text = textRef.current;
-    if (!text) return;
+    const bubble = bubbleRef.current;
+    const row = rowRef.current;
+    const container = row?.parentElement;
+    if (!text || !bubble || !container) return;
     const measure = () => {
-      const lineHeight = Number.parseFloat(getComputedStyle(text).lineHeight);
-      const lines = Math.max(1, Math.round(text.scrollHeight / lineHeight));
-      setLineLayout(lines === 1 ? "one" : lines === 2 ? "two" : "many");
+      const containerWidth = container.getBoundingClientRect().width;
+      if (containerWidth <= 0) return;
+
+      const textStyle = getComputedStyle(text);
+      const bubbleStyle = getComputedStyle(bubble);
+      const horizontalBubbleSpace =
+        Number.parseFloat(bubbleStyle.paddingLeft) +
+        Number.parseFloat(bubbleStyle.paddingRight) +
+        Number.parseFloat(bubbleStyle.borderLeftWidth) +
+        Number.parseFloat(bubbleStyle.borderRightWidth);
+      const oneLineTextWidth =
+        Math.min(containerWidth * 0.84, containerWidth - 122) -
+        horizontalBubbleSpace;
+      const regularTextWidth =
+        Math.min(containerWidth * 0.84, containerWidth - 104) -
+        horizontalBubbleSpace;
+      const probe = text.cloneNode(true) as HTMLParagraphElement;
+      Object.assign(probe.style, {
+        position: "fixed",
+        inset: "0 auto auto 0",
+        zIndex: "-1",
+        margin: "0",
+        visibility: "hidden",
+        maxWidth: "none",
+        font: textStyle.font,
+        letterSpacing: textStyle.letterSpacing,
+        lineHeight: textStyle.lineHeight,
+      });
+      document.body.append(probe);
+
+      probe.textContent = item.text;
+      probe.style.width = "max-content";
+      probe.style.whiteSpace = "pre";
+      probe.style.overflowWrap = "normal";
+      const fitsOneLine =
+        !item.text.includes("\n") && probe.scrollWidth <= oneLineTextWidth;
+      if (fitsOneLine) {
+        probe.remove();
+        setForcedBreakAt(undefined);
+        setLineLayout("one");
+        return;
+      }
+
+      probe.textContent = item.text;
+      probe.style.width = `${Math.max(1, regularTextWidth)}px`;
+      probe.style.whiteSpace = "pre-wrap";
+      probe.style.overflowWrap = "anywhere";
+      const lineHeight = Number.parseFloat(textStyle.lineHeight);
+      const lines = Math.max(1, Math.round(probe.scrollHeight / lineHeight));
+
+      if (lines === 1) {
+        const characters = Array.from(item.text);
+        let low = 1;
+        let high = characters.length - 1;
+        let breakAt = 1;
+        probe.style.width = "max-content";
+        probe.style.whiteSpace = "pre";
+        probe.style.overflowWrap = "normal";
+        while (low <= high) {
+          const middle = Math.floor((low + high) / 2);
+          probe.textContent = characters.slice(0, middle).join("");
+          if (probe.scrollWidth <= oneLineTextWidth) {
+            breakAt = middle;
+            low = middle + 1;
+          } else {
+            high = middle - 1;
+          }
+        }
+        const precedingText = characters.slice(0, breakAt).join("");
+        const whitespaceIndex = Math.max(
+          precedingText.lastIndexOf(" "),
+          precedingText.lastIndexOf("\t"),
+        );
+        setForcedBreakAt(whitespaceIndex > 0 ? whitespaceIndex + 1 : breakAt);
+        probe.remove();
+        setLineLayout("two");
+        return;
+      }
+
+      probe.remove();
+      setForcedBreakAt(undefined);
+      setLineLayout(lines === 2 ? "two" : "many");
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
-    observer.observe(text);
+    observer.observe(container);
     return () => observer.disconnect();
   }, [item.text]);
 
@@ -1845,8 +1987,18 @@ function PendingTextItem({
 
   return (
     <div className={`pending-text-row pending-text-${lineLayout}`} ref={rowRef}>
-      <div className="message-bubble pending-text-bubble">
-        <p ref={textRef}>{item.text}</p>
+      <div className="message-bubble pending-text-bubble" ref={bubbleRef}>
+        <p ref={textRef}>
+          {forcedBreakAt === undefined ? (
+            item.text
+          ) : (
+            <>
+              {Array.from(item.text).slice(0, forcedBreakAt).join("")}
+              <br />
+              {Array.from(item.text).slice(forcedBreakAt).join("")}
+            </>
+          )}
+        </p>
       </div>
       <span className="pending-text-primary-actions">
         <button
@@ -1869,12 +2021,8 @@ function PendingTextItem({
         </button>
       </span>
       {item.status === "send-failed" ? (
-        <span
-          aria-label="Upload failed"
-          className="pending-text-error"
-          title="Upload failed"
-        >
-          <AttachmentError />
+        <span className="pending-text-error">
+          <AttachmentError message="Upload failed" />
         </span>
       ) : null}
       {isMenuOpen ? (
@@ -1883,9 +2031,12 @@ function PendingTextItem({
             <RetryIcon />
             Resend
           </button>
-          <button disabled role="menuitem" type="button">
+          <button
+            onClick={() => onDelete(item.id)}
+            role="menuitem"
+            type="button"
+          >
             Delete message
-            <small>Coming soon</small>
           </button>
         </span>
       ) : null}
@@ -1897,12 +2048,14 @@ export function UploadingFileMessageItem({
   isRefreshing,
   isOwn,
   message,
+  onDelete = () => undefined,
   onRefresh,
   unresponsive,
 }: {
   isRefreshing: boolean;
   isOwn: boolean;
   message: UploadingFileMessage;
+  onDelete?: () => void;
   onRefresh: () => void;
   unresponsive: boolean;
 }) {
@@ -1949,9 +2102,7 @@ export function UploadingFileMessageItem({
           <div className="file-attachment">
             <FileTypeIcon name={message.pendingAttachment.name} />
             <span className="file-attachment-copy">
-              <span className="file-attachment-name">
-                <strong>{message.pendingAttachment.name}</strong>
-              </span>
+              <FileAttachmentName name={message.pendingAttachment.name} />
               <small className="remote-transfer-copy">
                 {unresponsive
                   ? "No response"
@@ -1963,7 +2114,7 @@ export function UploadingFileMessageItem({
           </div>
         )}
         {unresponsive ? (
-          <AttachmentError />
+          <AttachmentError message="No response" />
         ) : (
           <span
             aria-label="File upload in progress"
@@ -1998,9 +2149,8 @@ export function UploadingFileMessageItem({
       ) : null}
       {isMenuOpen ? (
         <span className="message-actions-menu" role="menu">
-          <button disabled role="menuitem" type="button">
+          <button onClick={onDelete} role="menuitem" type="button">
             Delete message
-            <small>Coming soon</small>
           </button>
         </span>
       ) : null}
@@ -2012,10 +2162,12 @@ export function CommittedMessageItem({
   checkVersion,
   isOwn,
   message,
+  onDelete = () => undefined,
 }: {
   checkVersion: number;
   isOwn: boolean;
   message: ReadyMessage;
+  onDelete?: () => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isAttachmentWorking, setIsAttachmentWorking] = useState(false);
@@ -2170,7 +2322,7 @@ export function CommittedMessageItem({
 
   return (
     <div
-      className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}`}
+      className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}${message.type === "text" ? " message-text-shell" : ""}`}
       ref={shellRef}
     >
       <div
@@ -2262,9 +2414,8 @@ export function CommittedMessageItem({
           >
             {message.type === "text" ? "Copy text" : "Copy file name"}
           </button>
-          <button disabled role="menuitem" type="button">
+          <button onClick={onDelete} role="menuitem" type="button">
             Delete message
-            <small>Coming soon</small>
           </button>
         </span>
       ) : null}
@@ -2391,7 +2542,11 @@ export function ImageAttachment({
           />
         )}
       </div>
-      {isMissing || previewFailed ? <AttachmentError /> : null}
+      {isMissing || previewFailed ? (
+        <AttachmentError
+          message={isMissing ? "Not found in OneDrive" : "Preview unavailable"}
+        />
+      ) : null}
     </>
   );
 }
@@ -2468,9 +2623,7 @@ export function FileAttachment({
       <div className="file-attachment">
         <FileTypeIcon name={attachment.name} />
         <span className="file-attachment-copy">
-          <span className="file-attachment-name">
-            <strong>{attachment.name}</strong>
-          </span>
+          <FileAttachmentName name={attachment.name} />
           <small className={isMissing ? "file-missing-copy" : undefined}>
             {isMissing ? "Not found in OneDrive" : formatBytes(attachment.size)}
           </small>
@@ -2485,17 +2638,146 @@ export function FileAttachment({
           </span>
         ) : null}
       </div>
-      {isMissing ? <AttachmentError /> : null}
+      {isMissing ? <AttachmentError message="Not found in OneDrive" /> : null}
     </>
   );
 }
 
-function AttachmentError() {
+function AttachmentError({ message }: { message: string }) {
   return (
-    <span className="attachment-error-control">
+    <FloatingErrorTooltip
+      className="attachment-error-control"
+      message={message}
+    >
       <span aria-label="Attachment error" className="attachment-error">
         !
       </span>
+    </FloatingErrorTooltip>
+  );
+}
+
+function FloatingErrorTooltip({
+  ariaLabel,
+  children,
+  className,
+  message,
+}: {
+  ariaLabel?: string;
+  children: ReactNode;
+  className: string;
+  message: string;
+}) {
+  const [isVisible, setIsVisible] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
+  const triggerRef = useRef<HTMLSpanElement>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (!isVisible) return;
+
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      const tooltip = tooltipRef.current;
+      if (!trigger || !tooltip) return;
+
+      const triggerBounds = trigger.getBoundingClientRect();
+      const tooltipBounds = tooltip.getBoundingClientRect();
+      const edgeMargin = 8;
+      const gap = 6;
+      const topPosition = triggerBounds.top - tooltipBounds.height - gap;
+      const bottomPosition = triggerBounds.bottom + gap;
+      const fitsAbove = topPosition >= edgeMargin;
+      const fitsBelow =
+        bottomPosition + tooltipBounds.height <=
+        window.innerHeight - edgeMargin;
+      const unclampedTop = fitsAbove
+        ? topPosition
+        : fitsBelow
+          ? bottomPosition
+          : triggerBounds.top > window.innerHeight / 2
+            ? topPosition
+            : bottomPosition;
+      const unclampedLeft =
+        triggerBounds.left + triggerBounds.width / 2 - tooltipBounds.width / 2;
+
+      setPosition({
+        left: Math.min(
+          Math.max(unclampedLeft, edgeMargin),
+          window.innerWidth - tooltipBounds.width - edgeMargin,
+        ),
+        top: Math.min(
+          Math.max(unclampedTop, edgeMargin),
+          window.innerHeight - tooltipBounds.height - edgeMargin,
+        ),
+        ready: true,
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [isVisible]);
+
+  return (
+    <>
+      <span
+        aria-label={ariaLabel}
+        className={className}
+        onMouseEnter={() => setIsVisible(true)}
+        onMouseLeave={() => setIsVisible(false)}
+        ref={triggerRef}
+      >
+        {children}
+      </span>
+      {isVisible
+        ? createPortal(
+            <div
+              className="floating-error-tooltip"
+              ref={tooltipRef}
+              style={{
+                left: position.left,
+                top: position.top,
+                visibility: position.ready ? "visible" : "hidden",
+              }}
+            >
+              {message}
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
+function FileAttachmentName({ name }: { name: string }) {
+  const [isSingleLine, setIsSingleLine] = useState(false);
+  const nameRef = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const element = nameRef.current;
+    if (!element) return;
+    const measure = () => {
+      const lineHeight = Number.parseFloat(
+        getComputedStyle(element).lineHeight,
+      );
+      setIsSingleLine(element.scrollHeight <= lineHeight * 1.25);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [name]);
+
+  return (
+    <span
+      className={`file-attachment-name${isSingleLine ? " file-name-one-line" : ""}`}
+    >
+      <strong ref={nameRef}>{name}</strong>
     </span>
   );
 }

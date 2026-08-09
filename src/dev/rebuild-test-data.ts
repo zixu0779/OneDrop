@@ -30,15 +30,43 @@ const onePixelPng =
 export async function rebuildTestData(): Promise<void> {
   const accessToken = await getCurrentAccessToken();
   const appRoot = await verifyAppFolder();
-  await deleteTestFolders(accessToken, appRoot.id);
-  await Promise.all([
-    oneDropDatabase.monthCache.clear(),
-    oneDropDatabase.pendingTransfers.clear(),
-    oneDropDatabase.pendingTexts.clear(),
-    oneDropDatabase.downloads.clear(),
-    deleteMessagesFolderId(),
-  ]);
-  await createMessagesFolder(accessToken, appRoot.id);
+  try {
+    await Promise.all([
+      oneDropDatabase.monthCache.clear(),
+      deleteMessagesFolderId(),
+    ]);
+    await replaceTestFoldersTransaction(accessToken, appRoot.id, () =>
+      buildTestData(accessToken, appRoot.id),
+    );
+  } catch (cause) {
+    await Promise.all([
+      oneDropDatabase.monthCache.clear(),
+      deleteMessagesFolderId(),
+    ]);
+    throw cause;
+  }
+}
+
+export async function replaceTestFoldersTransaction(
+  accessToken: string,
+  appRootId: string,
+  build: () => Promise<void>,
+): Promise<void> {
+  const backups = await backupTestFolders(accessToken, appRootId);
+  try {
+    await build();
+  } catch (cause) {
+    await rollbackTestFolders(accessToken, appRootId, backups);
+    throw cause;
+  }
+  await deleteBackupFolders(accessToken, backups).catch(() => undefined);
+}
+
+async function buildTestData(
+  accessToken: string,
+  appRootId: string,
+): Promise<void> {
+  await createMessagesFolder(accessToken, appRootId);
 
   const ownDeviceId = await getOrCreateDeviceId();
   const peerDeviceId = crypto.randomUUID();
@@ -172,8 +200,13 @@ export async function rebuildTestData(): Promise<void> {
   for (const message of remoteMessages) await appendMessage(month, message);
 
   await seedHistoricalMessages(month, ownDeviceId, peerDeviceId);
-  await seedLocalFailures(at(10));
   await createConflictAndDamage(accessToken, month, ownText, peerDeviceId);
+  await Promise.all([
+    oneDropDatabase.pendingTransfers.clear(),
+    oneDropDatabase.pendingTexts.clear(),
+    oneDropDatabase.downloads.clear(),
+  ]);
+  await seedLocalFailures(at(10));
 }
 
 async function seedHistoricalMessages(
@@ -305,33 +338,114 @@ async function createConflictAndDamage(
   );
 }
 
-async function deleteTestFolders(
+const testFolderNames = new Set(["messages", "files", "tombstones", "archive"]);
+
+type FolderBackup = {
+  id: string;
+  originalName: string;
+  backupName: string;
+};
+
+async function backupTestFolders(
   accessToken: string,
   appRootId: string,
+): Promise<FolderBackup[]> {
+  const children = await listAppRootChildren(accessToken, appRootId);
+  const backups: FolderBackup[] = [];
+  try {
+    for (const child of children) {
+      if (!testFolderNames.has(child.name)) continue;
+      const backup: FolderBackup = {
+        id: child.id,
+        originalName: child.name,
+        backupName: `.onedrop-rebuild-backup-${child.name}-${crypto.randomUUID()}`,
+      };
+      await renameFolder(accessToken, child.id, backup.backupName);
+      backups.push(backup);
+    }
+    return backups;
+  } catch (cause) {
+    await restoreBackupNames(accessToken, backups);
+    throw cause;
+  }
+}
+
+async function rollbackTestFolders(
+  accessToken: string,
+  appRootId: string,
+  backups: FolderBackup[],
 ): Promise<void> {
+  const children = await listAppRootChildren(accessToken, appRootId);
+  for (const child of children) {
+    if (testFolderNames.has(child.name)) {
+      await deleteFolder(accessToken, child.id, child.name);
+    }
+  }
+  await restoreBackupNames(accessToken, backups);
+}
+
+async function deleteBackupFolders(
+  accessToken: string,
+  backups: FolderBackup[],
+): Promise<void> {
+  for (const backup of backups) {
+    await deleteFolder(accessToken, backup.id, backup.backupName);
+  }
+}
+
+async function restoreBackupNames(
+  accessToken: string,
+  backups: FolderBackup[],
+): Promise<void> {
+  for (const backup of backups.toReversed()) {
+    await renameFolder(accessToken, backup.id, backup.originalName);
+  }
+}
+
+async function listAppRootChildren(accessToken: string, appRootId: string) {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(appRootId)}/children?$select=id,name&$top=200`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (!response.ok) throw new Error("Unable to list OneDrop test folders.");
-  const children = childrenSchema.parse(await response.json()).value;
-  for (const child of children) {
-    if (
-      child.name !== "messages" &&
-      child.name !== "files" &&
-      child.name !== "tombstones"
-    )
-      continue;
-    const deleted = await fetch(
-      `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(child.id)}`,
-      {
-        method: "DELETE",
-        headers: { Authorization: `Bearer ${accessToken}` },
+  return childrenSchema.parse(await response.json()).value;
+}
+
+async function renameFolder(
+  accessToken: string,
+  itemId: string,
+  name: string,
+): Promise<void> {
+  const response = await fetch(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(itemId)}`,
+    {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
       },
-    );
-    if (!deleted.ok && deleted.status !== 404) {
-      throw new Error(`Unable to delete old OneDrop ${child.name}.`);
-    }
+      body: JSON.stringify({ name }),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`Unable to preserve OneDrop ${name}.`);
+  }
+}
+
+async function deleteFolder(
+  accessToken: string,
+  itemId: string,
+  name: string,
+): Promise<void> {
+  const deleted = await fetch(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(itemId)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  if (!deleted.ok && deleted.status !== 404) {
+    throw new Error(`Unable to delete OneDrop ${name}.`);
   }
 }
 

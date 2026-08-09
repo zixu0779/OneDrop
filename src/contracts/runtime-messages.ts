@@ -16,9 +16,13 @@ export type RuntimeRequest =
   | { type: "auth/sign-out" }
   | { type: "device/id" }
   | { type: "onedrive/verify-app-folder" }
+  | { type: "onedrive/open-app-folder" }
   | { type: "dev/rebuild-test-data" }
   | { type: "messages/read-current-month" }
   | { type: "messages/read-month"; month: string }
+  | { type: "archives/check" }
+  | { type: "archives/retry"; month: string }
+  | { type: "archives/dismiss"; month: string }
   | { type: "messages/delete"; messageId: string; month: string }
   | { type: "messages/delete-corrupt-file"; itemId: string }
   | { type: "messages/open-corrupt-file-location"; itemId: string }
@@ -39,7 +43,7 @@ export type RuntimeRequest =
         name: string;
         mimeType: string;
         size: number;
-        base64: string;
+        base64?: string;
         imageWidth?: number;
         imageHeight?: number;
         thumbHash?: string;
@@ -48,6 +52,7 @@ export type RuntimeRequest =
       createdAt: string;
       reuseExisting?: boolean;
     }
+  | { type: "files/cancel"; messageId: string }
   | {
       type: "files/retry-commit";
       attachment: Attachment;
@@ -97,6 +102,25 @@ export type MonthReadResult =
       messageConflicts?: MessageConflict[];
     };
 
+export type ArchiveNotice = {
+  month: string;
+  phase: "failed" | "running" | "succeeded";
+};
+
+export type ArchiveRuntimeEvent = {
+  type: "archives/event";
+  notice: ArchiveNotice;
+};
+
+export type FileTransferRuntimeEvent = {
+  type: "files/progress";
+  messageId: string;
+  uploadedBytes: number;
+  segmentEndBytes: number;
+  totalBytes: number;
+  averageUploadBytesPerSecond?: number;
+};
+
 export type RuntimeResponse =
   | { ok: true; type: "auth/status"; status: AuthStatus }
   | { ok: true; type: "device/id"; deviceId: string }
@@ -105,7 +129,11 @@ export type RuntimeResponse =
       type: "onedrive/app-folder";
       appFolder: AppFolderSummary;
     }
+  | { ok: true; type: "onedrive/app-folder-opened" }
   | { ok: true; type: "dev/test-data-rebuilt" }
+  | { ok: true; type: "archives/notices"; notices: ArchiveNotice[] }
+  | { ok: true; type: "archives/notice"; notice?: ArchiveNotice }
+  | { ok: true; type: "archives/dismissed" }
   | {
       ok: true;
       type: "messages/month";
@@ -131,6 +159,7 @@ export type RuntimeResponse =
   | { ok: true; type: "files/preview"; dataUrl: string }
   | { ok: true; type: "files/availability"; exists: boolean }
   | { ok: true; type: "files/placeholder-discarded" }
+  | { ok: true; type: "files/cancelled" }
   | {
       ok: true;
       type: "files/local-action";

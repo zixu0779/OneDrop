@@ -10,6 +10,16 @@ vi.mock("../../src/infrastructure/onedrive/tombstones", () => ({
   readTombstoneIds: vi.fn().mockResolvedValue(new Set()),
 }));
 
+vi.mock("../../src/features/auth/auth-service", () => ({
+  getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
+}));
+
+vi.mock("../../src/infrastructure/onedrive/month-archive", () => ({
+  isMonthArchiveEligible: vi.fn().mockReturnValue(true),
+  publishMonthArchive: vi.fn(),
+  readMonthArchive: vi.fn(),
+}));
+
 import { createTextMessage } from "../../src/features/messages/create-text-message";
 import {
   deleteMonthCache,
@@ -17,8 +27,13 @@ import {
 } from "../../src/infrastructure/indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
+  readHistoricalMonthDocument,
   readMonthSnapshot,
 } from "../../src/infrastructure/onedrive/month-reader";
+import {
+  publishMonthArchive,
+  readMonthArchive,
+} from "../../src/infrastructure/onedrive/month-archive";
 import { readTombstoneIds } from "../../src/infrastructure/onedrive/tombstones";
 
 const firstMessage = createTextMessage(
@@ -38,6 +53,95 @@ function document(messages: (typeof firstMessage)[]) {
 
 describe("chunked month reader", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("uses a validated archive without enumerating source chunks", async () => {
+    vi.mocked(readMonthArchive).mockResolvedValueOnce({
+      itemId: "archive-item",
+      eTag: "archive-tag",
+      document: document([firstMessage]),
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(readHistoricalMonthDocument("2026-08")).resolves.toEqual({
+      state: "loaded",
+      month: "2026-08",
+      eTag: "archive-tag",
+      messages: [firstMessage],
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("falls back when an archive lookup does not settle", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(readMonthArchive).mockReturnValueOnce(new Promise(() => {}));
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValueOnce(new Response(null, { status: 404 })),
+      );
+
+      const result = readHistoricalMonthDocument("2026-08");
+      await vi.advanceTimersByTimeAsync(8_000);
+      await expect(result).resolves.toEqual({
+        state: "missing",
+        month: "2026-08",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns healthy chunks without publishing an archive", async () => {
+    vi.mocked(readMonthArchive).mockResolvedValueOnce(undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [{ id: "chunk-1", name: "0001.json", eTag: "tag-1" }],
+          }),
+        )
+        .mockResolvedValueOnce(Response.json(document([firstMessage]))),
+    );
+
+    await expect(readHistoricalMonthDocument("2026-08")).resolves.toEqual({
+      state: "loaded",
+      month: "2026-08",
+      eTag: "tag-1",
+      messages: [firstMessage],
+    });
+    expect(publishMonthArchive).not.toHaveBeenCalled();
+  });
+
+  it("does not publish an archive from an incomplete damaged snapshot", async () => {
+    vi.mocked(readMonthArchive).mockResolvedValueOnce(undefined);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [
+              { id: "chunk-1", name: "0001.json", eTag: "tag-1" },
+              { id: "chunk-2", name: "0002.json", eTag: "tag-2" },
+            ],
+          }),
+        )
+        .mockResolvedValueOnce(Response.json(document([firstMessage])))
+        .mockResolvedValueOnce(Response.json({ invalid: true })),
+    );
+
+    await expect(readHistoricalMonthDocument("2026-08")).resolves.toEqual({
+      state: "loaded",
+      month: "2026-08",
+      eTag: "tag-1",
+      messages: [firstMessage],
+      corruptFiles: [{ itemId: "chunk-2", name: "0002.json" }],
+    });
+    expect(publishMonthArchive).not.toHaveBeenCalled();
+  });
 
   it("merges paginated chunks and deduplicates IDs", async () => {
     vi.stubGlobal(

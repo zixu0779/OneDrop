@@ -14,7 +14,10 @@ import { createPortal } from "react-dom";
 import { rgbaToThumbHash, thumbHashToDataURL } from "thumbhash";
 
 import type {
+  ArchiveNotice,
+  ArchiveRuntimeEvent,
   AuthStatus,
+  FileTransferRuntimeEvent,
   MonthReadResult,
   RuntimeRequest,
   RuntimeResponse,
@@ -24,7 +27,10 @@ import type {
   Message,
   UploadingFileMessage,
 } from "../../src/domain/message";
-import { MAX_DIRECT_FILE_BYTES } from "../../src/config/files";
+import {
+  DEFAULT_UPLOAD_BYTES_PER_SECOND,
+  MAX_DIRECT_FILE_BYTES,
+} from "../../src/config/files";
 import {
   deletePendingTransfer,
   listPendingTransfers,
@@ -51,12 +57,15 @@ export type PendingFile = {
   file?: File;
   previewUrl?: string;
   isImage: boolean;
-  status: "uploading" | "committing" | "upload-failed";
+  status: "uploading" | "committing" | "upload-failed" | "cancelled";
   error?: string;
   attachment?: Attachment;
   imageWidth?: number;
   imageHeight?: number;
   thumbHash?: string;
+  progress?: number;
+  progressTarget?: number;
+  averageUploadBytesPerSecond?: number;
 };
 
 export type PendingText = {
@@ -75,6 +84,15 @@ function getNotificationDepth(
   count: number,
 ): number {
   return count === 0 ? 0 : (index - activeIndex + count) % count;
+}
+
+function formatArchiveMonth(month: string): string {
+  const [year, monthNumber] = month.split("-").map(Number);
+  return new Intl.DateTimeFormat("en", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(year!, monthNumber! - 1, 1)));
 }
 
 async function sendRequest(request: RuntimeRequest): Promise<RuntimeResponse> {
@@ -122,6 +140,7 @@ export function App() {
   const [pendingTexts, setPendingTexts] = useState<PendingText[]>([]);
   const [attachmentCheckVersion, setAttachmentCheckVersion] = useState(0);
   const [processingNoticeKey, setProcessingNoticeKey] = useState<string>();
+  const [archiveNotices, setArchiveNotices] = useState<ArchiveNotice[]>([]);
   const [openingRecordItemId, setOpeningRecordItemId] = useState<string>();
   const [recordLocationError, setRecordLocationError] = useState<string>();
   const [pendingDeleteMessage, setPendingDeleteMessage] = useState<{
@@ -150,17 +169,31 @@ export function App() {
     new Set(),
   );
   const [scrollRevision, setScrollRevision] = useState(0);
+  const [optimisticallyDeletedMessageIds, setOptimisticallyDeletedMessageIds] =
+    useState<Set<string>>(new Set());
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const timelineScrollRef = useRef<HTMLDivElement>(null);
+  const timelineContentRef = useRef<HTMLDivElement>(null);
   const accountCardRef = useRef<HTMLElement>(null);
   const isSendingRef = useRef(false);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyScrollHeightRef = useRef<number | undefined>(undefined);
+  const historyLoadingHeightRef = useRef(0);
+  const historyLoadingElementRef = useRef<HTMLSpanElement>(null);
   const historyLoadingRef = useRef(false);
+  const historyCursorRef = useRef<string | undefined>(undefined);
   const reselectPendingIdRef = useRef<string | null>(null);
   const noticeDragStartYRef = useRef<number | null>(null);
   const noticeWheelLockedRef = useRef(false);
+  const shouldStickToBottomRef = useRef(true);
+  const preservedTimelineViewportRef = useRef<
+    { scrollTop: number; scrollHeight: number } | undefined
+  >(undefined);
+  const forceScrollToBottomRef = useRef(false);
+  const initialBottomFrameRef = useRef<number | undefined>(undefined);
+  const isApplyingBottomScrollRef = useRef(false);
+  const cancelledUploadIdsRef = useRef<Set<string>>(new Set());
   const noticeCycleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -174,6 +207,37 @@ export function App() {
   const corruptNoticeCount = visibleCorruptFiles.length;
   const conflictNoticeCount = visibleMessageConflicts.length;
   const notificationCount = corruptNoticeCount + conflictNoticeCount;
+
+  useEffect(() => {
+    const listener = (
+      message: ArchiveRuntimeEvent | FileTransferRuntimeEvent,
+    ) => {
+      if (message?.type === "archives/event") {
+        updateArchiveNotice(message.notice);
+      } else if (message?.type === "files/progress") {
+        const progress =
+          message.totalBytes === 0
+            ? 0
+            : (message.uploadedBytes / message.totalBytes) * 100;
+        const progressTarget =
+          message.totalBytes === 0
+            ? 0
+            : (message.segmentEndBytes / message.totalBytes) * 100;
+        updatePending(message.messageId, {
+          progress,
+          progressTarget,
+          ...(message.averageUploadBytesPerSecond
+            ? {
+                averageUploadBytesPerSecond:
+                  message.averageUploadBytesPerSecond,
+              }
+            : {}),
+        });
+      }
+    };
+    browser.runtime.onMessage.addListener(listener);
+    return () => browser.runtime.onMessage.removeListener(listener);
+  }, []);
 
   useEffect(() => {
     setActiveNoticeIndex((index) =>
@@ -275,6 +339,11 @@ export function App() {
   }, [draft]);
 
   const timelineIdentity = [
+    ...historicalMonthResults.flatMap((result) =>
+      result.state === "loaded"
+        ? result.messages.map((message) => message.id)
+        : [],
+    ),
     ...(monthResult?.state === "loaded"
       ? monthResult.messages.map((message) => message.id)
       : []),
@@ -282,17 +351,76 @@ export function App() {
     ...pendingTexts.map((pending) => pending.id),
   ].join("|");
 
+  function alignTimelineToBottom(timeline: HTMLDivElement) {
+    isApplyingBottomScrollRef.current = true;
+    timeline.scrollTop = timeline.scrollHeight;
+    if (initialBottomFrameRef.current !== undefined) {
+      cancelAnimationFrame(initialBottomFrameRef.current);
+    }
+    initialBottomFrameRef.current = requestAnimationFrame(() => {
+      timeline.scrollTop = timeline.scrollHeight;
+      initialBottomFrameRef.current = requestAnimationFrame(() => {
+        timeline.scrollTop = timeline.scrollHeight;
+        isApplyingBottomScrollRef.current = false;
+        initialBottomFrameRef.current = undefined;
+      });
+    });
+  }
+
   useLayoutEffect(() => {
     const timeline = timelineScrollRef.current;
-    if (timeline) timeline.scrollTop = timeline.scrollHeight;
+    if (!timeline) return;
+    const preservedViewport = preservedTimelineViewportRef.current;
+    if (preservedViewport !== undefined) {
+      timeline.scrollTop = Math.max(
+        0,
+        preservedViewport.scrollTop +
+          timeline.scrollHeight -
+          preservedViewport.scrollHeight,
+      );
+      preservedTimelineViewportRef.current = undefined;
+      return;
+    }
+    if (shouldStickToBottomRef.current || forceScrollToBottomRef.current) {
+      shouldStickToBottomRef.current = true;
+      forceScrollToBottomRef.current = false;
+      alignTimelineToBottom(timeline);
+    }
   }, [timelineIdentity, scrollRevision]);
+
+  useLayoutEffect(() => {
+    const timeline = timelineScrollRef.current;
+    const content = timelineContentRef.current;
+    if (!timeline || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (shouldStickToBottomRef.current) {
+        alignTimelineToBottom(timeline);
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [monthResult]);
+
+  useLayoutEffect(() => {
+    const timeline = timelineScrollRef.current;
+    if (isWorking || !timeline || !shouldStickToBottomRef.current) return;
+    alignTimelineToBottom(timeline);
+  }, [isWorking]);
+
+  useLayoutEffect(() => {
+    if (!isLoadingHistory) return;
+    historyLoadingHeightRef.current =
+      historyLoadingElementRef.current?.getBoundingClientRect().height ?? 0;
+  }, [isLoadingHistory]);
 
   useLayoutEffect(() => {
     const timeline = timelineScrollRef.current;
     const previousHeight = historyScrollHeightRef.current;
     if (!timeline || previousHeight === undefined) return;
-    timeline.scrollTop += timeline.scrollHeight - previousHeight;
+    timeline.scrollTop +=
+      timeline.scrollHeight - previousHeight - historyLoadingHeightRef.current;
     historyScrollHeightRef.current = undefined;
+    historyLoadingHeightRef.current = 0;
   }, [historicalMonthResults]);
 
   useEffect(() => {
@@ -515,8 +643,18 @@ export function App() {
     }
   }
 
-  async function loadOneDriveState(restoreTransfers = true) {
-    setHistoricalMonthResults([]);
+  async function loadOneDriveState(
+    restoreTransfers = true,
+    runArchiveMaintenance = true,
+    preserveLoadedHistory = true,
+  ) {
+    const loadedHistoricalMonths = preserveLoadedHistory
+      ? historicalMonthResults.map((result) => result.month)
+      : [];
+    if (!preserveLoadedHistory) {
+      setHistoricalMonthResults([]);
+      historyCursorRef.current = undefined;
+    }
     const devicePromise = sendRequest({ type: "device/id" });
     const folderPromise = sendRequest({ type: "onedrive/verify-app-folder" });
     const cachePromise = readCachedTimeline();
@@ -554,11 +692,82 @@ export function App() {
     }
 
     setMonthResult(monthResponse.result);
+    if (loadedHistoricalMonths.length > 0) {
+      const refreshedHistory = await Promise.all(
+        loadedHistoricalMonths.map(async (month) => {
+          const response = await sendRequest({
+            type: "messages/read-month",
+            month,
+          });
+          if (!response.ok || response.type !== "messages/month") {
+            throw new Error(
+              "OneDrop received an unexpected history synchronization response.",
+            );
+          }
+          return response.result;
+        }),
+      );
+      setHistoricalMonthResults(refreshedHistory);
+    }
+    if (runArchiveMaintenance) void checkArchiveTasks();
     if (restoreTransfers) {
       await Promise.all([
         restorePendingFiles(monthResponse.result),
         restorePendingTexts(monthResponse.result),
       ]);
+    }
+  }
+
+  async function checkArchiveTasks() {
+    try {
+      const response = await sendRequest({ type: "archives/check" });
+      if (response.ok && response.type === "archives/notices") {
+        setArchiveNotices((current) => {
+          const currentMonths = new Set(current.map((notice) => notice.month));
+          return [
+            ...response.notices.filter(
+              (notice) => !currentMonths.has(notice.month),
+            ),
+            ...current,
+          ];
+        });
+      }
+    } catch {
+      // Archive maintenance never changes the foreground sync result.
+    }
+  }
+
+  function updateArchiveNotice(notice: ArchiveNotice) {
+    setArchiveNotices((current) => [
+      ...current.filter((item) => item.month !== notice.month),
+      notice,
+    ]);
+  }
+
+  async function retryArchive(month: string) {
+    updateArchiveNotice({ month, phase: "running" });
+    try {
+      const response = await sendRequest({ type: "archives/retry", month });
+      if (response.ok && response.type === "archives/notice") {
+        if (response.notice) updateArchiveNotice(response.notice);
+        else
+          setArchiveNotices((current) =>
+            current.filter((notice) => notice.month !== month),
+          );
+      }
+    } catch {
+      updateArchiveNotice({ month, phase: "failed" });
+    }
+  }
+
+  async function dismissArchiveNotice(month: string) {
+    setArchiveNotices((current) =>
+      current.filter((notice) => notice.month !== month),
+    );
+    try {
+      await sendRequest({ type: "archives/dismiss", month });
+    } catch {
+      // Dismissing the foreground card must not affect archive maintenance.
     }
   }
 
@@ -571,6 +780,7 @@ export function App() {
       setStatus(nextStatus);
       setMonthResult(undefined);
       setHistoricalMonthResults([]);
+      historyCursorRef.current = undefined;
 
       if (request.type === "auth/sign-in" && nextStatus.state === "signed-in") {
         await loadOneDriveState();
@@ -589,7 +799,7 @@ export function App() {
     setError(undefined);
 
     try {
-      await loadOneDriveState();
+      await loadOneDriveState(true, true, false);
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -666,11 +876,24 @@ export function App() {
       if (!response.ok || response.type !== "dev/test-data-rebuilt") {
         throw new Error("OneDrop could not rebuild the test data.");
       }
-      await loadOneDriveState();
+      await loadOneDriveState(true, true, false);
     } catch (cause) {
       setError(getClientError(cause));
     } finally {
       setIsWorking(false);
+    }
+  }
+
+  async function openOneDropFolder() {
+    setIsAccountOpen(false);
+    setError(undefined);
+    try {
+      const response = await sendRequest({ type: "onedrive/open-app-folder" });
+      if (!response.ok || response.type !== "onedrive/app-folder-opened") {
+        throw new Error("OneDrop could not open its OneDrive folder.");
+      }
+    } catch (cause) {
+      setError(getClientError(cause));
     }
   }
 
@@ -808,6 +1031,7 @@ export function App() {
       }
 
       setMonthResult(response.result);
+      forceScrollToBottomRef.current = true;
       setScrollRevision((revision) => revision + 1);
       await deletePendingText(pending.id);
       setPendingTexts((items) =>
@@ -839,6 +1063,20 @@ export function App() {
     const previousHistoricalMonthResults = historicalMonthResults;
     const previousPendingTexts = pendingTexts;
     const previousPendingFiles = pendingFiles;
+    const timeline = timelineScrollRef.current;
+    if (timeline) {
+      if (initialBottomFrameRef.current !== undefined) {
+        cancelAnimationFrame(initialBottomFrameRef.current);
+        initialBottomFrameRef.current = undefined;
+      }
+      isApplyingBottomScrollRef.current = false;
+      preservedTimelineViewportRef.current = {
+        scrollTop: timeline.scrollTop,
+        scrollHeight: timeline.scrollHeight,
+      };
+      shouldStickToBottomRef.current = false;
+    }
+    setOptimisticallyDeletedMessageIds((ids) => new Set(ids).add(messageId));
     setPendingDeleteMessage(undefined);
     const removeFromResult = (current: MonthReadResult): MonthReadResult => {
       if (current.state !== "loaded") return current;
@@ -899,6 +1137,11 @@ export function App() {
       );
       if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
     } catch (cause) {
+      setOptimisticallyDeletedMessageIds((ids) => {
+        const next = new Set(ids);
+        next.delete(messageId);
+        return next;
+      });
       setMonthResult(previousMonthResult);
       setHistoricalMonthResults(previousHistoricalMonthResults);
       setPendingTexts(previousPendingTexts);
@@ -910,6 +1153,11 @@ export function App() {
   }
 
   function handleTimelineScroll() {
+    const timeline = timelineScrollRef.current;
+    if (timeline && !isApplyingBottomScrollRef.current) {
+      shouldStickToBottomRef.current =
+        timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop <= 2;
+    }
     setIsTimelineScrolling(true);
     scheduleScrollbarHide();
     if (!isWorking && (timelineScrollRef.current?.scrollTop ?? 1) <= 24) {
@@ -949,7 +1197,10 @@ export function App() {
 
   async function loadPreviousMonth() {
     if (historyLoadingRef.current || !monthResult) return;
-    const oldestMonth = historicalMonthResults[0]?.month ?? monthResult.month;
+    const oldestMonth =
+      historyCursorRef.current ??
+      historicalMonthResults[0]?.month ??
+      monthResult.month;
     const month = getPreviousMonth(oldestMonth);
     historyLoadingRef.current = true;
     setIsLoadingHistory(true);
@@ -963,9 +1214,16 @@ export function App() {
       if (!response.ok || response.type !== "messages/month") {
         throw new Error("OneDrop received an unexpected history response.");
       }
-      setHistoricalMonthResults((results) => [response.result, ...results]);
+      historyCursorRef.current = month;
+      if (response.result.state !== "missing") {
+        setHistoricalMonthResults((results) => [response.result, ...results]);
+      } else {
+        historyScrollHeightRef.current = undefined;
+        historyLoadingHeightRef.current = 0;
+      }
     } catch (cause) {
       historyScrollHeightRef.current = undefined;
+      historyLoadingHeightRef.current = 0;
       setError(getClientError(cause));
     } finally {
       historyLoadingRef.current = false;
@@ -1027,6 +1285,8 @@ export function App() {
       ...items.filter((item) => item.id !== pending.id),
       pending,
     ]);
+    forceScrollToBottomRef.current = true;
+    setScrollRevision((revision) => revision + 1);
     await uploadPendingFile(pending);
   }
 
@@ -1041,17 +1301,13 @@ export function App() {
     const transferCreatedAt = isResend
       ? new Date().toISOString()
       : pending.createdAt;
-    updatePending(pending.id, { status: "uploading" });
+    cancelledUploadIdsRef.current.delete(pending.id);
+    updatePending(pending.id, {
+      status: "uploading",
+      progress: 0,
+      progressTarget: 0,
+    });
     if (isResend) await delay(320);
-
-    if (pending.file.size > MAX_DIRECT_FILE_BYTES) {
-      updatePending(pending.id, {
-        status: "upload-failed",
-        error:
-          "This file requires the upcoming large-file upload session support.",
-      });
-      return;
-    }
 
     if (typeof navigator !== "undefined" && !navigator.onLine) {
       updatePending(pending.id, {
@@ -1062,9 +1318,11 @@ export function App() {
     }
 
     try {
-      let base64: string;
+      let base64: string | undefined;
       try {
-        base64 = await fileToBase64(pending.file);
+        if (pending.file.size <= MAX_DIRECT_FILE_BYTES) {
+          base64 = await fileToBase64(pending.file);
+        }
       } catch {
         void updatePendingTransfer(pending.id, {
           status: "upload-failed",
@@ -1091,7 +1349,7 @@ export function App() {
           name: pending.file.name,
           mimeType: pending.file.type || "application/octet-stream",
           size: pending.file.size,
-          base64,
+          ...(base64 ? { base64 } : {}),
           ...(pending.imageWidth ? { imageWidth: pending.imageWidth } : {}),
           ...(pending.imageHeight ? { imageHeight: pending.imageHeight } : {}),
           ...(pending.thumbHash ? { thumbHash: pending.thumbHash } : {}),
@@ -1106,6 +1364,21 @@ export function App() {
         status: "upload-failed",
         error: getClientError(cause),
       });
+    }
+  }
+
+  async function cancelFileUpload(messageId: string) {
+    cancelledUploadIdsRef.current.add(messageId);
+    updatePending(messageId, {
+      status: "cancelled",
+      error: "Upload cancelled.",
+      progress: 0,
+      progressTarget: 0,
+    });
+    try {
+      await sendRequest({ type: "files/cancel", messageId });
+    } catch {
+      // The local cancelled state is authoritative for this user action.
     }
   }
 
@@ -1129,6 +1402,7 @@ export function App() {
   }
 
   function handleFileTransferResponse(id: string, response: RuntimeResponse) {
+    if (cancelledUploadIdsRef.current.has(id)) return;
     if (!response.ok || response.type !== "files/transfer") {
       updatePending(id, {
         status: "upload-failed",
@@ -1368,6 +1642,14 @@ export function App() {
                 >
                   Sign out
                 </button>
+                <button
+                  className="account-popover-add"
+                  disabled={isWorking}
+                  onClick={() => void openOneDropFolder()}
+                  type="button"
+                >
+                  Open OneDrop folder
+                </button>
                 <button className="account-popover-add" disabled type="button">
                   Add account — coming later
                 </button>
@@ -1596,15 +1878,21 @@ export function App() {
                   onWheel={handleTimelineScroll}
                   ref={timelineScrollRef}
                 >
-                  <div className="message-content">
+                  <div className="message-content" ref={timelineContentRef}>
                     {isLoadingHistory ? (
-                      <span className="history-loading">Loading...</span>
+                      <span
+                        className="history-loading"
+                        ref={historyLoadingElementRef}
+                      >
+                        Loading...
+                      </span>
                     ) : null}
                     {historicalMonthResults.map((result) => (
                       <MonthResult
                         attachmentCheckVersion={attachmentCheckVersion}
                         deviceId={deviceId}
                         key={result.month}
+                        hiddenMessageIds={optimisticallyDeletedMessageIds}
                         pendingFiles={[]}
                         pendingTexts={[]}
                         result={result}
@@ -1612,6 +1900,7 @@ export function App() {
                         showEmpty={false}
                         compact
                         unresponsiveUploadIds={unresponsiveUploadIds}
+                        onCancel={() => undefined}
                         onResend={(item) => void uploadPendingFile(item)}
                         onDelete={(messageId) =>
                           setPendingDeleteMessage({
@@ -1628,11 +1917,13 @@ export function App() {
                     <MonthResult
                       attachmentCheckVersion={attachmentCheckVersion}
                       deviceId={deviceId}
+                      hiddenMessageIds={optimisticallyDeletedMessageIds}
                       pendingFiles={pendingFiles}
                       pendingTexts={pendingTexts}
                       result={monthResult}
                       refreshingUploadIds={refreshingUploadIds}
                       unresponsiveUploadIds={unresponsiveUploadIds}
+                      onCancel={(messageId) => void cancelFileUpload(messageId)}
                       onResend={(item) => void uploadPendingFile(item)}
                       onDelete={(messageId) =>
                         setPendingDeleteMessage({
@@ -1677,6 +1968,7 @@ export function App() {
                   <button
                     aria-label="Attach file"
                     className="attach-button"
+                    disabled={isWorking}
                     onClick={() => fileInputRef.current?.click()}
                     type="button"
                   >
@@ -1684,6 +1976,7 @@ export function App() {
                   </button>
                   <input
                     className="sr-only"
+                    disabled={isWorking}
                     onChange={(event) => {
                       const file = event.target.files?.[0];
                       event.target.value = "";
@@ -1723,6 +2016,13 @@ export function App() {
           onClose={() => setRecordLocationError(undefined)}
         />
       ) : null}
+      {archiveNotices[0] ? (
+        <CenteredArchiveNotice
+          notice={archiveNotices[0]}
+          onClose={() => void dismissArchiveNotice(archiveNotices[0]!.month)}
+          onRetry={() => void retryArchive(archiveNotices[0]!.month)}
+        />
+      ) : null}
       {pendingDeleteMessage ? (
         <CenteredConfirmationDialog
           confirmLabel="Delete"
@@ -1760,10 +2060,12 @@ function UnifiedPulseLoader() {
 
 export function PendingFileList({
   items,
+  onCancel = () => undefined,
   onDelete = () => undefined,
   onResend,
 }: {
   items: PendingFile[];
+  onCancel?: (messageId: string) => void;
   onDelete?: (messageId: string) => void;
   onResend: (item: PendingFile) => void;
 }) {
@@ -1774,6 +2076,7 @@ export function PendingFileList({
         <li key={item.id}>
           <PendingFileItem
             item={item}
+            onCancel={onCancel}
             onDelete={onDelete}
             onResend={onResend}
           />
@@ -1785,16 +2088,83 @@ export function PendingFileList({
 
 function PendingFileItem({
   item,
+  onCancel,
   onDelete,
   onResend,
 }: {
   item: PendingFile;
+  onCancel: (messageId: string) => void;
   onDelete: (messageId: string) => void;
   onResend: (item: PendingFile) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [displayProgress, setDisplayProgress] = useState(item.progress ?? 0);
+  const totalBytes = item.file?.size ?? item.attachment?.size ?? 0;
+  const predictionRateRef = useRef(
+    totalBytes > 0
+      ? ((item.averageUploadBytesPerSecond ?? DEFAULT_UPLOAD_BYTES_PER_SECOND) /
+          totalBytes) *
+          100
+      : 0,
+  );
   const controlsRef = useRef<HTMLDivElement>(null);
   const isActive = item.status === "uploading" || item.status === "committing";
+  const isCancelled = item.status === "cancelled";
+  const visibleProgress = Math.floor(displayProgress);
+
+  useEffect(() => {
+    if (item.progress === 0) {
+      predictionRateRef.current =
+        totalBytes > 0
+          ? ((item.averageUploadBytesPerSecond ??
+              DEFAULT_UPLOAD_BYTES_PER_SECOND) /
+              totalBytes) *
+            100
+          : 0;
+      setDisplayProgress(0);
+    }
+  }, [item.averageUploadBytesPerSecond, item.progress, totalBytes]);
+
+  useEffect(() => {
+    if (item.averageUploadBytesPerSecond && totalBytes > 0) {
+      predictionRateRef.current =
+        (item.averageUploadBytesPerSecond / totalBytes) * 100;
+    }
+  }, [item.averageUploadBytesPerSecond, totalBytes]);
+
+  useEffect(() => {
+    if (item.status !== "uploading") return;
+    const confirmed = item.progress ?? 0;
+    const target = Math.max(confirmed, item.progressTarget ?? confirmed);
+    let previousTick = performance.now();
+    const timer = window.setInterval(() => {
+      const now = performance.now();
+      const elapsedSeconds = Math.min((now - previousTick) / 1_000, 0.2);
+      previousTick = now;
+      setDisplayProgress((current) => {
+        if (current < confirmed) {
+          const gap = confirmed - current;
+          const catchUpRate = Math.max(predictionRateRef.current * 5, gap * 3);
+          return Math.min(confirmed, current + catchUpRate * elapsedSeconds);
+        }
+        if (target <= confirmed) return confirmed;
+        const upperLimit = Math.max(confirmed, target - 0.1);
+        if (current >= upperLimit) return upperLimit;
+        const slowdownPoint = confirmed + (target - confirmed) * 0.7;
+        const baseRate = predictionRateRef.current;
+        const rate =
+          current < slowdownPoint
+            ? baseRate
+            : baseRate *
+              Math.pow(
+                Math.max(0, (target - current) / (target - slowdownPoint)),
+                2,
+              );
+        return Math.min(upperLimit, current + rate * elapsedSeconds);
+      });
+    }, 50);
+    return () => window.clearInterval(timer);
+  }, [item.progress, item.progressTarget, item.status]);
 
   useEffect(() => {
     if (!isMenuOpen) return;
@@ -1865,14 +2235,38 @@ function PendingFileItem({
         </span>
       ) : null}
       {isActive ? (
-        <span className="pending-transfer-spinner">
-          <LoadingIcon />
+        <span className="pending-transfer-active-controls">
+          <span className="pending-transfer-spinner">
+            {visibleProgress > 0 ? (
+              <UploadProgressRing progress={displayProgress} />
+            ) : (
+              <LoadingIcon />
+            )}
+          </span>
+          {item.status === "uploading" &&
+          (item.file?.size ?? item.attachment?.size ?? 0) >
+            MAX_DIRECT_FILE_BYTES ? (
+            <button
+              aria-label="Cancel upload"
+              className="pending-cancel-button"
+              onClick={() => onCancel(item.id)}
+              type="button"
+            >
+              <svg
+                aria-hidden="true"
+                className="cancel-upload-icon"
+                viewBox="0 0 20 20"
+              >
+                <rect height="7" rx="1.5" width="7" x="6.5" y="6.5" />
+              </svg>
+            </button>
+          ) : null}
         </span>
       ) : (
         <FloatingErrorTooltip
           ariaLabel="Transfer error"
           className="pending-transfer-error"
-          message="Upload failed"
+          message={isCancelled ? "Upload cancelled" : "Upload failed"}
         >
           <span aria-hidden="true">!</span>
         </FloatingErrorTooltip>
@@ -1887,7 +2281,9 @@ function PendingFileItem({
               src={item.previewUrl}
             />
             {!isActive ? (
-              <span className="pending-image-error-copy">Upload failed</span>
+              <span className="pending-image-error-copy">
+                {isCancelled ? "Upload cancelled" : "Upload failed"}
+              </span>
             ) : null}
           </div>
         ) : (
@@ -1903,14 +2299,43 @@ function PendingFileItem({
                 className={isActive ? undefined : "pending-file-error-copy"}
               >
                 {isActive
-                  ? formatBytes(item.file?.size ?? item.attachment?.size ?? 0)
-                  : "Upload failed"}
+                  ? item.status === "uploading" && item.progress !== undefined
+                    ? `${visibleProgress}% · ${formatBytes(item.file?.size ?? item.attachment?.size ?? 0)}`
+                    : formatBytes(item.file?.size ?? item.attachment?.size ?? 0)
+                  : isCancelled
+                    ? "Upload cancelled"
+                    : "Upload failed"}
               </small>
             </span>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function UploadProgressRing({ progress }: { progress: number }) {
+  const normalizedProgress = Math.max(0, Math.min(100, progress));
+  return (
+    <svg
+      aria-label="Upload progress"
+      aria-valuemax={100}
+      aria-valuemin={0}
+      aria-valuenow={Math.floor(normalizedProgress)}
+      className="upload-progress-ring"
+      role="progressbar"
+      viewBox="0 0 20 20"
+    >
+      <circle className="upload-progress-ring-track" cx="10" cy="10" r="8" />
+      <circle
+        className="upload-progress-ring-value"
+        cx="10"
+        cy="10"
+        pathLength="100"
+        r="8"
+        style={{ strokeDashoffset: 100 - normalizedProgress }}
+      />
+    </svg>
   );
 }
 
@@ -1943,11 +2368,13 @@ function DownloadLocalIcon() {
 function MonthResult({
   attachmentCheckVersion,
   deviceId,
+  hiddenMessageIds,
   pendingFiles,
   pendingTexts,
   result,
   refreshingUploadIds,
   unresponsiveUploadIds,
+  onCancel,
   onDelete,
   onResend,
   onUploadingRefresh,
@@ -1957,11 +2384,13 @@ function MonthResult({
 }: {
   attachmentCheckVersion: number;
   deviceId: string | undefined;
+  hiddenMessageIds: Set<string>;
   pendingFiles: PendingFile[];
   pendingTexts: PendingText[];
   result: MonthReadResult;
   refreshingUploadIds: Set<string>;
   unresponsiveUploadIds: Set<string>;
+  onCancel: (messageId: string) => void;
   onDelete: (messageId: string) => void;
   onResend: (item: PendingFile) => void;
   onUploadingRefresh: (messageId: string) => void;
@@ -1970,7 +2399,9 @@ function MonthResult({
   compact?: boolean;
 }) {
   const timelineGroups = groupTimelineItems(
-    result.state === "loaded" ? result.messages : [],
+    result.state === "loaded"
+      ? result.messages.filter((message) => !hiddenMessageIds.has(message.id))
+      : [],
     pendingFiles,
     deviceId,
     pendingTexts,
@@ -1979,6 +2410,7 @@ function MonthResult({
   return (
     <div
       className={`month-result${compact ? " month-result-compact" : ""}`}
+      data-timeline-month={result.month}
       aria-live="polite"
     >
       {timelineGroups.length === 0 && showEmpty ? (
@@ -1999,6 +2431,7 @@ function MonthResult({
                     <PendingFileItem
                       item={item.pending}
                       key={item.pending.id}
+                      onCancel={onCancel}
                       onDelete={onDelete}
                       onResend={onResend}
                     />
@@ -2658,6 +3091,54 @@ function CenteredOperationDialog({
           OK
         </button>
       </div>
+    </div>,
+    document.body,
+  );
+}
+
+function CenteredArchiveNotice({
+  notice,
+  onClose,
+  onRetry,
+}: {
+  notice: ArchiveNotice;
+  onClose: () => void;
+  onRetry: () => void;
+}) {
+  const monthLabel = formatArchiveMonth(notice.month);
+  const message =
+    notice.phase === "failed"
+      ? `Couldn't archive the ${monthLabel} message history. Your messages are unaffected.`
+      : notice.phase === "running"
+        ? `Archiving the ${monthLabel} message history…`
+        : `The ${monthLabel} message history has been archived successfully.`;
+  return createPortal(
+    <div className="centered-notice-layer">
+      <aside
+        aria-live={notice.phase === "failed" ? "assertive" : "polite"}
+        className={`centered-notice centered-archive-notice centered-archive-notice-${notice.phase}`}
+      >
+        <button
+          aria-label="Close"
+          className="centered-notice-close"
+          onClick={onClose}
+          type="button"
+        >
+          <CloseIcon />
+        </button>
+        <p>{message}</p>
+        {notice.phase !== "succeeded" ? (
+          <button
+            className="centered-notice-action"
+            disabled={notice.phase === "running"}
+            onClick={onRetry}
+            type="button"
+          >
+            {notice.phase === "running" ? <LoadingIcon /> : null}
+            Retry
+          </button>
+        ) : null}
+      </aside>
     </div>,
     document.body,
   );

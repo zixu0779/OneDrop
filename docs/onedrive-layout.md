@@ -1,6 +1,6 @@
 # OneDrive storage contract
 
-Status: root checks, cached monthly reads, lazy historical-month loading, active-month chunk writes, small-file attachments, and logical single-message deletion are implemented; archive compaction and physical attachment cleanup remain deferred.
+Status: root checks, cached monthly reads, lazy historical-month loading, active-month chunk writes, immutable historical-month archives with safe source cleanup, small-file attachments, and logical single-message deletion are implemented; physical attachment cleanup remains deferred.
 
 The root App Folder lookup, current-month read, text message write, small-file upload, and current-month tombstone paths are implemented.
 
@@ -28,7 +28,11 @@ A network failure after an upload starts is ambiguous: OneDrive might have accep
 
 The mutable current UTC month uses deterministic chunk files with a 256 KiB soft target and 320 KiB hard ceiling. No shared `current.json` pointer is used. Readers enumerate chunk children with Graph pagination. Writers derive the active chunk from validated metadata and create deterministic successors with conflict behavior `fail`.
 
-After a month closes and a 24-hour grace period passes, OneDrop may merge that month's chunks into one immutable `archive/YYYY-MM.json`. Archive publication must use create-with-conflict-fail, validate the merged result, and retain source chunks until cleanup is independently safe. This reduces hot-file rewrite cost without permanently exposing users to many small historical files.
+After a month closes and a 24-hour grace period passes, the unified foreground synchronization entry point asks a separate background scheduler to inspect eligible source-month folders. At most one month is scheduled per sync. Historical scrolling only reads an existing archive or its source chunks and never starts or waits for publication.
+
+The scheduler applies tombstones, publishes immutable `archive/YYYY-MM.json` with create-with-conflict-fail, and reads it back before recording success. A concurrently published byte-equivalent archive is accepted. A successful month is never archived again; later deletions remain tombstones applied at read time. Transient failures use persisted retry delays of 5 minutes, 30 minutes, 6 hours, then 24 hours, checked during later synchronizations. Manual Retry bypasses only the delay and shares the same per-month in-flight task. Damaged or conflicting sources and unverifiable existing archives are blocked rather than overwritten.
+
+The first later synchronization after a verified publication reads the raw archive again, compares its SHA-256 digest with the recorded publication, confirms tombstones can still be applied, and only then deletes `messages/YYYY-MM/`. Cleanup failure leaves the successful archive state intact and is retried during later synchronizations. Archive status never delays foreground synchronization or history loading. Failures are exposed through the existing non-blocking centered notification stack; an open failure card is updated in place for automatic or manual retry and success.
 
 ## Attachments
 
@@ -38,7 +42,7 @@ New image records may additionally store the original pixel dimensions and a Bas
 
 ## Deletion
 
-Deletion is limited to individual messages. OneDrop does not offer deletion of an entire month. Versioned tombstones in `tombstones/YYYY-MM.json` identify the message ID, original month, and deletion timestamp. Existing tombstone documents are replaced with their exact ETag; create and update conflicts are re-read and retried within a five-attempt budget. Current-month readers apply tombstones before returning messages or conflict notices. Deletion is logical: message chunks, OneDrive attachments, and user-downloaded files are not physically removed. Archive filtering and later safe compaction must apply the same tombstones before historical loading ships.
+Deletion is limited to individual messages. OneDrop does not offer deletion of an entire month. Versioned tombstones in `tombstones/YYYY-MM.json` identify the message ID, original month, and deletion timestamp. Existing tombstone documents are replaced with their exact ETag; create and update conflicts are re-read and retried within a five-attempt budget. Current-month, historical-chunk, and archive readers apply tombstones before returning messages or conflict notices. Deletion is logical: message chunks, archives, OneDrive attachments, and user-downloaded files are not physically removed.
 
 ## Schema evolution
 

@@ -20,10 +20,12 @@ import {
   putMonthCache,
 } from "../indexed-db/sync-cache";
 import { getMessageLines } from "./month-serialization";
+import { isMonthArchiveEligible, readMonthArchive } from "./month-archive";
 import { readTombstoneIds } from "./tombstones";
 
 const monthPattern = /^\d{4}-\d{2}$/u;
 const chunkNamePattern = /^(\d{4})\.json$/u;
+const ARCHIVE_OPTIMIZATION_TIMEOUT_MS = 8_000;
 
 const driveItemSchema = z.object({
   id: z.string().min(1),
@@ -70,6 +72,60 @@ export async function readMonthDocument(
           ? { messageConflicts: snapshot.messageConflicts }
           : {}),
       };
+}
+
+export async function readHistoricalMonthDocument(
+  month: string,
+): Promise<MonthReadResult> {
+  const accessToken = await getCurrentAccessToken();
+  if (isMonthArchiveEligible(month)) {
+    try {
+      const archive = await runArchiveOptimization(() =>
+        readMonthArchive(month, accessToken),
+      );
+      if (archive) {
+        return {
+          state: "loaded",
+          month,
+          eTag: archive.eTag,
+          messages: archive.document.messages,
+        };
+      }
+    } catch {
+      // Archives are an optimization. Healthy source chunks remain authoritative.
+    }
+  }
+
+  const snapshot = await readMonthSnapshot(month, accessToken, true);
+  if (snapshot.state === "missing") return snapshot;
+  const corruptFiles = snapshot.corruptFiles ?? [];
+  const messageConflicts = snapshot.messageConflicts ?? [];
+
+  return {
+    state: "loaded",
+    month,
+    eTag: snapshot.eTag,
+    messages: snapshot.document.messages,
+    ...(corruptFiles.length > 0 ? { corruptFiles } : {}),
+    ...(messageConflicts.length > 0 ? { messageConflicts } : {}),
+  };
+}
+
+async function runArchiveOptimization<T>(operation: () => Promise<T>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("Month archive optimization timed out.")),
+          ARCHIVE_OPTIMIZATION_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export async function readMonthSnapshot(

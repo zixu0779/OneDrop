@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../src/infrastructure/indexed-db/downloads", () => ({
@@ -26,6 +32,7 @@ const file = new File(["hello"], "hello.txt", { type: "text/plain" });
 describe("file transfer failure UI", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.clearAllMocks();
     vi.unstubAllGlobals();
   });
@@ -63,6 +70,72 @@ describe("file transfer failure UI", () => {
     expect(screen.queryByText("5 B")).not.toBeInTheDocument();
     expect(screen.getByText("Upload failed")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Resend" })).toBeInTheDocument();
+  });
+
+  it("shows large-file progress and allows cancellation", () => {
+    const onCancel = vi.fn();
+    render(
+      <PendingFileList
+        items={[
+          {
+            id: "large-file",
+            createdAt: "2026-08-03T00:00:00.000Z",
+            file: new File([new Uint8Array(5 * 1024 * 1024)], "large.zip"),
+            isImage: false,
+            status: "uploading",
+            progress: 42,
+          },
+        ]}
+        onCancel={onCancel}
+        onResend={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("42% · 5.0 MB")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel upload" }));
+    expect(onCancel).toHaveBeenCalledWith("large-file");
+  });
+
+  it("predicts within a segment and catches up after confirmation", () => {
+    vi.useFakeTimers();
+    const item: PendingFile = {
+      id: "large-file",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      file: new File([new Uint8Array(5 * 1024 * 1024)], "large.zip"),
+      isImage: false,
+      status: "uploading",
+      progress: 0,
+      progressTarget: 50,
+    };
+    const view = render(<PendingFileList items={[item]} onResend={vi.fn()} />);
+    expect(
+      screen.queryByRole("progressbar", { name: "Upload progress" }),
+    ).not.toBeInTheDocument();
+
+    act(() => vi.advanceTimersByTime(1_000));
+    const predicted = Number.parseInt(
+      screen.getByText(/% · 5\.0 MB/u).textContent ?? "0",
+      10,
+    );
+    expect(predicted).toBeGreaterThan(0);
+    expect(predicted).toBeLessThan(50);
+    expect(
+      screen.getByRole("progressbar", { name: "Upload progress" }),
+    ).toHaveAttribute("aria-valuenow", String(predicted));
+
+    view.rerender(
+      <PendingFileList
+        items={[{ ...item, progress: 50, progressTarget: 100 }]}
+        onResend={vi.fn()}
+      />,
+    );
+    act(() => vi.advanceTimersByTime(1_000));
+    const caughtUp = Number.parseInt(
+      screen.getByText(/% · 5\.0 MB/u).textContent ?? "0",
+      10,
+    );
+    expect(caughtUp).toBeGreaterThanOrEqual(50);
+    expect(caughtUp).toBeLessThan(100);
   });
 
   it("keeps a failed transfer before a later committed message", () => {

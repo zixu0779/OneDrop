@@ -37,9 +37,17 @@ export type PendingTransferRecord = {
   imageWidth?: number;
   imageHeight?: number;
   thumbHash?: string;
-  status: "uploading" | "committing" | "upload-failed" | "commit-failed";
+  status:
+    | "uploading"
+    | "committing"
+    | "upload-failed"
+    | "commit-failed"
+    | "cancelled";
   error?: string;
   attachment?: Attachment;
+  progress?: number;
+  progressTarget?: number;
+  averageUploadBytesPerSecond?: number;
 };
 
 export type PendingTextRecord = {

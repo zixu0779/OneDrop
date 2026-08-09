@@ -101,7 +101,9 @@ Blind overwrite is forbidden. Within one extension installation, write commands 
 
 The current schema uses deterministic active-month chunks with a 256 KiB soft target and 320 KiB hard ceiling. This keeps ordinary conditional rewrites small while avoiding a mutable shared pointer file. Chunk discovery follows Microsoft Graph pagination rather than assuming all children fit in one response.
 
-Once a month is closed for 24 hours, its chunks may be compacted into one immutable `archive/YYYY-MM.json`. The archive is created with conflict behavior `fail`, verified before publication is considered complete, and does not require immediate deletion of its source chunks. Late offline sends are not supported, so normal send behavior never reopens archived months.
+Once a month is closed for 24 hours, each unified synchronization checks persisted archive maintenance state and may schedule one eligible month independently of the foreground response. Historical reads never publish. The scheduler creates immutable `archive/YYYY-MM.json` with conflict behavior `fail`, verifies it by read-back, and accepts a concurrent identical publication. A successful month is never archived again; tombstones remain the only representation of later historical deletion.
+
+Transient publication failures use persisted 5-minute, 30-minute, 6-hour, and then 24-hour retry delays. Automatic checks occur on later synchronizations, while a notification Retry may bypass the delay without bypassing per-month task deduplication or validation. Damaged/conflicting sources and inconsistent existing archives are blocked rather than overwritten. On the first later synchronization after success, the raw archive is reverified against its stored digest and tombstones are checked before the source chunk directory is deleted. Cleanup failures are retried without changing archive success. Late offline sends are not supported, so normal send behavior never reopens archived months.
 
 ## 5. Send semantics
 
@@ -150,9 +152,9 @@ The implemented small-file transaction is:
 4. Commit the message into the current monthly JSON document with ETag protection.
 5. If metadata commit fails, report failure and record the uploaded object for later orphan cleanup rather than silently claiming success.
 
-Files up to 4 MiB use direct upload through the service worker. The Side Panel sends base64 file content over the extension runtime boundary; tokens remain outside presentation code. The UI keeps a local transfer bubble until both upload and metadata commit succeed. Upload failure offers Resend; metadata-only failure preserves the DriveItem and offers Retry without uploading again. If the original browser File is no longer readable, Resend opens the file picker for explicit reselection.
+Files up to 4 MiB use direct upload through the service worker. The Side Panel sends base64 file content over the extension runtime boundary; tokens remain outside presentation code. Larger files remain as Blobs in the shared extension IndexedDB and are uploaded by the service worker through a Microsoft Graph upload session in 5 MiB chunks. Each chunk has three bounded attempts, and progress events update the local transfer bubble. The user can cancel the active upload.
 
-Larger files will use a Microsoft Graph upload session with bounded retries while the user operation remains active. Upload sessions are not resumed automatically in a later browser session.
+The UI keeps a local transfer bubble until both upload and metadata commit succeed. Upload failure or cancellation offers Resend; metadata-only failure preserves the DriveItem and offers Retry without uploading again. If the original browser File is no longer readable, Resend opens the file picker for explicit reselection. Interrupted upload sessions are not resumed automatically in a later browser session; Resend starts a new session and first checks whether the deterministic destination already contains the completed file.
 
 ## 8. Local downloads and optional preview cache
 

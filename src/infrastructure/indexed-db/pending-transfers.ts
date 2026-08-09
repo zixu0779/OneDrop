@@ -4,6 +4,12 @@ export function listPendingTransfers(): Promise<PendingTransferRecord[]> {
   return oneDropDatabase.pendingTransfers.orderBy("createdAt").toArray();
 }
 
+export function getPendingTransfer(
+  id: string,
+): Promise<PendingTransferRecord | undefined> {
+  return oneDropDatabase.pendingTransfers.get(id);
+}
+
 export function putPendingTransfer(
   transfer: PendingTransferRecord,
 ): Promise<string> {

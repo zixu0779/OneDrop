@@ -10,7 +10,10 @@ import {
 import { verifyAppFolder } from "../src/infrastructure/onedrive/app-folder";
 import { createTextMessage } from "../src/features/messages/create-text-message";
 import { getUtcMonth } from "../src/features/messages/month";
-import { readMonthDocument } from "../src/infrastructure/onedrive/month-reader";
+import {
+  readHistoricalMonthDocument,
+  readMonthDocument,
+} from "../src/infrastructure/onedrive/month-reader";
 import { appendTextMessage } from "../src/infrastructure/onedrive/month-writer";
 import { getOrCreateDeviceId } from "../src/features/device/device-service";
 import {
@@ -20,8 +23,11 @@ import {
 import {
   checkAttachmentExists,
   readImagePreview,
+  uploadLargeFile,
   uploadSmallFile,
 } from "../src/infrastructure/onedrive/file-uploader";
+import { MAX_DIRECT_FILE_BYTES } from "../src/config/files";
+import { getPendingTransfer } from "../src/infrastructure/indexed-db/pending-transfers";
 import {
   appendMessage,
   removeMessage,
@@ -36,6 +42,16 @@ import {
 import { deleteMonthCache } from "../src/infrastructure/indexed-db/sync-cache";
 import { rebuildTestData } from "../src/dev/rebuild-test-data";
 import { writeMessageTombstone } from "../src/infrastructure/onedrive/tombstones";
+import {
+  checkArchiveTasks,
+  dismissArchiveNotice,
+  resetArchiveTasks,
+  resumeArchiveTasksAfterSignIn,
+  retryArchiveTask,
+} from "../src/infrastructure/onedrive/archive-scheduler";
+
+const activeFileUploads = new Map<string, AbortController>();
+const cancelledFileUploads = new Set<string>();
 
 export default defineBackground(() => {
   browser.runtime.onInstalled.addListener(() => {
@@ -52,8 +68,13 @@ export default defineBackground(() => {
               type: "auth/status",
               status: await getAuthStatus(),
             };
-          case "auth/sign-in":
-            return { ok: true, type: "auth/status", status: await signIn() };
+          case "auth/sign-in": {
+            const status = await signIn();
+            if (status.state === "signed-in") {
+              await resumeArchiveTasksAfterSignIn();
+            }
+            return { ok: true, type: "auth/status", status };
+          }
           case "auth/sign-out":
             return { ok: true, type: "auth/status", status: await signOut() };
           case "device/id":
@@ -66,6 +87,7 @@ export default defineBackground(() => {
             if (!import.meta.env.DEV) {
               throw new Error("Test data rebuilding is development-only.");
             }
+            await resetArchiveTasks();
             await rebuildTestData();
             return { ok: true, type: "dev/test-data-rebuilt" };
           case "onedrive/verify-app-folder":
@@ -74,6 +96,16 @@ export default defineBackground(() => {
               type: "onedrive/app-folder",
               appFolder: await verifyAppFolder(),
             };
+          case "onedrive/open-app-folder": {
+            const appFolder = await verifyAppFolder();
+            if (!appFolder.webUrl) {
+              throw new Error(
+                "OneDrive did not provide the OneDrop folder link.",
+              );
+            }
+            await browser.tabs.create({ url: appFolder.webUrl });
+            return { ok: true, type: "onedrive/app-folder-opened" };
+          }
           case "messages/read-current-month":
             return {
               ok: true,
@@ -84,14 +116,34 @@ export default defineBackground(() => {
             return {
               ok: true,
               type: "messages/month",
-              result: await readMonthDocument(request.month),
+              result: await readHistoricalMonthDocument(request.month),
             };
+          case "archives/check":
+            return {
+              ok: true,
+              type: "archives/notices",
+              notices: await checkArchiveTasks(),
+            };
+          case "archives/retry": {
+            const notice = await retryArchiveTask(request.month);
+            return {
+              ok: true,
+              type: "archives/notice",
+              ...(notice ? { notice } : {}),
+            };
+          }
+          case "archives/dismiss":
+            await dismissArchiveNotice(request.month);
+            return { ok: true, type: "archives/dismissed" };
           case "messages/delete":
             await writeMessageTombstone(request.month, request.messageId);
             return {
               ok: true,
               type: "messages/deleted",
-              result: await readMonthDocument(request.month),
+              result:
+                request.month === getUtcMonth()
+                  ? await readMonthDocument(request.month)
+                  : await readHistoricalMonthDocument(request.month),
             };
           case "messages/delete-corrupt-file":
             await deleteCorruptMonthFile(request.itemId);
@@ -129,6 +181,7 @@ export default defineBackground(() => {
             };
           }
           case "files/send": {
+            cancelledFileUploads.delete(request.messageId);
             const deviceId = await getOrCreateDeviceId();
             const registeredAt = new Date(request.createdAt);
             const placeholder = createUploadingFileMessage(
@@ -158,12 +211,62 @@ export default defineBackground(() => {
 
             let attachment;
             try {
-              attachment = await uploadSmallFile({
-                ...request.file,
-                messageId: request.messageId,
-                createdAt: request.createdAt,
-                ...(request.reuseExisting ? { reuseExisting: true } : {}),
-              });
+              if (request.file.size > MAX_DIRECT_FILE_BYTES) {
+                const pending = await getPendingTransfer(request.messageId);
+                if (!pending || pending.blob.size !== request.file.size) {
+                  throw new Error(
+                    "The original large file is no longer available. Select it again.",
+                  );
+                }
+                if (cancelledFileUploads.has(request.messageId)) {
+                  throw new DOMException("Upload cancelled", "AbortError");
+                }
+                const controller = new AbortController();
+                activeFileUploads.set(request.messageId, controller);
+                try {
+                  attachment = await uploadLargeFile({
+                    ...request.file,
+                    blob: pending.blob,
+                    messageId: request.messageId,
+                    createdAt: request.createdAt,
+                    signal: controller.signal,
+                    onProgress: (
+                      uploadedBytes,
+                      totalBytes,
+                      segmentEndBytes,
+                      averageUploadBytesPerSecond,
+                    ) => {
+                      void browser.runtime
+                        .sendMessage({
+                          type: "files/progress",
+                          messageId: request.messageId,
+                          uploadedBytes,
+                          segmentEndBytes,
+                          totalBytes,
+                          ...(averageUploadBytesPerSecond
+                            ? { averageUploadBytesPerSecond }
+                            : {}),
+                        })
+                        .catch(() => undefined);
+                    },
+                    ...(request.reuseExisting ? { reuseExisting: true } : {}),
+                  });
+                } finally {
+                  activeFileUploads.delete(request.messageId);
+                  cancelledFileUploads.delete(request.messageId);
+                }
+              } else {
+                if (!request.file.base64) {
+                  throw new Error("The selected file content is unavailable.");
+                }
+                attachment = await uploadSmallFile({
+                  ...request.file,
+                  base64: request.file.base64,
+                  messageId: request.messageId,
+                  createdAt: request.createdAt,
+                  ...(request.reuseExisting ? { reuseExisting: true } : {}),
+                });
+              }
             } catch (error) {
               try {
                 await removeMessage(getUtcMonth(), request.messageId);
@@ -208,6 +311,10 @@ export default defineBackground(() => {
               };
             }
           }
+          case "files/cancel":
+            cancelledFileUploads.add(request.messageId);
+            activeFileUploads.get(request.messageId)?.abort();
+            return { ok: true, type: "files/cancelled" };
           case "files/discard-placeholder":
             await removeMessage(getUtcMonth(), request.messageId);
             return { ok: true, type: "files/placeholder-discarded" };

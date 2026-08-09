@@ -6,7 +6,7 @@ const downloadStore = vi.hoisted(() => ({
   markDownloadOpened: vi.fn(),
   putDownloadRecord: vi.fn(),
 }));
-const readAttachmentDataUrl = vi.hoisted(() => vi.fn());
+const getAttachmentDownloadUrl = vi.hoisted(() => vi.fn());
 type TestDownloadItem = {
   id: number;
   filename: string;
@@ -17,7 +17,7 @@ const searchDownloads = vi.fn(async (): Promise<TestDownloadItem[]> => []);
 
 vi.mock("../../src/infrastructure/indexed-db/downloads", () => downloadStore);
 vi.mock("../../src/infrastructure/onedrive/file-uploader", () => ({
-  readAttachmentDataUrl,
+  getAttachmentDownloadUrl,
 }));
 
 import {
@@ -42,8 +42,8 @@ describe("download service", () => {
         search: searchDownloads,
       },
     });
-    readAttachmentDataUrl.mockResolvedValue(
-      "data:application/pdf;base64,aGVsbG8=",
+    getAttachmentDownloadUrl.mockResolvedValue(
+      "https://download.example/temporary-file",
     );
   });
 
@@ -86,6 +86,7 @@ describe("download service", () => {
     });
     expect(browser.downloads.download).toHaveBeenCalledWith(
       expect.objectContaining({
+        url: "https://download.example/temporary-file",
         filename: "report.pdf",
         conflictAction: "uniquify",
         saveAs: false,

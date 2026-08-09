@@ -5,7 +5,7 @@ import {
   markDownloadOpened,
   putDownloadRecord,
 } from "../../infrastructure/indexed-db/downloads";
-import { readAttachmentDataUrl } from "../../infrastructure/onedrive/file-uploader";
+import { getAttachmentDownloadUrl } from "../../infrastructure/onedrive/file-uploader";
 
 export async function openOrDownloadAttachment(
   attachment: Attachment,
@@ -24,12 +24,9 @@ export async function openOrDownloadAttachment(
     }
   }
 
-  const dataUrl = await readAttachmentDataUrl(
-    attachment.driveItemId,
-    attachment.mimeType,
-  );
+  const downloadUrl = await getAttachmentDownloadUrl(attachment.driveItemId);
   const downloadId = await browser.downloads.download({
-    url: dataUrl,
+    url: downloadUrl,
     filename: sanitizeDownloadFilename(attachment.name),
     conflictAction: "uniquify",
     saveAs,

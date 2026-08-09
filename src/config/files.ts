@@ -1,1 +1,2 @@
 export const MAX_DIRECT_FILE_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_UPLOAD_BYTES_PER_SECOND = 1024 * 1024;

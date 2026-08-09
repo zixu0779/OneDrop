@@ -5,6 +5,10 @@ import { MAX_DIRECT_FILE_BYTES } from "../../config/files";
 import type { Attachment } from "../../domain/message";
 import { getCurrentAccessToken } from "../../features/auth/auth-service";
 import { readGraphError } from "../graph/graph-error";
+import {
+  getAverageUploadBytesPerSecond,
+  recordUploadThroughput,
+} from "../indexed-db/upload-throughput";
 import { verifyAppFolder } from "./app-folder";
 
 const folderSchema = z.object({
@@ -20,6 +24,10 @@ const attachmentStateSchema = z.object({
   id: z.string().min(1),
   deleted: z.object({ state: z.string().optional() }).optional(),
 });
+const attachmentDownloadSchema = z.object({
+  "@microsoft.graph.downloadUrl": z.string().url(),
+});
+const uploadSessionSchema = z.object({ uploadUrl: z.string().url() });
 
 const FILE_OPERATION_TIMEOUT_MS = 12_000;
 
@@ -48,23 +56,12 @@ export async function uploadSmallFile(input: {
   let timeout = setTimeout(() => controller.abort(), FILE_OPERATION_TIMEOUT_MS);
   try {
     const accessToken = await getCurrentAccessToken();
-    const root = await verifyAppFolder(controller.signal);
-    const createdAt = new Date(input.createdAt);
-    const folderNames = [
-      "files",
-      createdAt.getUTCFullYear().toString(),
-      (createdAt.getUTCMonth() + 1).toString().padStart(2, "0"),
+    const parentId = await prepareUploadFolder(
+      accessToken,
+      input.createdAt,
       input.messageId,
-    ];
-    let parentId = root.id;
-    for (const name of folderNames) {
-      parentId = await ensureChildFolder(
-        accessToken,
-        parentId,
-        name,
-        controller.signal,
-      );
-    }
+      controller.signal,
+    );
 
     if (input.reuseExisting) {
       const existing = await findExistingUpload(
@@ -130,6 +127,222 @@ export async function uploadSmallFile(input: {
   }
 }
 
+export async function uploadLargeFile(input: {
+  name: string;
+  mimeType: string;
+  size: number;
+  blob: Blob;
+  messageId: string;
+  createdAt: string;
+  reuseExisting?: boolean;
+  imageWidth?: number;
+  imageHeight?: number;
+  thumbHash?: string;
+  signal: AbortSignal;
+  onProgress?: (
+    uploadedBytes: number,
+    totalBytes: number,
+    segmentEndBytes: number,
+    averageUploadBytesPerSecond?: number,
+  ) => void;
+}): Promise<Attachment> {
+  if (input.size <= MAX_DIRECT_FILE_BYTES) {
+    throw new Error("Upload sessions are only used for large files.");
+  }
+  if (input.blob.size !== input.size) {
+    throw new Error("The selected file changed before upload.");
+  }
+
+  const accessToken = await getCurrentAccessToken();
+  const parentId = await prepareUploadFolder(
+    accessToken,
+    input.createdAt,
+    input.messageId,
+    input.signal,
+  );
+  if (input.reuseExisting) {
+    const existing = await findExistingUpload(
+      accessToken,
+      parentId,
+      input.name,
+      input.size,
+      input.signal,
+    );
+    if (existing) return toAttachment(existing, input);
+  }
+
+  const sessionResponse = await fetch(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(parentId)}:/${encodeURIComponent(input.name)}:/createUploadSession`,
+    {
+      method: "POST",
+      signal: input.signal,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        item: { "@microsoft.graph.conflictBehavior": "replace" },
+      }),
+    },
+  );
+  if (!sessionResponse.ok) {
+    throw new Error(
+      `Upload session creation failed: ${await readGraphError(sessionResponse)}`,
+    );
+  }
+  const { uploadUrl } = uploadSessionSchema.parse(await sessionResponse.json());
+  const chunkSize = 5 * 1024 * 1024;
+  let uploadedBytes = 0;
+  let averageUploadBytesPerSecond: number | undefined;
+  try {
+    averageUploadBytesPerSecond = await getAverageUploadBytesPerSecond();
+  } catch {
+    // Local telemetry must never block an upload.
+  }
+
+  while (uploadedBytes < input.size) {
+    const end = Math.min(uploadedBytes + chunkSize, input.size);
+    input.onProgress?.(
+      uploadedBytes,
+      input.size,
+      end,
+      averageUploadBytesPerSecond,
+    );
+    const chunk = input.blob.slice(uploadedBytes, end);
+    const { response, successfulAttemptDurationMs } =
+      await uploadChunkWithRetry(
+        uploadUrl,
+        chunk,
+        uploadedBytes,
+        end,
+        input.size,
+        input.signal,
+      );
+    try {
+      averageUploadBytesPerSecond =
+        (await recordUploadThroughput(
+          end - uploadedBytes,
+          successfulAttemptDurationMs,
+        )) ?? averageUploadBytesPerSecond;
+    } catch {
+      // Keep the previous estimate if local telemetry cannot be persisted.
+    }
+    if (response.status === 200 || response.status === 201) {
+      const item = uploadedFileSchema.parse(await response.json());
+      input.onProgress?.(
+        input.size,
+        input.size,
+        input.size,
+        averageUploadBytesPerSecond,
+      );
+      return toAttachment(item, input);
+    }
+    uploadedBytes = end;
+  }
+  throw new Error("Upload session ended without a completed DriveItem.");
+}
+
+async function uploadChunkWithRetry(
+  uploadUrl: string,
+  chunk: Blob,
+  start: number,
+  end: number,
+  total: number,
+  signal: AbortSignal,
+): Promise<{ response: Response; successfulAttemptDurationMs: number }> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const startedAt = performance.now();
+      const response = await fetch(uploadUrl, {
+        method: "PUT",
+        signal,
+        headers: {
+          "Content-Range": `bytes ${start}-${end - 1}/${total}`,
+        },
+        body: chunk,
+      });
+      if (response.ok) {
+        return {
+          response,
+          successfulAttemptDurationMs: Math.max(
+            performance.now() - startedAt,
+            1,
+          ),
+        };
+      }
+      if (![429, 500, 502, 503, 504].includes(response.status)) {
+        throw new Error(
+          `File upload failed: ${await readGraphError(response)}`,
+        );
+      }
+      lastError = new Error(await readGraphError(response));
+    } catch (cause) {
+      if (signal.aborted) throw cause;
+      lastError = cause;
+    }
+    if (attempt < 2) await delay(500 * 2 ** attempt, signal);
+  }
+  throw new Error("File upload failed after three attempts.", {
+    cause: lastError,
+  });
+}
+
+async function prepareUploadFolder(
+  accessToken: string,
+  createdAtValue: string,
+  messageId: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const root = await verifyAppFolder(signal);
+  const createdAt = new Date(createdAtValue);
+  const folderNames = [
+    "files",
+    createdAt.getUTCFullYear().toString(),
+    (createdAt.getUTCMonth() + 1).toString().padStart(2, "0"),
+    messageId,
+  ];
+  let parentId = root.id;
+  for (const name of folderNames) {
+    parentId = await ensureChildFolder(accessToken, parentId, name, signal);
+  }
+  return parentId;
+}
+
+function toAttachment(
+  item: z.infer<typeof uploadedFileSchema>,
+  input: {
+    mimeType: string;
+    imageWidth?: number;
+    imageHeight?: number;
+    thumbHash?: string;
+  },
+): Attachment {
+  return {
+    driveItemId: item.id,
+    name: item.name,
+    size: item.size,
+    mimeType: input.mimeType || "application/octet-stream",
+    ...(input.imageWidth ? { imageWidth: input.imageWidth } : {}),
+    ...(input.imageHeight ? { imageHeight: input.imageHeight } : {}),
+    ...(input.thumbHash ? { thumbHash: input.thumbHash } : {}),
+  };
+}
+
+async function delay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, milliseconds);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timeout);
+        reject(new DOMException("Aborted", "AbortError"));
+      },
+      { once: true },
+    );
+  });
+}
+
 export async function readImagePreview(
   driveItemId: string,
   mimeType: string,
@@ -157,6 +370,22 @@ export async function readAttachmentDataUrl(
     throw new Error("Attachment exceeds the current direct download limit.");
   }
   return `data:${mimeType || "application/octet-stream"};base64,${encodeBase64(bytes)}`;
+}
+
+export async function getAttachmentDownloadUrl(
+  driveItemId: string,
+): Promise<string> {
+  const accessToken = await getCurrentAccessToken();
+  const response = await fetch(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) {
+    throw new Error(`File download failed: ${await readGraphError(response)}`);
+  }
+  return attachmentDownloadSchema.parse(await response.json())[
+    "@microsoft.graph.downloadUrl"
+  ];
 }
 
 export async function checkAttachmentExists(

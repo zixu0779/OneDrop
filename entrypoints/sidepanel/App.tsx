@@ -117,10 +117,42 @@ async function sendAuthRequest(request: RuntimeRequest): Promise<AuthStatus> {
   return response.status;
 }
 
+export type MonthReadToken = {
+  requestVersion: number;
+  writeVersion: number;
+};
+
+export function shouldApplyMonthRead(
+  token: MonthReadToken,
+  latestRequestVersion: number | undefined,
+  localOperationVersion: number,
+  activeLocalWrites = 0,
+): boolean {
+  return (
+    latestRequestVersion === token.requestVersion &&
+    localOperationVersion === token.writeVersion &&
+    activeLocalWrites === 0
+  );
+}
+
+function withoutMessage(
+  result: MonthReadResult,
+  removedMessageId?: string,
+): MonthReadResult {
+  if (!removedMessageId || result.state !== "loaded") return result;
+  return {
+    ...result,
+    messages: result.messages.filter(
+      (message) => message.id !== removedMessageId,
+    ),
+  };
+}
+
 export function App() {
   const [status, setStatus] = useState<AuthStatus>();
   const [error, setError] = useState<string>();
   const [isWorking, setIsWorking] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [monthResult, setMonthResult] = useState<MonthReadResult>();
   const [historicalMonthResults, setHistoricalMonthResults] = useState<
     MonthReadResult[]
@@ -128,7 +160,6 @@ export function App() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [deviceId, setDeviceId] = useState<string>();
   const [draft, setDraft] = useState("");
-  const [isSending, setIsSending] = useState(false);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isTimelineScrolling, setIsTimelineScrolling] = useState(false);
   const [isTimelineScrollbarHovered, setIsTimelineScrollbarHovered] =
@@ -138,6 +169,11 @@ export function App() {
   );
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [pendingTexts, setPendingTexts] = useState<PendingText[]>([]);
+  const [isCreatingPendingText, setIsCreatingPendingText] = useState(false);
+  const [sendingTextIds, setSendingTextIds] = useState<Set<string>>(new Set());
+  const [deletingMessageIds, setDeletingMessageIds] = useState<Set<string>>(
+    new Set(),
+  );
   const [attachmentCheckVersion, setAttachmentCheckVersion] = useState(0);
   const [processingNoticeKey, setProcessingNoticeKey] = useState<string>();
   const [archiveNotices, setArchiveNotices] = useState<ArchiveNotice[]>([]);
@@ -188,7 +224,14 @@ export function App() {
   const timelineScrollRef = useRef<HTMLDivElement>(null);
   const timelineContentRef = useRef<HTMLDivElement>(null);
   const accountCardRef = useRef<HTMLElement>(null);
-  const isSendingRef = useRef(false);
+  const isCreatingPendingTextRef = useRef(false);
+  const syncInFlightRef = useRef(false);
+  const lastSuccessfulSyncAtRef = useRef(0);
+  const localOperationVersionsRef = useRef<Map<string, number>>(new Map());
+  const activeLocalWritesRef = useRef<Map<string, number>>(new Map());
+  const readRequestVersionsRef = useRef<Map<string, number>>(new Map());
+  const activePendingTextWriteIdsRef = useRef<Set<string>>(new Set());
+  const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const historyScrollHeightRef = useRef<number | undefined>(undefined);
   const historyLoadingHeightRef = useRef(0);
@@ -219,6 +262,98 @@ export function App() {
   const corruptNoticeCount = visibleCorruptFiles.length;
   const conflictNoticeCount = visibleMessageConflicts.length;
   const notificationCount = corruptNoticeCount + conflictNoticeCount;
+  const isSendingText = isCreatingPendingText;
+
+  function enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const queued = writeQueueRef.current.catch(() => undefined).then(operation);
+    writeQueueRef.current = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
+  }
+
+  function applyWriteSnapshot(
+    result: MonthReadResult,
+    removedMessageId?: string,
+  ) {
+    const authoritativeResult = withoutMessage(result, removedMessageId);
+    if (result.month === getUtcMonth()) {
+      setMonthResult(authoritativeResult);
+      return;
+    }
+    setHistoricalMonthResults((results) => {
+      return results.map((item) =>
+        item.month === result.month ? authoritativeResult : item,
+      );
+    });
+  }
+
+  function beginLocalWrite(
+    month: string,
+    blockReadsWhileActive = true,
+  ): () => void {
+    localOperationVersionsRef.current.set(
+      month,
+      (localOperationVersionsRef.current.get(month) ?? 0) + 1,
+    );
+    if (blockReadsWhileActive) {
+      activeLocalWritesRef.current.set(
+        month,
+        (activeLocalWritesRef.current.get(month) ?? 0) + 1,
+      );
+    }
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      localOperationVersionsRef.current.set(
+        month,
+        (localOperationVersionsRef.current.get(month) ?? 0) + 1,
+      );
+      if (blockReadsWhileActive) {
+        const remaining = (activeLocalWritesRef.current.get(month) ?? 1) - 1;
+        if (remaining > 0) activeLocalWritesRef.current.set(month, remaining);
+        else activeLocalWritesRef.current.delete(month);
+      }
+    };
+  }
+
+  function beginMonthRead(month: string): MonthReadToken {
+    const requestVersion = (readRequestVersionsRef.current.get(month) ?? 0) + 1;
+    readRequestVersionsRef.current.set(month, requestVersion);
+    return {
+      requestVersion,
+      writeVersion: localOperationVersionsRef.current.get(month) ?? 0,
+    };
+  }
+
+  function applySynchronizedSnapshot(
+    result: MonthReadResult,
+    token: MonthReadToken,
+  ): boolean {
+    if (
+      !shouldApplyMonthRead(
+        token,
+        readRequestVersionsRef.current.get(result.month),
+        localOperationVersionsRef.current.get(result.month) ?? 0,
+        activeLocalWritesRef.current.get(result.month) ?? 0,
+      )
+    ) {
+      return false;
+    }
+
+    if (result.month === getUtcMonth()) {
+      setMonthResult(result);
+      return true;
+    }
+    setHistoricalMonthResults((results) =>
+      results.map((current) =>
+        current.month === result.month ? result : current,
+      ),
+    );
+    return true;
+  }
 
   useEffect(() => {
     const listener = (
@@ -414,12 +549,6 @@ export function App() {
   }, [monthResult]);
 
   useLayoutEffect(() => {
-    const timeline = timelineScrollRef.current;
-    if (isWorking || !timeline || !shouldStickToBottomRef.current) return;
-    alignTimelineToBottom(timeline);
-  }, [isWorking]);
-
-  useLayoutEffect(() => {
     if (!isLoadingHistory) return;
     historyLoadingHeightRef.current =
       historyLoadingElementRef.current?.getBoundingClientRect().height ?? 0;
@@ -474,6 +603,23 @@ export function App() {
       document.removeEventListener("visibilitychange", updateVisibility);
   }, []);
 
+  useEffect(() => {
+    if (
+      !isPanelVisible ||
+      status?.state !== "signed-in" ||
+      !monthResult ||
+      Date.now() - lastSuccessfulSyncAtRef.current < 30_000
+    ) {
+      return;
+    }
+    void syncCurrentMonthSilently();
+  }, [
+    historicalMonthResults.map((result) => result.month).join("|"),
+    isPanelVisible,
+    monthResult?.month,
+    status?.state,
+  ]);
+
   const hasUploadingMessages =
     monthResult?.state === "loaded" &&
     monthResult.messages.some(
@@ -517,15 +663,12 @@ export function App() {
       timer = setTimeout(async () => {
         elapsed += delayMs;
         try {
+          const readToken = beginMonthRead(getUtcMonth());
           const response = await sendRequest({
             type: "messages/read-current-month",
           });
           if (!cancelled && response.ok && response.type === "messages/month") {
-            setMonthResult((current) =>
-              JSON.stringify(current) === JSON.stringify(response.result)
-                ? current
-                : response.result,
-            );
+            applySynchronizedSnapshot(response.result, readToken);
           }
         } catch {
           // A foreground synchronization failure is transient. The next
@@ -571,10 +714,7 @@ export function App() {
         if (pending.status === "committing" && pending.attachment) {
           void retryFileCommit(pending);
         } else if (pending.status === "upload-failed") {
-          void sendRequest({
-            type: "files/discard-placeholder",
-            messageId: pending.id,
-          }).catch(() => undefined);
+          void discardPendingPlaceholder(pending.id);
         }
       }
     };
@@ -678,7 +818,7 @@ export function App() {
       throw new Error("OneDrop could not identify this Edge installation.");
     }
     setDeviceId(deviceResponse.deviceId);
-    if (cachedTimeline) setMonthResult(cachedTimeline);
+    if (cachedTimeline && !monthResult) setMonthResult(cachedTimeline);
     if (restoreTransfers) {
       const localReconciliationResult: MonthReadResult = cachedTimeline ?? {
         state: "missing",
@@ -695,6 +835,7 @@ export function App() {
       throw new Error("OneDrop received an unexpected OneDrive response.");
     }
 
+    const currentMonthReadToken = beginMonthRead(getUtcMonth());
     const monthResponse = await sendRequest({
       type: "messages/read-current-month",
     });
@@ -703,10 +844,12 @@ export function App() {
       throw new Error("OneDrop received an unexpected monthly sync response.");
     }
 
-    setMonthResult(monthResponse.result);
+    lastSuccessfulSyncAtRef.current = Date.now();
+    applySynchronizedSnapshot(monthResponse.result, currentMonthReadToken);
     if (loadedHistoricalMonths.length > 0) {
       const refreshedHistory = await Promise.all(
         loadedHistoricalMonths.map(async (month) => {
+          const readToken = beginMonthRead(month);
           const response = await sendRequest({
             type: "messages/read-month",
             month,
@@ -716,10 +859,12 @@ export function App() {
               "OneDrop received an unexpected history synchronization response.",
             );
           }
-          return response.result;
+          return { result: response.result, readToken };
         }),
       );
-      setHistoricalMonthResults(refreshedHistory);
+      for (const { result, readToken } of refreshedHistory) {
+        applySynchronizedSnapshot(result, readToken);
+      }
     }
     if (runArchiveMaintenance) {
       void checkArchiveTasks();
@@ -731,6 +876,7 @@ export function App() {
         restorePendingTexts(monthResponse.result),
       ]);
     }
+    lastSuccessfulSyncAtRef.current = Date.now();
   }
 
   async function checkArchiveTasks() {
@@ -827,7 +973,9 @@ export function App() {
   }
 
   async function refreshTimeline() {
-    setIsWorking(true);
+    if (syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
+    setIsSyncing(true);
     setError(undefined);
     setDismissedNoticeKeys(new Set());
     try {
@@ -838,17 +986,72 @@ export function App() {
         cause instanceof Error ? cause.message : "OneDrive refresh failed",
       );
     } finally {
-      setIsWorking(false);
+      syncInFlightRef.current = false;
+      setIsSyncing(false);
+    }
+  }
+
+  async function syncCurrentMonthSilently() {
+    if (syncInFlightRef.current || status?.state !== "signed-in") return;
+    syncInFlightRef.current = true;
+    setIsSyncing(true);
+    const readToken = beginMonthRead(getUtcMonth());
+    try {
+      const response = await sendRequest({
+        type: "messages/read-current-month",
+      });
+      if (!response.ok || response.type !== "messages/month") return;
+      applySynchronizedSnapshot(response.result, readToken);
+      const refreshedHistory = await Promise.all(
+        historicalMonthResults.map(async ({ month }) => {
+          const historicalReadToken = beginMonthRead(month);
+          const historicalResponse = await sendRequest({
+            type: "messages/read-month",
+            month,
+          });
+          if (
+            !historicalResponse.ok ||
+            historicalResponse.type !== "messages/month"
+          ) {
+            throw new Error("Unexpected historical synchronization response.");
+          }
+          return {
+            result: historicalResponse.result,
+            readToken: historicalReadToken,
+          };
+        }),
+      );
+      for (const historical of refreshedHistory) {
+        applySynchronizedSnapshot(historical.result, historical.readToken);
+      }
+      lastSuccessfulSyncAtRef.current = Date.now();
+    } catch {
+      // Automatic foreground synchronization is best effort. The explicit
+      // sync button remains available when the connection recovers.
+    } finally {
+      syncInFlightRef.current = false;
+      setIsSyncing(false);
     }
   }
 
   async function refreshUploadingMessage(messageId: string) {
     setRefreshingUploadIds((current) => new Set(current).add(messageId));
     try {
+      const readToken = beginMonthRead(getUtcMonth());
       const response = await sendRequest({
         type: "messages/read-current-month",
       });
       if (!response.ok || response.type !== "messages/month") return;
+      if (
+        !shouldApplyMonthRead(
+          readToken,
+          readRequestVersionsRef.current.get(response.result.month),
+          localOperationVersionsRef.current.get(response.result.month) ?? 0,
+          activeLocalWritesRef.current.get(response.result.month) ?? 0,
+        )
+      ) {
+        return;
+      }
       const refreshedResult = response.result;
       if (refreshedResult.state !== "loaded") return;
       const refreshedMessage = refreshedResult.messages.find(
@@ -938,12 +1141,14 @@ export function App() {
     }
   }
 
-  async function readCurrentMonth(): Promise<MonthReadResult> {
+  async function synchronizeCurrentMonthSnapshot(): Promise<void> {
+    const month = getUtcMonth();
+    const readToken = beginMonthRead(month);
     const response = await sendRequest({ type: "messages/read-current-month" });
     if (!response.ok || response.type !== "messages/month") {
       throw new Error("OneDrop could not reread the record file.");
     }
-    return response.result;
+    applySynchronizedSnapshot(response.result, readToken);
   }
 
   async function retryNotice(noticeKey: string) {
@@ -951,7 +1156,7 @@ export function App() {
     setProcessingNoticeKey(noticeKey);
     setError(undefined);
     try {
-      setMonthResult(await readCurrentMonth());
+      await synchronizeCurrentMonthSnapshot();
     } catch (cause) {
       setError(getClientError(cause));
     } finally {
@@ -973,7 +1178,7 @@ export function App() {
       if (!deleted.ok || deleted.type !== "messages/corrupt-file-deleted") {
         throw new Error("OneDrop could not delete the damaged record file.");
       }
-      setMonthResult(await readCurrentMonth());
+      await synchronizeCurrentMonthSnapshot();
     } catch (cause) {
       setError(getClientError(cause));
     } finally {
@@ -1008,70 +1213,83 @@ export function App() {
 
   async function resolveConflict(messageId: string, keepItemId: string) {
     const noticeKey = `conflict:${messageId}`;
+    const finishLocalWrite = beginLocalWrite(getUtcMonth());
     setIsWorking(true);
     setProcessingNoticeKey(noticeKey);
     setError(undefined);
     try {
-      const response = await sendRequest({
-        type: "messages/resolve-conflict",
-        messageId,
-        keepItemId,
-      });
+      const response = await enqueueWrite(() =>
+        sendRequest({
+          type: "messages/resolve-conflict",
+          messageId,
+          keepItemId,
+        }),
+      );
       if (!response.ok || response.type !== "messages/conflict-resolved") {
         throw new Error("OneDrop could not resolve the message conflict.");
       }
-      setMonthResult(response.result);
+      applyWriteSnapshot(response.result);
     } catch (cause) {
       setError(getClientError(cause));
     } finally {
+      finishLocalWrite();
       setIsWorking(false);
       setProcessingNoticeKey(undefined);
     }
   }
 
   async function sendText() {
-    if (!draft.trim() || isSendingRef.current) return;
+    if (!draft.trim() || isCreatingPendingTextRef.current) {
+      return;
+    }
 
+    isCreatingPendingTextRef.current = true;
+    setIsCreatingPendingText(true);
     const pending: PendingText = {
       id: crypto.randomUUID(),
       createdAt: new Date().toISOString(),
       text: draft.trim(),
       status: "sending",
     };
-    await putPendingText(pending);
-    setPendingTexts((items) => [...items, pending]);
-    setDraft("");
-    await sendPendingText(pending);
+    try {
+      await putPendingText(pending);
+      setPendingTexts((items) => [...items, pending]);
+      setDraft("");
+    } finally {
+      isCreatingPendingTextRef.current = false;
+      setIsCreatingPendingText(false);
+    }
+    void sendPendingText(pending);
   }
 
   async function sendPendingText(pending: PendingText) {
-    if (isSendingRef.current) return;
-
-    isSendingRef.current = true;
-    setIsSending(true);
-    setIsWorking(true);
+    if (activePendingTextWriteIdsRef.current.has(pending.id)) return;
+    const finishLocalWrite = beginLocalWrite(getUtcMonth());
+    activePendingTextWriteIdsRef.current.add(pending.id);
+    setSendingTextIds((ids) => new Set(ids).add(pending.id));
     setError(undefined);
     const sentAt = new Date().toISOString();
-    await updatePendingText(pending.id, { status: "sending" });
-    setPendingTexts((items) =>
-      items.map((item) =>
-        item.id === pending.id ? { ...item, status: "sending" } : item,
-      ),
-    );
-
     try {
-      const response = await sendRequest({
-        type: "messages/send-text",
-        text: pending.text,
-        messageId: pending.id,
-        createdAt: sentAt,
-      });
+      await updatePendingText(pending.id, { status: "sending" });
+      setPendingTexts((items) =>
+        items.map((item) =>
+          item.id === pending.id ? { ...item, status: "sending" } : item,
+        ),
+      );
+      const response = await enqueueWrite(() =>
+        sendRequest({
+          type: "messages/send-text",
+          text: pending.text,
+          messageId: pending.id,
+          createdAt: sentAt,
+        }),
+      );
 
       if (!response.ok || response.type !== "messages/month") {
         throw new Error("OneDrop received an unexpected send response.");
       }
 
-      setMonthResult(response.result);
+      applyWriteSnapshot(response.result);
       forceScrollToBottomRef.current = true;
       setScrollRevision((revision) => revision + 1);
       await deletePendingText(pending.id);
@@ -1093,26 +1311,43 @@ export function App() {
         ),
       );
     } finally {
-      isSendingRef.current = false;
-      setIsSending(false);
-      setIsWorking(false);
+      finishLocalWrite();
+      activePendingTextWriteIdsRef.current.delete(pending.id);
+      setSendingTextIds((ids) => {
+        const next = new Set(ids);
+        next.delete(pending.id);
+        return next;
+      });
     }
   }
 
   async function deleteTimelineMessage(messageId: string, month: string) {
-    const previousMonthResult = monthResult;
-    const previousHistoricalMonthResults = historicalMonthResults;
-    const previousPendingTexts = pendingTexts;
-    const previousPendingFiles = pendingFiles;
+    if (deletingMessageIds.has(messageId)) return;
+    setDeletingMessageIds((ids) => new Set(ids).add(messageId));
     const cloudResult =
       month === getUtcMonth()
         ? monthResult
         : historicalMonthResults.find((result) => result.month === month);
+    const removedCloudMessage =
+      cloudResult?.state === "loaded"
+        ? cloudResult.messages.find((message) => message.id === messageId)
+        : undefined;
+    const removedPendingText = pendingTexts.find(
+      (item) => item.id === messageId,
+    );
+    const removedPendingFile = pendingFiles.find(
+      (item) => item.id === messageId,
+    );
     const existsInCloudResult =
       cloudResult?.state === "loaded" &&
       cloudResult.messages.some((message) => message.id === messageId);
+    const hasActivePendingWrite =
+      removedPendingText?.status === "sending" ||
+      removedPendingFile?.status === "uploading" ||
+      removedPendingFile?.status === "committing";
     const isLocalOnlyPending =
       !existsInCloudResult &&
+      !hasActivePendingWrite &&
       (pendingTexts.some((item) => item.id === messageId) ||
         pendingFiles.some((item) => item.id === messageId));
     const timeline = timelineScrollRef.current;
@@ -1165,53 +1400,78 @@ export function App() {
         deletePendingText(messageId),
         deletePendingTransfer(messageId),
       ]);
-      const removed = previousPendingFiles.find(
-        (item) => item.id === messageId,
-      );
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      if (removedPendingFile?.previewUrl) {
+        URL.revokeObjectURL(removedPendingFile.previewUrl);
+      }
+      setDeletingMessageIds((ids) => {
+        const next = new Set(ids);
+        next.delete(messageId);
+        return next;
+      });
       return;
     }
-    setIsWorking(true);
     setError(undefined);
+    const finishLocalWrite = beginLocalWrite(month);
     try {
-      const response = await sendRequest({
-        type: "messages/delete",
-        messageId,
-        month,
-      });
+      const response = await enqueueWrite(() =>
+        sendRequest({
+          type: "messages/delete",
+          messageId,
+          month,
+        }),
+      );
       if (!response.ok || response.type !== "messages/deleted") {
         throw new Error("OneDrop received an unexpected delete response.");
       }
-      if (month === getUtcMonth()) {
-        setMonthResult(response.result);
-      } else {
-        setHistoricalMonthResults((results) =>
-          results.map((result) =>
-            result.month === month ? response.result : result,
-          ),
-        );
-      }
+      applyWriteSnapshot(response.result, messageId);
       await Promise.all([
         deletePendingText(messageId),
         deletePendingTransfer(messageId),
       ]);
-      const removed = previousPendingFiles.find(
-        (item) => item.id === messageId,
-      );
-      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      if (removedPendingFile?.previewUrl) {
+        URL.revokeObjectURL(removedPendingFile.previewUrl);
+      }
     } catch (cause) {
       setOptimisticallyDeletedMessageIds((ids) => {
         const next = new Set(ids);
         next.delete(messageId);
         return next;
       });
-      setMonthResult(previousMonthResult);
-      setHistoricalMonthResults(previousHistoricalMonthResults);
-      setPendingTexts(previousPendingTexts);
-      setPendingFiles(previousPendingFiles);
+      if (removedCloudMessage) {
+        const restoreMessage = (result: MonthReadResult): MonthReadResult => {
+          if (result.state !== "loaded") return result;
+          if (result.messages.some((message) => message.id === messageId)) {
+            return result;
+          }
+          return {
+            ...result,
+            messages: [...result.messages, removedCloudMessage].sort(
+              (left, right) =>
+                left.createdAt.localeCompare(right.createdAt) ||
+                left.id.localeCompare(right.id),
+            ),
+          };
+        };
+        if (month === getUtcMonth()) {
+          setMonthResult((current) =>
+            current ? restoreMessage(current) : current,
+          );
+        } else {
+          setHistoricalMonthResults((results) =>
+            results.map((result) =>
+              result.month === month ? restoreMessage(result) : result,
+            ),
+          );
+        }
+      }
       setError(getClientError(cause));
     } finally {
-      setIsWorking(false);
+      finishLocalWrite();
+      setDeletingMessageIds((ids) => {
+        const next = new Set(ids);
+        next.delete(messageId);
+        return next;
+      });
     }
   }
 
@@ -1223,38 +1483,8 @@ export function App() {
     }
     setIsTimelineScrolling(true);
     scheduleScrollbarHide();
-    if (!isWorking && (timelineScrollRef.current?.scrollTop ?? 1) <= 24) {
+    if (!isSyncing && (timelineScrollRef.current?.scrollTop ?? 1) <= 24) {
       void loadPreviousMonth();
-    }
-  }
-
-  function blockTimelineActionWhileWorking(
-    event: ReactMouseEvent<HTMLElement>,
-  ) {
-    if (!isWorking) return;
-    const target = event.target;
-    if (
-      target instanceof Element &&
-      target.closest(
-        'button, input, [role="button"], [role="menuitem"], [role="menu"]',
-      )
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
-    }
-  }
-
-  function blockTimelineKeyActionWhileWorking(
-    event: ReactKeyboardEvent<HTMLElement>,
-  ) {
-    if (!isWorking || (event.key !== "Enter" && event.key !== " ")) return;
-    const target = event.target;
-    if (
-      target instanceof Element &&
-      target.closest('button, [role="button"], [role="menuitem"]')
-    ) {
-      event.preventDefault();
-      event.stopPropagation();
     }
   }
 
@@ -1270,12 +1500,25 @@ export function App() {
     setError(undefined);
     historyScrollHeightRef.current = timelineScrollRef.current?.scrollHeight;
     try {
+      const readToken = beginMonthRead(month);
       const response = await sendRequest({
         type: "messages/read-month",
         month,
       });
       if (!response.ok || response.type !== "messages/month") {
         throw new Error("OneDrop received an unexpected history response.");
+      }
+      if (
+        !shouldApplyMonthRead(
+          readToken,
+          readRequestVersionsRef.current.get(month),
+          localOperationVersionsRef.current.get(month) ?? 0,
+          activeLocalWritesRef.current.get(month) ?? 0,
+        )
+      ) {
+        historyScrollHeightRef.current = undefined;
+        historyLoadingHeightRef.current = 0;
+        return;
       }
       historyCursorRef.current = month;
       if (response.result.state !== "missing") {
@@ -1406,22 +1649,29 @@ export function App() {
         );
         return;
       }
-      const response = await sendRequest({
-        type: "files/send",
-        file: {
-          name: pending.file.name,
-          mimeType: pending.file.type || "application/octet-stream",
-          size: pending.file.size,
-          ...(base64 ? { base64 } : {}),
-          ...(pending.imageWidth ? { imageWidth: pending.imageWidth } : {}),
-          ...(pending.imageHeight ? { imageHeight: pending.imageHeight } : {}),
-          ...(pending.thumbHash ? { thumbHash: pending.thumbHash } : {}),
-        },
-        messageId: pending.id,
-        createdAt: transferCreatedAt,
-        ...(isResend ? { reuseExisting: true } : {}),
-      });
-      handleFileTransferResponse(pending.id, response);
+      const finishLocalWrite = beginLocalWrite(getUtcMonth(), false);
+      try {
+        const response = await sendRequest({
+          type: "files/send",
+          file: {
+            name: pending.file.name,
+            mimeType: pending.file.type || "application/octet-stream",
+            size: pending.file.size,
+            ...(base64 ? { base64 } : {}),
+            ...(pending.imageWidth ? { imageWidth: pending.imageWidth } : {}),
+            ...(pending.imageHeight
+              ? { imageHeight: pending.imageHeight }
+              : {}),
+            ...(pending.thumbHash ? { thumbHash: pending.thumbHash } : {}),
+          },
+          messageId: pending.id,
+          createdAt: transferCreatedAt,
+          ...(isResend ? { reuseExisting: true } : {}),
+        });
+        handleFileTransferResponse(pending.id, response);
+      } finally {
+        finishLocalWrite();
+      }
     } catch (cause) {
       updatePending(pending.id, {
         status: "upload-failed",
@@ -1447,6 +1697,7 @@ export function App() {
 
   async function retryFileCommit(pending: PendingFile) {
     if (!pending.attachment) return;
+    const finishLocalWrite = beginLocalWrite(getUtcMonth());
     updatePending(pending.id, { status: "committing" });
     try {
       const response = await sendRequest({
@@ -1461,6 +1712,22 @@ export function App() {
         status: "committing",
         error: getClientError(cause),
       });
+    } finally {
+      finishLocalWrite();
+    }
+  }
+
+  async function discardPendingPlaceholder(messageId: string) {
+    const finishLocalWrite = beginLocalWrite(getUtcMonth());
+    try {
+      await sendRequest({
+        type: "files/discard-placeholder",
+        messageId,
+      });
+    } catch {
+      // The next reconnect or restore pass retries this idempotent cleanup.
+    } finally {
+      finishLocalWrite();
     }
   }
 
@@ -1474,7 +1741,7 @@ export function App() {
       return;
     }
     if (response.transfer.state === "sent") {
-      setMonthResult(response.transfer.result);
+      applyWriteSnapshot(response.transfer.result);
       removePending(id);
     } else if (response.transfer.state === "upload-failed") {
       updatePending(id, {
@@ -1567,10 +1834,7 @@ export function App() {
       if (pending.status === "committing" && pending.attachment) {
         void retryFileCommit(pending);
       } else if (pending.status === "upload-failed") {
-        void sendRequest({
-          type: "files/discard-placeholder",
-          messageId: pending.id,
-        }).catch(() => undefined);
+        void discardPendingPlaceholder(pending.id);
       }
     }
   }
@@ -1618,7 +1882,7 @@ export function App() {
     }
 
     event.preventDefault();
-    if (!isWorking && draft.trim()) void sendText();
+    if (draft.trim()) void sendText();
   }
 
   const showUnifiedLoader =
@@ -1680,15 +1944,34 @@ export function App() {
                 {status.account.username ?? "Microsoft account"}
               </span>
             </button>
-            <button
-              aria-label="Refresh messages and files"
-              className="account-refresh"
-              disabled={isWorking}
-              onClick={() => void refreshTimeline()}
-              type="button"
+            {isDeletedDataCleanupRunning ? (
+              <FloatingErrorTooltip
+                className="account-cleanup-tooltip"
+                message="Cleaning up deleted data…"
+              >
+                <span
+                  aria-label="Cleaning up deleted data"
+                  className="account-cleanup-status"
+                  role="status"
+                >
+                  <CleanupBroomIcon />
+                </span>
+              </FloatingErrorTooltip>
+            ) : null}
+            <FloatingErrorTooltip
+              className="account-refresh-tooltip"
+              message="Sync messages and files"
             >
-              {isWorking ? <LoadingIcon /> : <RefreshIcon />}
-            </button>
+              <button
+                aria-label="Refresh messages and files"
+                className="account-refresh"
+                disabled={isSyncing || isWorking}
+                onClick={() => void refreshTimeline()}
+                type="button"
+              >
+                {isSyncing ? <LoadingIcon /> : <RefreshIcon />}
+              </button>
+            </FloatingErrorTooltip>
             {isAccountOpen ? (
               <div className="account-popover">
                 <strong>
@@ -1699,7 +1982,7 @@ export function App() {
                 ) : null}
                 <button
                   className="account-popover-signout"
-                  disabled={isWorking}
+                  disabled={isWorking || isSyncing}
                   onClick={() => void run({ type: "auth/sign-out" })}
                   type="button"
                 >
@@ -1719,7 +2002,10 @@ export function App() {
                   onClick={() => setShowDeletedDataCleanupConfirmation(true)}
                   type="button"
                 >
-                  Clean up deleted data
+                  {isDeletedDataCleanupRunning ? <LoadingIcon /> : null}
+                  {isDeletedDataCleanupRunning
+                    ? "Cleaning up…"
+                    : "Clean up deleted data"}
                 </button>
                 <button className="account-popover-add" disabled type="button">
                   Add account — coming later
@@ -1727,7 +2013,7 @@ export function App() {
                 {import.meta.env.DEV ? (
                   <button
                     className="account-popover-add"
-                    disabled={isWorking}
+                    disabled={isWorking || isSyncing}
                     onClick={() => void rebuildDevelopmentTestData()}
                     type="button"
                   >
@@ -1933,11 +2219,9 @@ export function App() {
             </div>
           ) : null}
           <section
-            aria-busy={isWorking}
+            aria-busy={isSyncing}
             aria-label="OneDrop messages"
             className="conversation"
-            onClickCapture={blockTimelineActionWhileWorking}
-            onKeyDownCapture={blockTimelineKeyActionWhileWorking}
           >
             {monthResult ? (
               <>
@@ -1968,6 +2252,7 @@ export function App() {
                         pendingTexts={[]}
                         result={result}
                         refreshingUploadIds={refreshingUploadIds}
+                        sendingTextIds={sendingTextIds}
                         showEmpty={false}
                         compact
                         unresponsiveUploadIds={unresponsiveUploadIds}
@@ -1993,6 +2278,7 @@ export function App() {
                       pendingTexts={pendingTexts}
                       result={monthResult}
                       refreshingUploadIds={refreshingUploadIds}
+                      sendingTextIds={sendingTextIds}
                       unresponsiveUploadIds={unresponsiveUploadIds}
                       onCancel={(messageId) => void cancelFileUpload(messageId)}
                       onResend={(item) => void uploadPendingFile(item)}
@@ -2028,18 +2314,17 @@ export function App() {
                       <button
                         aria-label="Send message"
                         className="send-icon"
-                        disabled={isWorking}
+                        disabled={isSendingText}
                         onClick={() => void sendText()}
                         type="button"
                       >
-                        {isSending ? <LoadingIcon /> : <SendIcon />}
+                        {isSendingText ? <LoadingIcon /> : <SendIcon />}
                       </button>
                     ) : null}
                   </div>
                   <button
                     aria-label="Attach file"
                     className="attach-button"
-                    disabled={isWorking}
                     onClick={() => fileInputRef.current?.click()}
                     type="button"
                   >
@@ -2047,7 +2332,6 @@ export function App() {
                   </button>
                   <input
                     className="sr-only"
-                    disabled={isWorking}
                     onChange={(event) => {
                       const file = event.target.files?.[0];
                       event.target.value = "";
@@ -2460,6 +2744,7 @@ function MonthResult({
   pendingTexts,
   result,
   refreshingUploadIds,
+  sendingTextIds,
   unresponsiveUploadIds,
   onCancel,
   onDelete,
@@ -2476,6 +2761,7 @@ function MonthResult({
   pendingTexts: PendingText[];
   result: MonthReadResult;
   refreshingUploadIds: Set<string>;
+  sendingTextIds: Set<string>;
   unresponsiveUploadIds: Set<string>;
   onCancel: (messageId: string) => void;
   onDelete: (messageId: string) => void;
@@ -2524,6 +2810,7 @@ function MonthResult({
                     />
                   ) : item.kind === "pending-text" ? (
                     <PendingTextItem
+                      isSending={sendingTextIds.has(item.pending.id)}
                       item={item.pending}
                       key={item.pending.id}
                       onDelete={onDelete}
@@ -2564,10 +2851,12 @@ function MonthResult({
 }
 
 function PendingTextItem({
+  isSending,
   item,
   onDelete,
   onResend,
 }: {
+  isSending: boolean;
   item: PendingText;
   onDelete: (messageId: string) => void;
   onResend: (item: PendingText) => void;
@@ -2694,25 +2983,20 @@ function PendingTextItem({
     <div className={`pending-text-row pending-text-${lineLayout}`} ref={rowRef}>
       <div className="message-bubble pending-text-bubble" ref={bubbleRef}>
         <p ref={textRef}>
-          {forcedBreakAt === undefined ? (
-            item.text
-          ) : (
-            <>
-              {Array.from(item.text).slice(0, forcedBreakAt).join("")}
-              <br />
-              {Array.from(item.text).slice(forcedBreakAt).join("")}
-            </>
-          )}
+          <LinkifiedMessageText
+            forcedBreakAt={forcedBreakAt}
+            text={item.text}
+          />
         </p>
       </div>
       <span className="pending-text-primary-actions">
         <button
           className="pending-retry-button"
-          disabled={item.status === "sending"}
+          disabled={isSending}
           onClick={() => onResend(item)}
           type="button"
         >
-          {item.status === "sending" ? <LoadingIcon /> : <RetryIcon />}
+          {isSending ? <LoadingIcon /> : <RetryIcon />}
           Resend
         </button>
         <button
@@ -2732,7 +3016,12 @@ function PendingTextItem({
       ) : null}
       {isMenuOpen ? (
         <span className="pending-actions-menu" role="menu">
-          <button onClick={() => onResend(item)} role="menuitem" type="button">
+          <button
+            disabled={isSending}
+            onClick={() => onResend(item)}
+            role="menuitem"
+            type="button"
+          >
             <RetryIcon />
             Resend
           </button>
@@ -3065,7 +3354,9 @@ export function CommittedMessageItem({
         tabIndex={isAttachment && !isCloudMissing ? 0 : undefined}
       >
         {message.type === "text" ? (
-          <p>{message.text}</p>
+          <p>
+            <LinkifiedMessageText text={message.text} />
+          </p>
         ) : isImage ? (
           <ImageAttachment
             attachment={message.attachment}
@@ -3965,6 +4256,118 @@ function CloseIcon() {
 
 function LoadingIcon() {
   return <span className="loading-spinner" aria-hidden="true" />;
+}
+
+const MESSAGE_LINK_PATTERN = /(?:https?:\/\/|www\.)[^\s<]+/giu;
+const MESSAGE_LINK_TRAILING_PUNCTUATION = /[.,!?;:)\]}>，。！？；：）】》]+$/u;
+
+function LinkifiedMessageText({
+  forcedBreakAt,
+  text,
+}: {
+  forcedBreakAt?: number | undefined;
+  text: string;
+}) {
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let key = 0;
+
+  const renderContent = (content: string, start: number): ReactNode => {
+    if (
+      forcedBreakAt === undefined ||
+      forcedBreakAt <= start ||
+      forcedBreakAt > start + Array.from(content).length
+    ) {
+      return content;
+    }
+    const characters = Array.from(content);
+    const offset = forcedBreakAt - start;
+    return (
+      <>
+        {characters.slice(0, offset).join("")}
+        <br />
+        {characters.slice(offset).join("")}
+      </>
+    );
+  };
+
+  for (const match of text.matchAll(MESSAGE_LINK_PATTERN)) {
+    const matchStart = match.index;
+    const candidate = match[0];
+    const linkText = candidate.replace(MESSAGE_LINK_TRAILING_PUNCTUATION, "");
+    if (!linkText) continue;
+    if (matchStart > cursor) {
+      const plainText = text.slice(cursor, matchStart);
+      nodes.push(
+        <span key={`text-${key++}`}>
+          {renderContent(plainText, Array.from(text.slice(0, cursor)).length)}
+        </span>,
+      );
+    }
+    const linkStart = Array.from(text.slice(0, matchStart)).length;
+    nodes.push(
+      <a
+        className="message-text-link"
+        href={/^www\./iu.test(linkText) ? `https://${linkText}` : linkText}
+        key={`link-${key++}`}
+        rel="noopener noreferrer"
+        target="_blank"
+      >
+        {renderContent(linkText, linkStart)}
+      </a>,
+    );
+    const trailingText = candidate.slice(linkText.length);
+    if (trailingText) {
+      nodes.push(
+        <span key={`text-${key++}`}>
+          {renderContent(trailingText, linkStart + Array.from(linkText).length)}
+        </span>,
+      );
+    }
+    cursor = matchStart + candidate.length;
+  }
+
+  if (cursor < text.length) {
+    nodes.push(
+      <span key={`text-${key}`}>
+        {renderContent(
+          text.slice(cursor),
+          Array.from(text.slice(0, cursor)).length,
+        )}
+      </span>,
+    );
+  }
+
+  return <>{nodes.length > 0 ? nodes : renderContent(text, 0)}</>;
+}
+
+function CleanupBroomIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24">
+      <g className="cleanup-broom-position">
+        <g className="cleanup-broom-sweep">
+          <path strokeWidth="1.85" d="M16.1 2.7 11.55 13.15" />
+          <path strokeWidth="1.65" d="m10.55 12.2 2.05.9" />
+          <path
+            strokeWidth="1.75"
+            d="m7.7 11.35 7.6 3.32-1.4 3.2-7.6-3.32 1.4-3.2Z"
+          />
+          <path
+            className="cleanup-broom-bristles"
+            strokeWidth="1.05"
+            d="m6.7 13.65 7.6 3.32m-5.65-4.78-1.3 2.98m3.2-2.15-1.3 2.98m3.2-2.15-1.3 2.98"
+          />
+        </g>
+        <circle className="cleanup-broom-dust" cx="17.2" cy="18.4" r="0.9" />
+        <circle
+          className="cleanup-broom-dust cleanup-broom-dust-delayed"
+          cx="19.7"
+          cy="16.7"
+          r="0.65"
+        />
+      </g>
+    </svg>
+  );
 }
 
 function NoticeProcessingOverlay() {

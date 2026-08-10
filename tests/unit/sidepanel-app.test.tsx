@@ -15,12 +15,27 @@ const pendingTextStore = vi.hoisted(() => ({
   updatePendingText: vi.fn().mockResolvedValue(1),
 }));
 
+const pendingTransferStore = vi.hoisted(() => ({
+  deletePendingTransfer: vi.fn().mockResolvedValue(undefined),
+  listPendingTransfers: vi.fn().mockResolvedValue([]),
+  putPendingTransfer: vi.fn().mockResolvedValue("pending-transfer"),
+  updatePendingTransfer: vi.fn().mockResolvedValue(1),
+}));
+
 vi.mock(
   "../../src/infrastructure/indexed-db/pending-texts",
   () => pendingTextStore,
 );
+vi.mock(
+  "../../src/infrastructure/indexed-db/pending-transfers",
+  () => pendingTransferStore,
+);
 
-import { App, groupMessages } from "../../entrypoints/sidepanel/App";
+import {
+  App,
+  groupMessages,
+  shouldApplyMonthRead,
+} from "../../entrypoints/sidepanel/App";
 import type {
   RuntimeRequest,
   RuntimeResponse,
@@ -38,123 +53,128 @@ let archiveMessageListener:
     }) => void)
   | undefined;
 
-const sendMessage = vi.fn(
-  async (request: RuntimeRequest): Promise<RuntimeResponse> => {
-    switch (request.type) {
-      case "auth/status":
-        return {
-          ok: true,
-          type: "auth/status",
-          status: {
-            state: "signed-in",
-            redirectUri: "https://extension.chromiumapp.org/auth",
-            account: { displayName: "OneDrop User" },
-            expiresAt: "2026-08-03T12:00:00.000Z",
-          },
-        };
-      case "device/id":
-        return {
-          ok: true,
-          type: "device/id",
-          deviceId: "01989f5e-7700-7000-8000-000000000099",
-        };
-      case "onedrive/verify-app-folder":
-        return {
-          ok: true,
-          type: "onedrive/app-folder",
-          appFolder: { id: "folder-id", name: "OneDrop" },
-        };
-      case "messages/read-current-month":
-      case "messages/send-text":
-        return {
-          ok: true,
-          type: "messages/month",
-          result: {
-            state: "loaded",
-            month: "2026-08",
-            eTag: "etag",
-            messages: [
-              {
-                schemaVersion: 1,
-                id: "01989f5e-7700-7000-8000-000000000001",
-                type: "text",
-                text: "from this Edge",
-                createdAt: "2026-08-03T00:00:00.000Z",
-                senderDeviceId: "01989f5e-7700-7000-8000-000000000099",
-              },
-              {
-                schemaVersion: 1,
-                id: "01989f5e-7700-7000-8000-000000000002",
-                type: "text",
-                text: "from another Edge",
-                createdAt: "2026-08-03T00:00:01.000Z",
-                senderDeviceId: "01989f5e-7700-7000-8000-000000000100",
-              },
-            ],
-          },
-        };
-      case "messages/read-month":
-        return {
-          ok: true,
-          type: "messages/month",
-          result: {
-            state: "loaded",
-            month: "2026-07",
-            eTag: "history-etag",
-            messages: [
-              {
-                schemaVersion: 1,
-                id: "01989f5e-7700-7000-8000-000000000003",
-                type: "text",
-                text: "from July",
-                createdAt: "2026-07-31T23:00:00.000Z",
-              },
-            ],
-          },
-        };
-      case "messages/delete":
-        return {
-          ok: true,
-          type: "messages/deleted",
-          result: {
-            state: "loaded",
-            month: request.month,
-            eTag: "deleted-etag",
-            messages: [],
-          },
-        };
-      case "archives/check":
-        return {
-          ok: true,
-          type: "archives/notices",
-          notices: archiveCheckNotices,
-        };
-      case "archives/retry":
-        return {
-          ok: true,
-          type: "archives/notice",
-          notice: { month: "2026-07", phase: "succeeded" },
-        };
-      case "archives/dismiss":
-        return { ok: true, type: "archives/dismissed" };
-      case "deleted-data/clean-now":
-        return {
-          ok: true,
-          type: "deleted-data/cleaned",
-          messages: 2,
-          attachments: 1,
-        };
-      default:
-        throw new Error("Unexpected request");
-    }
-  },
-);
+const defaultSendMessage = async (
+  request: RuntimeRequest,
+): Promise<RuntimeResponse> => {
+  switch (request.type) {
+    case "auth/status":
+      return {
+        ok: true,
+        type: "auth/status",
+        status: {
+          state: "signed-in",
+          redirectUri: "https://extension.chromiumapp.org/auth",
+          account: { displayName: "OneDrop User" },
+          expiresAt: "2026-08-03T12:00:00.000Z",
+        },
+      };
+    case "device/id":
+      return {
+        ok: true,
+        type: "device/id",
+        deviceId: "01989f5e-7700-7000-8000-000000000099",
+      };
+    case "onedrive/verify-app-folder":
+      return {
+        ok: true,
+        type: "onedrive/app-folder",
+        appFolder: { id: "folder-id", name: "OneDrop" },
+      };
+    case "messages/read-current-month":
+    case "messages/send-text":
+      return {
+        ok: true,
+        type: "messages/month",
+        result: {
+          state: "loaded",
+          month: "2026-08",
+          eTag: "etag",
+          messages: [
+            {
+              schemaVersion: 1,
+              id: "01989f5e-7700-7000-8000-000000000001",
+              type: "text",
+              text: "from this Edge",
+              createdAt: "2026-08-03T00:00:00.000Z",
+              senderDeviceId: "01989f5e-7700-7000-8000-000000000099",
+            },
+            {
+              schemaVersion: 1,
+              id: "01989f5e-7700-7000-8000-000000000002",
+              type: "text",
+              text: "from another Edge https://example.com/path?q=1.",
+              createdAt: "2026-08-03T00:00:01.000Z",
+              senderDeviceId: "01989f5e-7700-7000-8000-000000000100",
+            },
+          ],
+        },
+      };
+    case "messages/read-month":
+      return {
+        ok: true,
+        type: "messages/month",
+        result: {
+          state: "loaded",
+          month: "2026-07",
+          eTag: "history-etag",
+          messages: [
+            {
+              schemaVersion: 1,
+              id: "01989f5e-7700-7000-8000-000000000003",
+              type: "text",
+              text: "from July",
+              createdAt: "2026-07-31T23:00:00.000Z",
+            },
+          ],
+        },
+      };
+    case "messages/delete":
+      return {
+        ok: true,
+        type: "messages/deleted",
+        result: {
+          state: "loaded",
+          month: request.month,
+          eTag: "deleted-etag",
+          messages: [],
+        },
+      };
+    case "archives/check":
+      return {
+        ok: true,
+        type: "archives/notices",
+        notices: archiveCheckNotices,
+      };
+    case "archives/retry":
+      return {
+        ok: true,
+        type: "archives/notice",
+        notice: { month: "2026-07", phase: "succeeded" },
+      };
+    case "archives/dismiss":
+      return { ok: true, type: "archives/dismissed" };
+    case "deleted-data/clean-now":
+      return {
+        ok: true,
+        type: "deleted-data/cleaned",
+        messages: 2,
+        attachments: 1,
+      };
+    default:
+      throw new Error("Unexpected request");
+  }
+};
+const sendMessage = vi.fn(defaultSendMessage);
 
 describe("side panel message composer", () => {
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+  });
 
   beforeEach(() => {
     sendMessage.mockClear();
+    sendMessage.mockImplementation(defaultSendMessage);
     archiveCheckNotices = [];
     archiveMessageListener = undefined;
     vi.stubGlobal("browser", {
@@ -268,6 +288,66 @@ describe("side panel message composer", () => {
     }
   });
 
+  it("shows non-blocking cleanup status in the account bar", async () => {
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    let finishCleanup!: () => void;
+    const cleanupResponse = new Promise<RuntimeResponse>((resolve) => {
+      finishCleanup = () =>
+        resolve({
+          ok: true,
+          type: "deleted-data/cleaned",
+          messages: 1,
+          attachments: 0,
+        });
+    });
+    sendMessage.mockImplementation((request: RuntimeRequest) =>
+      request.type === "deleted-data/clean-now"
+        ? cleanupResponse
+        : originalImplementation(request),
+    );
+    try {
+      const composer = await screenForComposer();
+      const accountButton = screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      });
+      fireEvent.click(accountButton);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Clean up deleted data" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
+
+      const cleanupStatus = await screen.findByRole("status", {
+        name: "Cleaning up deleted data",
+      });
+      expect(cleanupStatus).toBeInTheDocument();
+      fireEvent.mouseEnter(cleanupStatus.parentElement!);
+      expect(
+        await screen.findByText("Cleaning up deleted data…"),
+      ).toBeInTheDocument();
+      expect(composer).not.toBeDisabled();
+      expect(
+        screen.getByRole("button", { name: "Refresh messages and files" }),
+      ).not.toBeDisabled();
+
+      fireEvent.click(accountButton);
+      expect(
+        screen.getByRole("button", { name: "Cleaning up…" }),
+      ).toBeDisabled();
+
+      finishCleanup();
+      expect(
+        await screen.findByText(
+          "Deleted data cleanup has completed successfully.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("status", { name: "Cleaning up deleted data" }),
+      ).not.toBeInTheDocument();
+    } finally {
+      sendMessage.mockImplementation(originalImplementation);
+    }
+  });
+
   it("shows archive failure and replaces it with success after Retry", async () => {
     archiveCheckNotices = [{ month: "2026-07", phase: "failed" }];
     await screenForComposer();
@@ -328,6 +408,32 @@ describe("side panel message composer", () => {
     );
   });
 
+  it("does not perform another OneDrive read after a successful text write", async () => {
+    const composer = await screenForComposer();
+    const readsBeforeSend = sendMessage.mock.calls.filter(
+      ([request]) => request.type === "messages/read-current-month",
+    ).length;
+
+    fireEvent.change(composer, {
+      target: { value: "write response is enough" },
+    });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "messages/send-text",
+          text: "write response is enough",
+        }),
+      ),
+    );
+
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "messages/read-current-month",
+      ),
+    ).toHaveLength(readsBeforeSend);
+  });
+
   it("shows the send icon only while the composer has content", async () => {
     const composer = await screenForComposer();
     expect(
@@ -346,9 +452,12 @@ describe("side panel message composer", () => {
     expect(screen.getByText("from this Edge").closest("li")).toHaveClass(
       "message-own",
     );
-    expect(screen.getByText("from another Edge").closest("li")).not.toHaveClass(
+    expect(screen.getByText(/from another Edge/).closest("li")).not.toHaveClass(
       "message-own",
     );
+    expect(
+      screen.getByRole("link", { name: "https://example.com/path?q=1" }),
+    ).toHaveAttribute("href", "https://example.com/path?q=1");
   });
 
   it("closes account details when the user clicks outside", async () => {
@@ -415,6 +524,30 @@ describe("side panel message composer", () => {
     expect(timeline.scrollTop).toBe(60);
   });
 
+  it("does not perform another OneDrive read after a successful deletion", async () => {
+    await screenForComposer();
+    const readsBeforeDelete = sendMessage.mock.calls.filter(
+      ([request]) => request.type === "messages/read-current-month",
+    ).length;
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "More message actions" })[0]!,
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "messages/delete" }),
+      ),
+    );
+
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "messages/read-current-month",
+      ),
+    ).toHaveLength(readsBeforeDelete);
+  });
+
   it("loads the previous month when the timeline reaches the top", async () => {
     await screenForComposer();
     const timeline = document.querySelector<HTMLElement>(".message-scroll");
@@ -452,6 +585,38 @@ describe("side panel message composer", () => {
     expect(screen.getByText("from July")).toBeInTheDocument();
   });
 
+  it("refreshes already loaded history during a stale foreground synchronization", async () => {
+    await screenForComposer();
+    const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
+    timeline.scrollTop = 0;
+    fireEvent.scroll(timeline);
+    expect(await screen.findByText("from July")).toBeInTheDocument();
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "messages/read-month",
+      ),
+    ).toHaveLength(1);
+
+    const originalNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(originalNow + 31_000);
+    let visibilityState: DocumentVisibilityState = "hidden";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(
+      () => visibilityState,
+    );
+    fireEvent(document, new Event("visibilitychange"));
+    visibilityState = "visible";
+    fireEvent(document, new Event("visibilitychange"));
+
+    await waitFor(() =>
+      expect(
+        sendMessage.mock.calls.filter(
+          ([request]) => request.type === "messages/read-month",
+        ),
+      ).toHaveLength(2),
+    );
+    expect(screen.getByText("from July")).toBeInTheDocument();
+  });
+
   it("does not add blank space for a missing earlier month", async () => {
     const originalImplementation = sendMessage.getMockImplementation()!;
     sendMessage.mockImplementation(async (request: RuntimeRequest) =>
@@ -478,7 +643,7 @@ describe("side panel message composer", () => {
     expect(timeline.scrollTop).toBe(0);
   });
 
-  it("blocks message actions and history loading while synchronization runs", async () => {
+  it("keeps message actions available but pauses history loading during synchronization", async () => {
     await screenForComposer();
     const originalImplementation = sendMessage.getMockImplementation()!;
     const monthResponse = await originalImplementation({
@@ -508,7 +673,21 @@ describe("side panel message composer", () => {
     fireEvent.click(
       screen.getAllByRole("button", { name: "More message actions" })[0]!,
     );
-    expect(screen.queryByRole("menuitem", { name: "Copy text" })).toBeNull();
+    expect(
+      screen.getByRole("menuitem", { name: "Copy text" }),
+    ).toBeInTheDocument();
+
+    const composer = screen.getByPlaceholderText("Message");
+    fireEvent.change(composer, { target: { value: "sent while syncing" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "messages/send-text",
+          text: "sent while syncing",
+        }),
+      ),
+    );
 
     const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
     timeline.scrollTop = 0;
@@ -522,6 +701,266 @@ describe("side panel message composer", () => {
     await waitFor(() =>
       expect(conversation).toHaveAttribute("aria-busy", "false"),
     );
+  });
+
+  it("does not let a stale synchronization response remove a message sent meanwhile", async () => {
+    const composer = await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const staleResponse = await originalImplementation({
+      type: "messages/read-current-month",
+    });
+    if (
+      !staleResponse.ok ||
+      staleResponse.type !== "messages/month" ||
+      staleResponse.result.state !== "loaded"
+    ) {
+      throw new Error("Expected the current month fixture to be loaded.");
+    }
+    const staleResult = staleResponse.result;
+    let finishSynchronization!: () => void;
+    const synchronization = new Promise<typeof staleResponse>((resolve) => {
+      finishSynchronization = () => resolve(staleResponse);
+    });
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type === "messages/read-current-month") {
+        return synchronization;
+      }
+      if (request.type === "messages/send-text") {
+        return {
+          ok: true,
+          type: "messages/month",
+          result: {
+            ...staleResult,
+            messages: [
+              ...staleResult.messages,
+              createTextMessage(
+                request.text,
+                new Date(request.createdAt!),
+                request.messageId!,
+                "01989f5e-7700-7000-8000-000000000099",
+              ),
+            ],
+          },
+        };
+      }
+      return originalImplementation(request);
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh messages and files" }),
+    );
+    fireEvent.change(composer, { target: { value: "survives stale sync" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+
+    expect(await screen.findByText("survives stale sync")).toBeInTheDocument();
+    finishSynchronization();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: "OneDrop messages" }),
+      ).toHaveAttribute("aria-busy", "false"),
+    );
+    expect(screen.getByText("survives stale sync")).toBeInTheDocument();
+  });
+
+  it("does not apply a synchronization response while a text write is active", async () => {
+    const composer = await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const staleResponse = await originalImplementation({
+      type: "messages/read-current-month",
+    });
+    if (
+      !staleResponse.ok ||
+      staleResponse.type !== "messages/month" ||
+      staleResponse.result.state !== "loaded"
+    ) {
+      throw new Error("Expected the current month fixture to be loaded.");
+    }
+    const staleResult = staleResponse.result;
+    let finishWrite!: () => void;
+    const writeResponse = new Promise<RuntimeResponse>((resolve) => {
+      finishWrite = () =>
+        resolve({
+          ok: true,
+          type: "messages/month",
+          result: {
+            ...staleResult,
+            messages: [
+              ...staleResult.messages,
+              createTextMessage(
+                "active local write",
+                new Date("2026-08-11T00:00:00.000Z"),
+                "01989f5e-7700-7000-8000-000000000099",
+                "01989f5e-7700-7000-8000-000000000099",
+              ),
+            ],
+          },
+        });
+    });
+    sendMessage.mockImplementation((request: RuntimeRequest) =>
+      request.type === "messages/send-text"
+        ? writeResponse
+        : request.type === "messages/read-current-month"
+          ? Promise.resolve(staleResponse)
+          : originalImplementation(request),
+    );
+
+    fireEvent.change(composer, { target: { value: "active local write" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(await screen.findByText("active local write")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh messages and files" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: "OneDrop messages" }),
+      ).toHaveAttribute("aria-busy", "false"),
+    );
+    expect(screen.getByText("active local write")).toBeInTheDocument();
+
+    finishWrite();
+    await waitFor(() =>
+      expect(
+        sendMessage.mock.calls.filter(
+          ([request]) => request.type === "messages/send-text",
+        ),
+      ).toHaveLength(1),
+    );
+  });
+
+  it("does not let a stale synchronization response restore a deleted message", async () => {
+    await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const staleResponse = await originalImplementation({
+      type: "messages/read-current-month",
+    });
+    let finishSynchronization!: () => void;
+    const synchronization = new Promise<typeof staleResponse>((resolve) => {
+      finishSynchronization = () => resolve(staleResponse);
+    });
+    sendMessage.mockImplementation((request: RuntimeRequest) =>
+      request.type === "messages/read-current-month"
+        ? synchronization
+        : originalImplementation(request),
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh messages and files" }),
+    );
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "More message actions" })[0]!,
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: "messages/delete",
+        messageId: "01989f5e-7700-7000-8000-000000000001",
+        month: "2026-08",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByText("from this Edge")).not.toBeInTheDocument(),
+    );
+
+    finishSynchronization();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("region", { name: "OneDrop messages" }),
+      ).toHaveAttribute("aria-busy", "false"),
+    );
+    expect(screen.queryByText("from this Edge")).not.toBeInTheDocument();
+  });
+
+  it("queues another optimistic text while the current text write is serialized", async () => {
+    const composer = await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const baseResponse = await originalImplementation({
+      type: "messages/read-current-month",
+    });
+    if (
+      !baseResponse.ok ||
+      baseResponse.type !== "messages/month" ||
+      baseResponse.result.state !== "loaded"
+    ) {
+      throw new Error("Expected the current month fixture to be loaded.");
+    }
+    const baseResult = baseResponse.result;
+    let finishFirstWrite!: () => void;
+    let sentMessages = [...baseResult.messages];
+    const firstWrite = new Promise<RuntimeResponse>((resolve) => {
+      finishFirstWrite = () =>
+        resolve({
+          ok: true,
+          type: "messages/month",
+          result: { ...baseResult, messages: sentMessages },
+        });
+    });
+    let textWriteCount = 0;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type !== "messages/send-text") {
+        return originalImplementation(request);
+      }
+      textWriteCount += 1;
+      sentMessages = [
+        ...sentMessages,
+        createTextMessage(
+          request.text,
+          new Date(request.createdAt!),
+          request.messageId!,
+          "01989f5e-7700-7000-8000-000000000099",
+        ),
+      ];
+      if (textWriteCount === 1) return firstWrite;
+      return {
+        ok: true,
+        type: "messages/month",
+        result: { ...baseResult, messages: sentMessages },
+      };
+    });
+
+    fireEvent.change(composer, { target: { value: "queued first" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    await waitFor(() => expect(textWriteCount).toBe(1));
+
+    fireEvent.change(composer, { target: { value: "queued second" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(textWriteCount).toBe(1);
+    expect(await screen.findByText("queued second")).toBeInTheDocument();
+    expect(composer).toHaveValue("");
+
+    finishFirstWrite();
+    await waitFor(() => expect(textWriteCount).toBe(2));
+  });
+
+  it("continues the text write queue after an earlier write fails", async () => {
+    const composer = await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    let rejectFirstWrite!: () => void;
+    const firstWrite = new Promise<RuntimeResponse>((_resolve, reject) => {
+      rejectFirstWrite = () => reject(new Error("temporary write failure"));
+    });
+    let textWriteCount = 0;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type !== "messages/send-text") {
+        return originalImplementation(request);
+      }
+      textWriteCount += 1;
+      if (textWriteCount === 1) return firstWrite;
+      return originalImplementation(request);
+    });
+
+    fireEvent.change(composer, { target: { value: "fails first" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(await screen.findByText("fails first")).toBeInTheDocument();
+
+    fireEvent.change(composer, { target: { value: "continues second" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+    expect(await screen.findByText("continues second")).toBeInTheDocument();
+    expect(textWriteCount).toBe(1);
+
+    rejectFirstWrite();
+    await waitFor(() => expect(textWriteCount).toBe(2));
   });
 
   it("does not send Enter while an IME composition is active", async () => {
@@ -563,6 +1002,29 @@ describe("message presentation groups", () => {
     expect(
       groupMessages(messages, deviceId).map((group) => group.messages),
     ).toEqual([messages.slice(0, 2), messages.slice(2)]);
+  });
+});
+
+describe("month snapshot ordering", () => {
+  it("accepts only the latest read when no write completed meanwhile", () => {
+    expect(
+      shouldApplyMonthRead({ requestVersion: 2, writeVersion: 4 }, 2, 4),
+    ).toBe(true);
+    expect(
+      shouldApplyMonthRead({ requestVersion: 1, writeVersion: 4 }, 2, 4),
+    ).toBe(false);
+  });
+
+  it("rejects a read response when a local write completed meanwhile", () => {
+    expect(
+      shouldApplyMonthRead({ requestVersion: 3, writeVersion: 4 }, 3, 5),
+    ).toBe(false);
+  });
+
+  it("rejects a read response while a local write is still active", () => {
+    expect(
+      shouldApplyMonthRead({ requestVersion: 3, writeVersion: 4 }, 3, 4, 1),
+    ).toBe(false);
   });
 });
 

@@ -54,6 +54,7 @@ import {
   checkAttachmentCleanup,
   resetAttachmentCleanup,
 } from "../src/infrastructure/onedrive/attachment-cleanup";
+import { enqueueMonthWrite } from "../src/infrastructure/onedrive/month-write-coordinator";
 
 const activeFileUploads = new Map<string, AbortController>();
 const cancelledFileUploads = new Set<string>();
@@ -145,15 +146,17 @@ export default defineBackground(() => {
             await dismissArchiveNotice(request.month);
             return { ok: true, type: "archives/dismissed" };
           case "messages/delete":
-            await writeMessageTombstone(request.month, request.messageId);
-            return {
-              ok: true,
-              type: "messages/deleted",
-              result:
-                request.month === getUtcMonth()
-                  ? await readMonthDocument(request.month)
-                  : await readHistoricalMonthDocument(request.month),
-            };
+            return enqueueMonthWrite(async () => {
+              await writeMessageTombstone(request.month, request.messageId);
+              return {
+                ok: true,
+                type: "messages/deleted",
+                result:
+                  request.month === getUtcMonth()
+                    ? await readMonthDocument(request.month)
+                    : await readHistoricalMonthDocument(request.month),
+              };
+            });
           case "messages/delete-corrupt-file":
             await deleteCorruptMonthFile(request.itemId);
             await deleteMonthCache(getUtcMonth());
@@ -167,7 +170,7 @@ export default defineBackground(() => {
               type: "messages/corrupt-file-location-opened",
             };
           case "messages/resolve-conflict":
-            return {
+            return enqueueMonthWrite(async () => ({
               ok: true,
               type: "messages/conflict-resolved",
               result: await resolveMessageConflict(
@@ -175,7 +178,7 @@ export default defineBackground(() => {
                 request.messageId,
                 request.keepItemId,
               ),
-            };
+            }));
           case "messages/send-text": {
             const message = createTextMessage(
               request.text,
@@ -183,11 +186,11 @@ export default defineBackground(() => {
               request.messageId ?? crypto.randomUUID(),
               await getOrCreateDeviceId(),
             );
-            return {
+            return enqueueMonthWrite(async () => ({
               ok: true,
               type: "messages/month",
               result: await appendTextMessage(getUtcMonth(), message),
-            };
+            }));
           }
           case "files/send": {
             cancelledFileUploads.delete(request.messageId);
@@ -200,10 +203,14 @@ export default defineBackground(() => {
               request.messageId,
             );
             try {
-              await appendMessage(getUtcMonth(), placeholder);
+              await enqueueMonthWrite(() =>
+                appendMessage(getUtcMonth(), placeholder),
+              );
             } catch (error) {
               try {
-                await removeMessage(getUtcMonth(), request.messageId);
+                await enqueueMonthWrite(() =>
+                  removeMessage(getUtcMonth(), request.messageId),
+                );
               } catch {
                 // The local pending transfer retains cleanup responsibility
                 // and will retry discarding this placeholder after reconnect.
@@ -278,7 +285,9 @@ export default defineBackground(() => {
               }
             } catch (error) {
               try {
-                await removeMessage(getUtcMonth(), request.messageId);
+                await enqueueMonthWrite(() =>
+                  removeMessage(getUtcMonth(), request.messageId),
+                );
               } catch {
                 // Retry cleanup when the originating device reconnects.
               }
@@ -304,7 +313,9 @@ export default defineBackground(() => {
                 type: "files/transfer",
                 transfer: {
                   state: "sent",
-                  result: await replaceMessage(getUtcMonth(), message),
+                  result: await enqueueMonthWrite(() =>
+                    replaceMessage(getUtcMonth(), message),
+                  ),
                 },
               };
             } catch (error) {
@@ -325,7 +336,9 @@ export default defineBackground(() => {
             activeFileUploads.get(request.messageId)?.abort();
             return { ok: true, type: "files/cancelled" };
           case "files/discard-placeholder":
-            await removeMessage(getUtcMonth(), request.messageId);
+            await enqueueMonthWrite(() =>
+              removeMessage(getUtcMonth(), request.messageId),
+            );
             return { ok: true, type: "files/placeholder-discarded" };
           case "files/retry-commit": {
             try {
@@ -340,7 +353,9 @@ export default defineBackground(() => {
                 type: "files/transfer",
                 transfer: {
                   state: "sent",
-                  result: await replaceMessage(getUtcMonth(), message),
+                  result: await enqueueMonthWrite(() =>
+                    replaceMessage(getUtcMonth(), message),
+                  ),
                 },
               };
             } catch (error) {

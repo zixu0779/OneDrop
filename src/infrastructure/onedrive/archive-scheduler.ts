@@ -102,6 +102,19 @@ export async function resumeArchiveTasksAfterSignIn(): Promise<void> {
   );
 }
 
+export async function recordRewrittenArchive(
+  month: string,
+  document: MonthDocument,
+): Promise<void> {
+  const store = await readStore();
+  const task = store[month];
+  if (!task || task.status !== "succeeded") return;
+  await writeTask({
+    ...task,
+    archiveDigest: await digestDocument(document),
+  });
+}
+
 async function scheduleArchive(
   month: string,
   manual: boolean,

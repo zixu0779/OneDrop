@@ -137,6 +137,13 @@ const sendMessage = vi.fn(
         };
       case "archives/dismiss":
         return { ok: true, type: "archives/dismissed" };
+      case "deleted-data/clean-now":
+        return {
+          ok: true,
+          type: "deleted-data/cleaned",
+          messages: 2,
+          attachments: 1,
+        };
       default:
         throw new Error("Unexpected request");
     }
@@ -176,6 +183,89 @@ describe("side panel message composer", () => {
     expect(sendMessage).toHaveBeenCalledWith({
       type: "messages/read-current-month",
     });
+  });
+
+  it("warns before manual cleanup and shows its final success result", async () => {
+    await screenForComposer();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Clean up deleted data" }),
+    );
+
+    expect(
+      screen.getByText(
+        /bypasses the 10-day recovery period and cannot be undone/iu,
+      ),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
+
+    expect(
+      await screen.findByText(
+        "Deleted data cleanup has completed successfully.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "2 deleted items were permanently cleaned up, including 1 attachment.",
+      ),
+    ).toBeInTheDocument();
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "deleted-data/clean-now",
+    });
+  });
+
+  it("offers Retry after manual cleanup fails and replaces failure with success", async () => {
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    let attempts = 0;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type !== "deleted-data/clean-now") {
+        return originalImplementation(request);
+      }
+      attempts += 1;
+      return attempts === 1
+        ? { ok: false, error: "Temporary cleanup failure." }
+        : {
+            ok: true,
+            type: "deleted-data/cleaned",
+            messages: 1,
+            attachments: 0,
+          };
+    });
+    try {
+      await screenForComposer();
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: /one@example.com|sycamore|microsoft account/iu,
+        }),
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: "Clean up deleted data" }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
+
+      expect(
+        await screen.findByText("Temporary cleanup failure."),
+      ).toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+      expect(
+        await screen.findByText(
+          "Deleted data cleanup has completed successfully.",
+        ),
+      ).toBeInTheDocument();
+      expect(
+        screen.getByText(
+          "1 deleted item was permanently cleaned up, including 0 attachments.",
+        ),
+      ).toBeInTheDocument();
+      expect(attempts).toBe(2);
+    } finally {
+      sendMessage.mockImplementation(originalImplementation);
+    }
   });
 
   it("shows archive failure and replaces it with success after Retry", async () => {

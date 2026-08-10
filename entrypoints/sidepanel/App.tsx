@@ -143,6 +143,18 @@ export function App() {
   const [archiveNotices, setArchiveNotices] = useState<ArchiveNotice[]>([]);
   const [openingRecordItemId, setOpeningRecordItemId] = useState<string>();
   const [recordLocationError, setRecordLocationError] = useState<string>();
+  const [
+    showDeletedDataCleanupConfirmation,
+    setShowDeletedDataCleanupConfirmation,
+  ] = useState(false);
+  const [deletedDataCleanupNotice, setDeletedDataCleanupNotice] = useState<{
+    phase: "failed" | "succeeded";
+    messages?: number;
+    attachments?: number;
+    error?: string;
+  }>();
+  const [isDeletedDataCleanupRunning, setIsDeletedDataCleanupRunning] =
+    useState(false);
   const [pendingDeleteMessage, setPendingDeleteMessage] = useState<{
     messageId: string;
     month: string;
@@ -709,7 +721,10 @@ export function App() {
       );
       setHistoricalMonthResults(refreshedHistory);
     }
-    if (runArchiveMaintenance) void checkArchiveTasks();
+    if (runArchiveMaintenance) {
+      void checkArchiveTasks();
+      void sendRequest({ type: "files/check-cleanup" }).catch(() => undefined);
+    }
     if (restoreTransfers) {
       await Promise.all([
         restorePendingFiles(monthResponse.result),
@@ -897,6 +912,32 @@ export function App() {
     }
   }
 
+  async function cleanDeletedData() {
+    setShowDeletedDataCleanupConfirmation(false);
+    setIsAccountOpen(false);
+    setDeletedDataCleanupNotice(undefined);
+    setIsDeletedDataCleanupRunning(true);
+    try {
+      const response = await sendRequest({ type: "deleted-data/clean-now" });
+      if (!response.ok) throw new Error(response.error);
+      if (response.type !== "deleted-data/cleaned") {
+        throw new Error("OneDrop received an unexpected cleanup response.");
+      }
+      setDeletedDataCleanupNotice({
+        phase: "succeeded",
+        messages: response.messages,
+        attachments: response.attachments,
+      });
+    } catch (cause) {
+      setDeletedDataCleanupNotice({
+        phase: "failed",
+        error: getClientError(cause),
+      });
+    } finally {
+      setIsDeletedDataCleanupRunning(false);
+    }
+  }
+
   async function readCurrentMonth(): Promise<MonthReadResult> {
     const response = await sendRequest({ type: "messages/read-current-month" });
     if (!response.ok || response.type !== "messages/month") {
@@ -1063,6 +1104,17 @@ export function App() {
     const previousHistoricalMonthResults = historicalMonthResults;
     const previousPendingTexts = pendingTexts;
     const previousPendingFiles = pendingFiles;
+    const cloudResult =
+      month === getUtcMonth()
+        ? monthResult
+        : historicalMonthResults.find((result) => result.month === month);
+    const existsInCloudResult =
+      cloudResult?.state === "loaded" &&
+      cloudResult.messages.some((message) => message.id === messageId);
+    const isLocalOnlyPending =
+      !existsInCloudResult &&
+      (pendingTexts.some((item) => item.id === messageId) ||
+        pendingFiles.some((item) => item.id === messageId));
     const timeline = timelineScrollRef.current;
     if (timeline) {
       if (initialBottomFrameRef.current !== undefined) {
@@ -1108,6 +1160,17 @@ export function App() {
     }
     setPendingTexts((items) => items.filter((item) => item.id !== messageId));
     setPendingFiles((items) => items.filter((item) => item.id !== messageId));
+    if (isLocalOnlyPending) {
+      await Promise.all([
+        deletePendingText(messageId),
+        deletePendingTransfer(messageId),
+      ]);
+      const removed = previousPendingFiles.find(
+        (item) => item.id === messageId,
+      );
+      if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+      return;
+    }
     setIsWorking(true);
     setError(undefined);
     try {
@@ -1650,6 +1713,14 @@ export function App() {
                 >
                   Open OneDrop folder
                 </button>
+                <button
+                  className="account-popover-cleanup"
+                  disabled={isDeletedDataCleanupRunning}
+                  onClick={() => setShowDeletedDataCleanupConfirmation(true)}
+                  type="button"
+                >
+                  Clean up deleted data
+                </button>
                 <button className="account-popover-add" disabled type="button">
                   Add account — coming later
                 </button>
@@ -2037,6 +2108,22 @@ export function App() {
           }
         />
       ) : null}
+      {showDeletedDataCleanupConfirmation ? (
+        <CenteredConfirmationDialog
+          confirmLabel="Clean up"
+          id="deleted-data-cleanup-confirmation"
+          message="Permanently clean up all deleted messages and attachments now? This bypasses the 10-day recovery period and cannot be undone."
+          onCancel={() => setShowDeletedDataCleanupConfirmation(false)}
+          onConfirm={() => void cleanDeletedData()}
+        />
+      ) : null}
+      {deletedDataCleanupNotice ? (
+        <CenteredDeletedDataCleanupNotice
+          notice={deletedDataCleanupNotice}
+          onClose={() => setDeletedDataCleanupNotice(undefined)}
+          onRetry={() => void cleanDeletedData()}
+        />
+      ) : null}
     </main>
   );
 }
@@ -2257,7 +2344,7 @@ function PendingFileItem({
                 className="cancel-upload-icon"
                 viewBox="0 0 20 20"
               >
-                <rect height="7" rx="1.5" width="7" x="6.5" y="6.5" />
+                <rect height="11.5" rx="2.3" width="11.5" x="4.25" y="4.25" />
               </svg>
             </button>
           ) : null}
@@ -3135,6 +3222,66 @@ function CenteredArchiveNotice({
             type="button"
           >
             {notice.phase === "running" ? <LoadingIcon /> : null}
+            Retry
+          </button>
+        ) : null}
+      </aside>
+    </div>,
+    document.body,
+  );
+}
+
+function CenteredDeletedDataCleanupNotice({
+  notice,
+  onClose,
+  onRetry,
+}: {
+  notice: {
+    phase: "failed" | "succeeded";
+    messages?: number;
+    attachments?: number;
+    error?: string;
+  };
+  onClose: () => void;
+  onRetry: () => void;
+}) {
+  const message =
+    notice.phase === "failed" ? (
+      (notice.error ?? "Cleanup failed. Try again later.")
+    ) : notice.messages === 0 ? (
+      "There was no remaining deleted OneDrop data to clean up."
+    ) : (
+      <>
+        <span>Deleted data cleanup has completed successfully.</span>
+        <span className="deleted-data-cleanup-summary">
+          {notice.messages ?? 0} deleted item
+          {notice.messages === 1 ? " was" : "s were"} permanently cleaned up,
+          including {notice.attachments ?? 0} attachment
+          {notice.attachments === 1 ? "" : "s"}.
+        </span>
+      </>
+    );
+  return createPortal(
+    <div className="centered-notice-layer">
+      <aside
+        aria-live={notice.phase === "failed" ? "assertive" : "polite"}
+        className={`centered-notice centered-deleted-data-notice centered-deleted-data-notice-${notice.phase}`}
+      >
+        <button
+          aria-label="Close"
+          className="centered-notice-close"
+          onClick={onClose}
+          type="button"
+        >
+          <CloseIcon />
+        </button>
+        <p>{message}</p>
+        {notice.phase === "failed" ? (
+          <button
+            className="centered-notice-action"
+            onClick={onRetry}
+            type="button"
+          >
             Retry
           </button>
         ) : null}

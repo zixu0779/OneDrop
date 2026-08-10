@@ -62,6 +62,8 @@ export type RuntimeRequest =
   | { type: "files/discard-placeholder"; messageId: string }
   | { type: "files/read-preview"; driveItemId: string; mimeType: string }
   | { type: "files/check-attachment"; driveItemId: string }
+  | { type: "files/check-cleanup" }
+  | { type: "deleted-data/clean-now" }
   | {
       type: "files/open-local";
       attachment: Attachment;
@@ -160,6 +162,13 @@ export type RuntimeResponse =
   | { ok: true; type: "files/availability"; exists: boolean }
   | { ok: true; type: "files/placeholder-discarded" }
   | { ok: true; type: "files/cancelled" }
+  | { ok: true; type: "files/cleanup-checked"; cleaned: number }
+  | {
+      ok: true;
+      type: "deleted-data/cleaned";
+      messages: number;
+      attachments: number;
+    }
   | {
       ok: true;
       type: "files/local-action";

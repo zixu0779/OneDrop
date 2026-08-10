@@ -49,6 +49,11 @@ import {
   resumeArchiveTasksAfterSignIn,
   retryArchiveTask,
 } from "../src/infrastructure/onedrive/archive-scheduler";
+import {
+  cleanDeletedDataNow,
+  checkAttachmentCleanup,
+  resetAttachmentCleanup,
+} from "../src/infrastructure/onedrive/attachment-cleanup";
 
 const activeFileUploads = new Map<string, AbortController>();
 const cancelledFileUploads = new Set<string>();
@@ -75,8 +80,11 @@ export default defineBackground(() => {
             }
             return { ok: true, type: "auth/status", status };
           }
-          case "auth/sign-out":
-            return { ok: true, type: "auth/status", status: await signOut() };
+          case "auth/sign-out": {
+            const status = await signOut();
+            await resetAttachmentCleanup();
+            return { ok: true, type: "auth/status", status };
+          }
           case "device/id":
             return {
               ok: true,
@@ -88,6 +96,7 @@ export default defineBackground(() => {
               throw new Error("Test data rebuilding is development-only.");
             }
             await resetArchiveTasks();
+            await resetAttachmentCleanup();
             await rebuildTestData();
             return { ok: true, type: "dev/test-data-rebuilt" };
           case "onedrive/verify-app-folder":
@@ -362,6 +371,20 @@ export default defineBackground(() => {
               type: "files/availability",
               exists: await checkAttachmentExists(request.driveItemId),
             };
+          case "files/check-cleanup":
+            return {
+              ok: true,
+              type: "files/cleanup-checked",
+              cleaned: await checkAttachmentCleanup(),
+            };
+          case "deleted-data/clean-now": {
+            const result = await cleanDeletedDataNow();
+            return {
+              ok: true,
+              type: "deleted-data/cleaned",
+              ...result,
+            };
+          }
           case "files/open-local":
             return {
               ok: true,

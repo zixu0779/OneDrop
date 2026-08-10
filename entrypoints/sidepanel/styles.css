@@ -377,6 +377,13 @@ body {
   margin-top: 2px;
 }
 
+.account-popover .account-popover-cleanup {
+  margin-top: 2px;
+  border-style: solid;
+  color: #b42318;
+  cursor: pointer;
+}
+
 .account-action,
 .error button {
   padding: 0;
@@ -1552,14 +1559,14 @@ body {
   z-index: 99;
   inset: 0;
   display: grid;
-  padding: 24px;
+  padding: 16px;
   place-items: center;
   pointer-events: none;
 }
 
 .centered-notice {
   position: relative;
-  width: min(320px, 100%);
+  width: min(340px, 100%);
   padding: 18px;
   border: 1px solid rgb(142 152 167 / 28%);
   border-radius: 14px;
@@ -1577,7 +1584,16 @@ body {
   text-align: center;
 }
 
+.deleted-data-cleanup-summary {
+  display: block;
+  margin-top: 7px;
+}
+
 .centered-archive-notice-succeeded {
+  border-color: rgb(75 190 128 / 42%);
+}
+
+.centered-deleted-data-notice-succeeded {
   border-color: rgb(75 190 128 / 42%);
 }
 
@@ -1651,14 +1667,14 @@ body {
   z-index: 100;
   inset: 0;
   display: grid;
-  padding: 24px;
+  padding: 16px;
   place-items: center;
   background: rgb(5 8 13 / 58%);
   backdrop-filter: blur(2px);
 }
 
 .operation-dialog {
-  width: min(290px, 100%);
+  width: min(340px, 100%);
   padding: 18px;
   border: 1px solid rgb(142 152 167 / 25%);
   border-radius: 14px;

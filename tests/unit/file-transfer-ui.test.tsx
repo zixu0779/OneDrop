@@ -4,6 +4,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -304,6 +305,54 @@ describe("file transfer failure UI", () => {
     expect(
       screen.queryByRole("button", { name: "Attachment error" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("fades the floating attachment error tooltip in and out", async () => {
+    vi.stubGlobal("browser", {
+      runtime: {
+        sendMessage: vi.fn().mockResolvedValue({
+          ok: true,
+          type: "files/availability",
+          exists: false,
+        }),
+      },
+    });
+    render(
+      <CommittedMessageItem
+        checkVersion={0}
+        isOwn
+        message={{
+          schemaVersion: 1,
+          id: "01989f5e-7700-7000-8000-000000000071",
+          type: "file",
+          createdAt: "2026-08-03T00:00:00.000Z",
+          attachment: {
+            driveItemId: "missing-tooltip-file",
+            name: "missing.pdf",
+            size: 1024,
+            mimeType: "application/pdf",
+          },
+        }}
+      />,
+    );
+
+    const error = await screen.findByLabelText("Attachment error");
+    fireEvent.mouseEnter(error.parentElement!);
+    await waitFor(() =>
+      expect(document.querySelector(".floating-error-tooltip")).toHaveClass(
+        "is-visible",
+      ),
+    );
+
+    fireEvent.mouseLeave(error.parentElement!);
+    expect(document.querySelector(".floating-error-tooltip")).not.toHaveClass(
+      "is-visible",
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelector(".floating-error-tooltip"),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("reports a deleted local file on the first quick-open attempt", async () => {

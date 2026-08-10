@@ -923,6 +923,25 @@ body {
   box-shadow: 0 10px 28px rgb(0 0 0 / 38%);
 }
 
+.message-actions-menu.floating-actions-menu,
+.pending-actions-menu.floating-actions-menu {
+  position: fixed;
+  z-index: 2147483646;
+  animation: floating-actions-menu-in 110ms ease-out;
+}
+
+@keyframes floating-actions-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px) scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
 .message-item-own .message-actions-menu {
   right: calc(100% + 6px);
 }
@@ -2537,6 +2556,16 @@ body {
   line-height: 1.2;
   pointer-events: none;
   white-space: nowrap;
+  opacity: 0;
+  transform: translateY(2px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.floating-error-tooltip.is-visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .pending-text-error .attachment-error-control {

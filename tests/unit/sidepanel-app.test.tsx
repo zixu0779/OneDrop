@@ -33,6 +33,7 @@ vi.mock(
 
 import {
   App,
+  getFloatingMenuPosition,
   groupMessages,
   shouldApplyMonthRead,
 } from "../../entrypoints/sidepanel/App";
@@ -1025,6 +1026,36 @@ describe("month snapshot ordering", () => {
     expect(
       shouldApplyMonthRead({ requestVersion: 3, writeVersion: 4 }, 3, 4, 1),
     ).toBe(false);
+  });
+});
+
+describe("floating action menu positioning", () => {
+  it("flips horizontally and vertically when the preferred sides overflow", () => {
+    expect(
+      getFloatingMenuPosition({
+        anchor: { top: 4, bottom: 32, left: 4, right: 32 },
+        menuHeight: 80,
+        menuWidth: 120,
+        preferredPlacement: "above",
+        preferredSide: "left",
+        viewportHeight: 300,
+        viewportWidth: 320,
+      }),
+    ).toEqual({ left: 38, top: 38 });
+  });
+
+  it("clamps a menu inside the viewport when neither side fully fits", () => {
+    expect(
+      getFloatingMenuPosition({
+        anchor: { top: 90, bottom: 118, left: 90, right: 118 },
+        menuHeight: 260,
+        menuWidth: 260,
+        preferredPlacement: "below",
+        preferredSide: "right",
+        viewportHeight: 220,
+        viewportWidth: 220,
+      }),
+    ).toEqual({ left: 8, top: 8 });
   });
 });
 

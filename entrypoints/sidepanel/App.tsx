@@ -3,6 +3,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
   type ReactNode,
   type WheelEvent as ReactWheelEvent,
   useEffect,
@@ -2478,7 +2479,7 @@ function PendingFileItem({
           100
       : 0,
   );
-  const controlsRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const isActive = item.status === "uploading" || item.status === "committing";
   const isCancelled = item.status === "cancelled";
   const visibleProgress = Math.floor(displayProgress);
@@ -2537,27 +2538,13 @@ function PendingFileItem({
     return () => window.clearInterval(timer);
   }, [item.progress, item.progressTarget, item.status]);
 
-  useEffect(() => {
-    if (!isMenuOpen) return;
-    function closeControls(event: PointerEvent) {
-      if (
-        event.target instanceof Node &&
-        !controlsRef.current?.contains(event.target)
-      ) {
-        setIsMenuOpen(false);
-      }
-    }
-    document.addEventListener("pointerdown", closeControls);
-    return () => document.removeEventListener("pointerdown", closeControls);
-  }, [isMenuOpen]);
-
   function retryTransfer() {
     setIsMenuOpen(false);
     onResend(item);
   }
 
   return (
-    <div className="pending-transfer-row" ref={controlsRef}>
+    <div className="pending-transfer-row">
       {!isActive ? (
         <span className="pending-primary-actions">
           <button
@@ -2573,38 +2560,44 @@ function PendingFileItem({
             aria-label="More transfer actions"
             className="pending-more-button"
             onClick={() => setIsMenuOpen((open) => !open)}
+            ref={menuButtonRef}
             type="button"
           >
             <span aria-hidden="true">•••</span>
           </button>
         </span>
       ) : null}
-      {isMenuOpen ? (
-        <span className="pending-actions-menu" role="menu">
-          {isActive ? (
-            <button disabled role="menuitem" type="button">
-              {item.status === "committing"
-                ? "Finishing message…"
-                : "Upload in progress"}
-            </button>
-          ) : (
-            <button onClick={retryTransfer} role="menuitem" type="button">
-              <RetryIcon />
-              Resend
-            </button>
-          )}
-          <button
-            onClick={() => {
-              setIsMenuOpen(false);
-              onDelete(item.id);
-            }}
-            role="menuitem"
-            type="button"
-          >
-            Delete message
+      <FloatingActionsMenu
+        anchorRef={menuButtonRef}
+        className="pending-actions-menu"
+        isOpen={isMenuOpen}
+        onDismiss={() => setIsMenuOpen(false)}
+        preferredPlacement="above"
+        preferredSide="left"
+      >
+        {isActive ? (
+          <button disabled role="menuitem" type="button">
+            {item.status === "committing"
+              ? "Finishing message…"
+              : "Upload in progress"}
           </button>
-        </span>
-      ) : null}
+        ) : (
+          <button onClick={retryTransfer} role="menuitem" type="button">
+            <RetryIcon />
+            Resend
+          </button>
+        )}
+        <button
+          onClick={() => {
+            setIsMenuOpen(false);
+            onDelete(item.id);
+          }}
+          role="menuitem"
+          type="button"
+        >
+          Delete message
+        </button>
+      </FloatingActionsMenu>
       {isActive ? (
         <span className="pending-transfer-active-controls">
           <span className="pending-transfer-spinner">
@@ -2865,6 +2858,7 @@ function PendingTextItem({
   const [lineLayout, setLineLayout] = useState<"one" | "two" | "many">("many");
   const [forcedBreakAt, setForcedBreakAt] = useState<number>();
   const bubbleRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLParagraphElement>(null);
 
@@ -2965,20 +2959,6 @@ function PendingTextItem({
     return () => observer.disconnect();
   }, [item.text]);
 
-  useEffect(() => {
-    if (!isMenuOpen) return;
-    const close = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !rowRef.current?.contains(event.target)
-      ) {
-        setIsMenuOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [isMenuOpen]);
-
   return (
     <div className={`pending-text-row pending-text-${lineLayout}`} ref={rowRef}>
       <div className="message-bubble pending-text-bubble" ref={bubbleRef}>
@@ -3004,6 +2984,7 @@ function PendingTextItem({
           aria-label="More message actions"
           className="pending-more-button"
           onClick={() => setIsMenuOpen((open) => !open)}
+          ref={menuButtonRef}
           type="button"
         >
           <span aria-hidden="true">•••</span>
@@ -3014,29 +2995,34 @@ function PendingTextItem({
           <AttachmentError message="Upload failed" />
         </span>
       ) : null}
-      {isMenuOpen ? (
-        <span className="pending-actions-menu" role="menu">
-          <button
-            disabled={isSending}
-            onClick={() => onResend(item)}
-            role="menuitem"
-            type="button"
-          >
-            <RetryIcon />
-            Resend
-          </button>
-          <button
-            onClick={() => {
-              setIsMenuOpen(false);
-              onDelete(item.id);
-            }}
-            role="menuitem"
-            type="button"
-          >
-            Delete message
-          </button>
-        </span>
-      ) : null}
+      <FloatingActionsMenu
+        anchorRef={menuButtonRef}
+        className="pending-actions-menu"
+        isOpen={isMenuOpen}
+        onDismiss={() => setIsMenuOpen(false)}
+        preferredPlacement="above"
+        preferredSide="left"
+      >
+        <button
+          disabled={isSending}
+          onClick={() => onResend(item)}
+          role="menuitem"
+          type="button"
+        >
+          <RetryIcon />
+          Resend
+        </button>
+        <button
+          onClick={() => {
+            setIsMenuOpen(false);
+            onDelete(item.id);
+          }}
+          role="menuitem"
+          type="button"
+        >
+          Delete message
+        </button>
+      </FloatingActionsMenu>
     </div>
   );
 }
@@ -3058,26 +3044,11 @@ export function UploadingFileMessageItem({
 }) {
   const isImage = message.pendingAttachment.mimeType.startsWith("image/");
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const shellRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!isMenuOpen) return;
-    const close = (event: PointerEvent) => {
-      if (
-        event.target instanceof Node &&
-        !shellRef.current?.contains(event.target)
-      ) {
-        setIsMenuOpen(false);
-      }
-    };
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [isMenuOpen]);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div
       className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}`}
-      ref={shellRef}
     >
       <div
         className={`message-bubble message-attachment-bubble uploading-message-bubble${isImage ? " message-image-bubble" : ""}${unresponsive ? " unresponsive-message-bubble" : ""}`}
@@ -3138,26 +3109,32 @@ export function UploadingFileMessageItem({
             aria-label="More message actions"
             className="message-more-button"
             onClick={() => setIsMenuOpen((open) => !open)}
+            ref={menuButtonRef}
             type="button"
           >
             <span aria-hidden="true">•••</span>
           </button>
         </span>
       ) : null}
-      {isMenuOpen ? (
-        <span className="message-actions-menu" role="menu">
-          <button
-            onClick={() => {
-              setIsMenuOpen(false);
-              onDelete();
-            }}
-            role="menuitem"
-            type="button"
-          >
-            Delete message
-          </button>
-        </span>
-      ) : null}
+      <FloatingActionsMenu
+        anchorRef={menuButtonRef}
+        className="message-actions-menu"
+        isOpen={isMenuOpen}
+        onDismiss={() => setIsMenuOpen(false)}
+        preferredPlacement="below"
+        preferredSide={isOwn ? "left" : "right"}
+      >
+        <button
+          onClick={() => {
+            setIsMenuOpen(false);
+            onDelete();
+          }}
+          role="menuitem"
+          type="button"
+        >
+          Delete message
+        </button>
+      </FloatingActionsMenu>
     </div>
   );
 }
@@ -3182,6 +3159,7 @@ export function CommittedMessageItem({
     "checking" | "available" | "missing" | "unknown"
   >(message.type === "file" ? "checking" : "unknown");
   const shellRef = useRef<HTMLDivElement>(null);
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
   const isAttachment = message.type === "file";
   const isImage =
     isAttachment && message.attachment.mimeType.startsWith("image/");
@@ -3222,20 +3200,6 @@ export function CommittedMessageItem({
   useEffect(() => {
     if (attachmentDriveItemId) setCloudAvailability("checking");
   }, [attachmentDriveItemId, checkVersion]);
-
-  useEffect(() => {
-    if (!isMenuOpen) return;
-    function closeMenu(event: PointerEvent) {
-      if (
-        event.target instanceof Node &&
-        !shellRef.current?.contains(event.target)
-      ) {
-        setIsMenuOpen(false);
-      }
-    }
-    document.addEventListener("pointerdown", closeMenu);
-    return () => document.removeEventListener("pointerdown", closeMenu);
-  }, [isMenuOpen]);
 
   async function copyMessageValue() {
     const value =
@@ -3396,42 +3360,48 @@ export function CommittedMessageItem({
             aria-label="More message actions"
             className="message-more-button"
             onClick={() => setIsMenuOpen((open) => !open)}
+            ref={menuButtonRef}
             type="button"
           >
             <span aria-hidden="true">•••</span>
           </button>
         </span>
       ) : null}
-      {isMenuOpen ? (
-        <span className="message-actions-menu" role="menu">
-          {message.type === "file" && !isCloudMissing ? (
-            <button
-              onClick={() => runAttachmentAction(true)}
-              role="menuitem"
-              type="button"
-            >
-              Save as
-            </button>
-          ) : null}
+      <FloatingActionsMenu
+        anchorRef={menuButtonRef}
+        className="message-actions-menu"
+        isOpen={isMenuOpen}
+        onDismiss={() => setIsMenuOpen(false)}
+        preferredPlacement="below"
+        preferredSide={isOwn ? "left" : "right"}
+      >
+        {message.type === "file" && !isCloudMissing ? (
           <button
-            onClick={() => void copyMessageValue()}
+            onClick={() => runAttachmentAction(true)}
             role="menuitem"
             type="button"
           >
-            {message.type === "text" ? "Copy text" : "Copy file name"}
+            Save as
           </button>
-          <button
-            onClick={() => {
-              setIsMenuOpen(false);
-              onDelete();
-            }}
-            role="menuitem"
-            type="button"
-          >
-            Delete message
-          </button>
-        </span>
-      ) : null}
+        ) : null}
+        <button
+          onClick={() => void copyMessageValue()}
+          role="menuitem"
+          type="button"
+        >
+          {message.type === "text" ? "Copy text" : "Copy file name"}
+        </button>
+        <button
+          onClick={() => {
+            setIsMenuOpen(false);
+            onDelete();
+          }}
+          role="menuitem"
+          type="button"
+        >
+          Delete message
+        </button>
+      </FloatingActionsMenu>
       {attachmentOperationError ? (
         <CenteredOperationDialog
           id={`attachment-operation-error-${message.id}`}
@@ -3832,13 +3802,17 @@ function FloatingErrorTooltip({
   className: string;
   message: string;
 }) {
+  const [isRendered, setIsRendered] = useState(false);
   const [isVisible, setIsVisible] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
   const triggerRef = useRef<HTMLSpanElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
 
   useLayoutEffect(() => {
-    if (!isVisible) return;
+    if (!isRendered) return;
 
     const updatePosition = () => {
       const trigger = triggerRef.current;
@@ -3885,23 +3859,49 @@ function FloatingErrorTooltip({
       window.removeEventListener("resize", updatePosition);
       window.removeEventListener("scroll", updatePosition, true);
     };
-  }, [isVisible]);
+  }, [isRendered]);
+
+  useEffect(() => {
+    if (!isRendered) return;
+    const frame = requestAnimationFrame(() => setIsVisible(true));
+    return () => cancelAnimationFrame(frame);
+  }, [isRendered]);
+
+  useEffect(
+    () => () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    },
+    [],
+  );
+
+  const showTooltip = () => {
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    setPosition((current) => ({ ...current, ready: false }));
+    setIsRendered(true);
+  };
+  const hideTooltip = () => {
+    setIsVisible(false);
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    hideTimerRef.current = setTimeout(() => setIsRendered(false), 130);
+  };
 
   return (
     <>
       <span
         aria-label={ariaLabel}
         className={className}
-        onMouseEnter={() => setIsVisible(true)}
-        onMouseLeave={() => setIsVisible(false)}
+        onBlur={hideTooltip}
+        onFocus={showTooltip}
+        onMouseEnter={showTooltip}
+        onMouseLeave={hideTooltip}
         ref={triggerRef}
       >
         {children}
       </span>
-      {isVisible
+      {isRendered
         ? createPortal(
             <div
-              className="floating-error-tooltip"
+              className={`floating-error-tooltip${isVisible ? " is-visible" : ""}`}
               ref={tooltipRef}
               style={{
                 left: position.left,
@@ -3915,6 +3915,160 @@ function FloatingErrorTooltip({
           )
         : null}
     </>
+  );
+}
+
+type FloatingMenuPlacement = "above" | "below";
+type FloatingMenuSide = "left" | "right";
+
+export function getFloatingMenuPosition({
+  anchor,
+  menuHeight,
+  menuWidth,
+  preferredPlacement,
+  preferredSide,
+  viewportHeight,
+  viewportWidth,
+}: {
+  anchor: Pick<DOMRect, "bottom" | "left" | "right" | "top">;
+  menuHeight: number;
+  menuWidth: number;
+  preferredPlacement: FloatingMenuPlacement;
+  preferredSide: FloatingMenuSide;
+  viewportHeight: number;
+  viewportWidth: number;
+}): { left: number; top: number } {
+  const edgeMargin = 8;
+  const gap = 6;
+  const leftCandidate = anchor.left - menuWidth - gap;
+  const rightCandidate = anchor.right + gap;
+  const aboveCandidate = anchor.top - menuHeight - gap;
+  const belowCandidate = anchor.bottom + gap;
+  const fitsLeft = leftCandidate >= edgeMargin;
+  const fitsRight = rightCandidate + menuWidth <= viewportWidth - edgeMargin;
+  const fitsAbove = aboveCandidate >= edgeMargin;
+  const fitsBelow = belowCandidate + menuHeight <= viewportHeight - edgeMargin;
+  const preferredLeft = preferredSide === "left";
+  const preferredAbove = preferredPlacement === "above";
+  const unclampedLeft = preferredLeft
+    ? fitsLeft || !fitsRight
+      ? leftCandidate
+      : rightCandidate
+    : fitsRight || !fitsLeft
+      ? rightCandidate
+      : leftCandidate;
+  const unclampedTop = preferredAbove
+    ? fitsAbove || !fitsBelow
+      ? aboveCandidate
+      : belowCandidate
+    : fitsBelow || !fitsAbove
+      ? belowCandidate
+      : aboveCandidate;
+
+  return {
+    left: Math.min(
+      Math.max(unclampedLeft, edgeMargin),
+      Math.max(edgeMargin, viewportWidth - menuWidth - edgeMargin),
+    ),
+    top: Math.min(
+      Math.max(unclampedTop, edgeMargin),
+      Math.max(edgeMargin, viewportHeight - menuHeight - edgeMargin),
+    ),
+  };
+}
+
+function FloatingActionsMenu({
+  anchorRef,
+  children,
+  className,
+  isOpen,
+  onDismiss,
+  preferredPlacement,
+  preferredSide,
+}: {
+  anchorRef: RefObject<HTMLElement | null>;
+  children: ReactNode;
+  className: string;
+  isOpen: boolean;
+  onDismiss: () => void;
+  preferredPlacement: FloatingMenuPlacement;
+  preferredSide: FloatingMenuSide;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+
+    const updatePosition = () => {
+      const anchor = anchorRef.current;
+      const menu = menuRef.current;
+      if (!anchor || !menu) return;
+      const anchorBounds = anchor.getBoundingClientRect();
+      const menuBounds = menu.getBoundingClientRect();
+      setPosition({
+        ...getFloatingMenuPosition({
+          anchor: anchorBounds,
+          menuHeight: menuBounds.height,
+          menuWidth: menuBounds.width,
+          preferredPlacement,
+          preferredSide,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+        }),
+        ready: true,
+      });
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [anchorRef, isOpen, preferredPlacement, preferredSide]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const dismissFromPointer = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      if (
+        anchorRef.current?.contains(event.target) ||
+        menuRef.current?.contains(event.target)
+      ) {
+        return;
+      }
+      onDismiss();
+    };
+    const dismissFromKeyboard = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onDismiss();
+    };
+    document.addEventListener("pointerdown", dismissFromPointer);
+    document.addEventListener("keydown", dismissFromKeyboard);
+    return () => {
+      document.removeEventListener("pointerdown", dismissFromPointer);
+      document.removeEventListener("keydown", dismissFromKeyboard);
+    };
+  }, [anchorRef, isOpen, onDismiss]);
+
+  if (!isOpen) return null;
+  return createPortal(
+    <div
+      className={`${className} floating-actions-menu`}
+      ref={menuRef}
+      role="menu"
+      style={{
+        bottom: "auto",
+        left: position.left,
+        right: "auto",
+        top: position.top,
+        visibility: position.ready ? "visible" : "hidden",
+      }}
+    >
+      {children}
+    </div>,
+    document.body,
   );
 }
 

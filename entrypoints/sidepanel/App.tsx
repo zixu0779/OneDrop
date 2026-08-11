@@ -3939,7 +3939,7 @@ export function getFloatingMenuPosition({
   viewportWidth: number;
 }): { left: number; top: number } {
   const edgeMargin = 8;
-  const gap = 6;
+  const gap = 2;
   const leftCandidate = anchor.left - menuWidth - gap;
   const rightCandidate = anchor.right + gap;
   const aboveCandidate = anchor.top - menuHeight - gap;

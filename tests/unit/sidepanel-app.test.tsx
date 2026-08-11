@@ -1041,7 +1041,7 @@ describe("floating action menu positioning", () => {
         viewportHeight: 300,
         viewportWidth: 320,
       }),
-    ).toEqual({ left: 38, top: 38 });
+    ).toEqual({ left: 34, top: 34 });
   });
 
   it("clamps a menu inside the viewport when neither side fully fits", () => {

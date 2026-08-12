@@ -259,9 +259,11 @@ describe("file transfer failure UI", () => {
       />,
     );
 
-    expect(
-      screen.queryByRole("button", { name: "More message actions" }),
-    ).not.toBeInTheDocument();
+    const checkingActions = screen.getByRole("button", {
+      name: "Checking message actions",
+    });
+    expect(checkingActions).toBeDisabled();
+    expect(checkingActions).toHaveClass("message-more-button-checking");
     resolveCheck?.({
       ok: true,
       type: "files/availability",
@@ -411,6 +413,224 @@ describe("file transfer failure UI", () => {
     ).toBeInTheDocument();
   });
 
+  it("keeps local Open adjacent to Open in OneDrive and shows the folder action", async () => {
+    vi.mocked(getDownloadRecord).mockResolvedValueOnce({
+      driveItemId: "downloaded-file",
+      downloadId: 42,
+      cloudName: "downloaded.pdf",
+      createdAt: "2026-08-03T00:00:00.000Z",
+    });
+    vi.stubGlobal("browser", {
+      downloads: {
+        search: vi
+          .fn()
+          .mockResolvedValue([{ id: 42, state: "complete", exists: true }]),
+      },
+      runtime: {
+        sendMessage: vi.fn().mockResolvedValue({
+          ok: true,
+          type: "files/availability",
+          exists: true,
+        }),
+      },
+    });
+
+    render(
+      <CommittedMessageItem
+        checkVersion={0}
+        isOwn
+        message={{
+          schemaVersion: 1,
+          id: "01989f5e-7700-7000-8000-000000000061",
+          type: "file",
+          createdAt: "2026-08-03T00:00:00.000Z",
+          attachment: {
+            driveItemId: "downloaded-file",
+            name: "downloaded.pdf",
+            size: 1024,
+            mimeType: "application/pdf",
+          },
+        }}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: "More message actions" }),
+    );
+    const actions = screen
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent);
+    expect(actions).toEqual([
+      "Open",
+      "Open in OneDrive",
+      "Save as",
+      "Show in folder",
+      "Delete",
+    ]);
+  });
+
+  it("does not redownload when the menu Open action finds the local file missing", async () => {
+    vi.mocked(getDownloadRecord).mockResolvedValueOnce({
+      driveItemId: "missing-local-file",
+      downloadId: 43,
+      cloudName: "missing.pdf",
+      createdAt: "2026-08-03T00:00:00.000Z",
+    });
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: 43, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 43, state: "complete", exists: false }]);
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      type: "files/availability",
+      exists: true,
+    });
+    vi.stubGlobal("browser", {
+      downloads: { open: vi.fn(), search },
+      runtime: { sendMessage },
+    });
+
+    renderDownloadedFile("missing-local-file", "missing.pdf");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "More message actions" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open" }));
+
+    expect(
+      await screen.findByText(
+        "The local file no longer exists. Please download it again.",
+      ),
+    ).toBeInTheDocument();
+    expect(deleteDownloadRecord).toHaveBeenCalledWith("missing-local-file");
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "files/open-local" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Download file" }),
+    ).toBeInTheDocument();
+  });
+
+  it("clears stale download state when Show in folder finds the file missing", async () => {
+    vi.mocked(getDownloadRecord).mockResolvedValueOnce({
+      driveItemId: "missing-folder-file",
+      downloadId: 44,
+      cloudName: "missing-folder.pdf",
+      createdAt: "2026-08-03T00:00:00.000Z",
+    });
+    const search = vi
+      .fn()
+      .mockResolvedValueOnce([{ id: 44, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 44, state: "complete", exists: false }]);
+    const sendMessage = vi.fn().mockResolvedValue({
+      ok: true,
+      type: "files/availability",
+      exists: true,
+    });
+    vi.stubGlobal("browser", {
+      downloads: { search },
+      runtime: { sendMessage },
+    });
+
+    renderDownloadedFile("missing-folder-file", "missing-folder.pdf");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "More message actions" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Show in folder" }));
+
+    expect(
+      await screen.findByText(
+        "The local file no longer exists. Please download it again.",
+      ),
+    ).toBeInTheDocument();
+    expect(deleteDownloadRecord).toHaveBeenCalledWith("missing-folder-file");
+    expect(sendMessage).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "files/show-in-folder" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Download file" }),
+    ).toBeInTheDocument();
+  });
+
+  it("treats a failed Open as a stale local download after a cached existence check", async () => {
+    vi.mocked(getDownloadRecord).mockResolvedValueOnce({
+      driveItemId: "stale-open-file",
+      downloadId: 45,
+      cloudName: "stale-open.pdf",
+      createdAt: "2026-08-03T00:00:00.000Z",
+    });
+    const search = vi
+      .fn()
+      .mockResolvedValue([{ id: 45, state: "complete", exists: true }]);
+    vi.stubGlobal("browser", {
+      downloads: {
+        open: vi.fn().mockRejectedValue(new Error("File removed")),
+        search,
+      },
+      runtime: {
+        sendMessage: vi.fn().mockResolvedValue({
+          ok: true,
+          type: "files/availability",
+          exists: true,
+        }),
+      },
+    });
+
+    renderDownloadedFile("stale-open-file", "stale-open.pdf");
+    fireEvent.click(await screen.findByRole("button", { name: "Open file" }));
+
+    expect(
+      await screen.findByText(
+        "The local file no longer exists. Please download it again.",
+      ),
+    ).toBeInTheDocument();
+    expect(deleteDownloadRecord).toHaveBeenCalledWith("stale-open-file");
+    expect(
+      screen.getByRole("button", { name: "Download file" }),
+    ).toBeInTheDocument();
+  });
+
+  it("uses the post-show download check to catch a stale Finder deletion", async () => {
+    vi.mocked(getDownloadRecord).mockResolvedValueOnce({
+      driveItemId: "stale-folder-file",
+      downloadId: 46,
+      cloudName: "stale-folder.pdf",
+      createdAt: "2026-08-03T00:00:00.000Z",
+    });
+    const sendMessage = vi
+      .fn()
+      .mockImplementation((request) =>
+        Promise.resolve(
+          request.type === "files/show-in-folder"
+            ? { ok: true, type: "files/folder-shown", exists: false }
+            : { ok: true, type: "files/availability", exists: true },
+        ),
+      );
+    vi.stubGlobal("browser", {
+      downloads: {
+        search: vi
+          .fn()
+          .mockResolvedValue([{ id: 46, state: "complete", exists: true }]),
+      },
+      runtime: { sendMessage },
+    });
+
+    renderDownloadedFile("stale-folder-file", "stale-folder.pdf");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "More message actions" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Show in folder" }));
+
+    expect(
+      await screen.findByText(
+        "The local file no longer exists. Please download it again.",
+      ),
+    ).toBeInTheDocument();
+    expect(deleteDownloadRecord).toHaveBeenCalledWith("stale-folder-file");
+    expect(
+      screen.getByRole("button", { name: "Download file" }),
+    ).toBeInTheDocument();
+  });
+
   it("gives an unresponsive transfer its own refresh and menu controls", () => {
     const onRefresh = vi.fn();
     render(
@@ -445,4 +665,25 @@ describe("file transfer failure UI", () => {
 
 function renderList(item: PendingFile) {
   render(<PendingFileList items={[item]} onResend={vi.fn()} />);
+}
+
+function renderDownloadedFile(driveItemId: string, name: string) {
+  render(
+    <CommittedMessageItem
+      checkVersion={0}
+      isOwn
+      message={{
+        schemaVersion: 1,
+        id: crypto.randomUUID(),
+        type: "file",
+        createdAt: "2026-08-03T00:00:00.000Z",
+        attachment: {
+          driveItemId,
+          name,
+          size: 1024,
+          mimeType: "application/pdf",
+        },
+      }}
+    />,
+  );
 }

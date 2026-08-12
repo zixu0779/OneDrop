@@ -2659,7 +2659,7 @@ function PendingFileItem({
           role="menuitem"
           type="button"
         >
-          Delete message
+          Delete
         </button>
       </FloatingActionsMenu>
       {isActive ? (
@@ -2926,6 +2926,11 @@ function PendingTextItem({
   const rowRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLParagraphElement>(null);
 
+  async function copyText() {
+    await navigator.clipboard.writeText(item.text);
+    setIsMenuOpen(false);
+  }
+
   useLayoutEffect(() => {
     const text = textRef.current;
     const bubble = bubbleRef.current;
@@ -3076,6 +3081,9 @@ function PendingTextItem({
           <RetryIcon />
           Resend
         </button>
+        <button onClick={() => void copyText()} role="menuitem" type="button">
+          Copy
+        </button>
         <button
           onClick={() => {
             setIsMenuOpen(false);
@@ -3084,7 +3092,7 @@ function PendingTextItem({
           role="menuitem"
           type="button"
         >
-          Delete message
+          Delete
         </button>
       </FloatingActionsMenu>
     </div>
@@ -3196,7 +3204,7 @@ export function UploadingFileMessageItem({
           role="menuitem"
           type="button"
         >
-          Delete message
+          Delete
         </button>
       </FloatingActionsMenu>
     </div>
@@ -3219,6 +3227,7 @@ export function CommittedMessageItem({
   const [attachmentOperationError, setAttachmentOperationError] =
     useState<string>();
   const [localDownloadId, setLocalDownloadId] = useState<number | null>();
+  const [imagePreviewDataUrl, setImagePreviewDataUrl] = useState<string>();
   const [cloudAvailability, setCloudAvailability] = useState<
     "checking" | "available" | "missing" | "unknown"
   >(message.type === "file" ? "checking" : "unknown");
@@ -3227,10 +3236,10 @@ export function CommittedMessageItem({
   const isAttachment = message.type === "file";
   const isImage =
     isAttachment && message.attachment.mimeType.startsWith("image/");
+  const isCloudChecking = cloudAvailability === "checking";
   const isCloudMissing = cloudAvailability === "missing";
   const attachmentDriveItemId =
     message.type === "file" ? message.attachment.driveItemId : undefined;
-  const areSideActionsReady = !isAttachment || cloudAvailability !== "checking";
 
   useEffect(() => {
     let active = true;
@@ -3265,11 +3274,19 @@ export function CommittedMessageItem({
     if (attachmentDriveItemId) setCloudAvailability("checking");
   }, [attachmentDriveItemId, checkVersion]);
 
-  async function copyMessageValue() {
-    const value =
-      message.type === "text" ? message.text : message.attachment.name;
-    await navigator.clipboard.writeText(value);
+  async function copyText() {
+    if (message.type !== "text") return;
+    await navigator.clipboard.writeText(message.text);
     setIsMenuOpen(false);
+  }
+
+  async function markLocalAttachmentMissing() {
+    if (message.type !== "file") return;
+    await deleteDownloadRecord(message.attachment.driveItemId);
+    setLocalDownloadId(null);
+    setAttachmentOperationError(
+      "The local file no longer exists. Please download it again.",
+    );
   }
 
   async function requestAttachmentDownload(
@@ -3299,10 +3316,7 @@ export function CommittedMessageItem({
     }
   }
 
-  function runAttachmentAction(
-    saveAs: boolean,
-    source: "bubble" | "quick" = "bubble",
-  ) {
+  function runAttachmentAction(saveAs: boolean) {
     if (message.type !== "file" || isAttachmentWorking || isCloudMissing) {
       return;
     }
@@ -3320,22 +3334,14 @@ export function CommittedMessageItem({
             download.state === "interrupted";
 
           if (isMissing) {
-            await deleteDownloadRecord(message.attachment.driveItemId);
-            setLocalDownloadId(null);
-            if (source === "quick") {
-              setAttachmentOperationError(
-                "The local file no longer exists. Please download it again.",
-              );
-              return;
-            }
-            await requestAttachmentDownload(false, true);
+            await markLocalAttachmentMissing();
             return;
           }
 
           await browser.downloads.open(downloadId);
           await markDownloadOpened(message.attachment.driveItemId, undefined);
         } catch {
-          setAttachmentOperationError("Couldn’t open this file.");
+          await markLocalAttachmentMissing();
         } finally {
           setIsAttachmentWorking(false);
         }
@@ -3344,6 +3350,77 @@ export function CommittedMessageItem({
     }
 
     void requestAttachmentDownload(saveAs);
+  }
+
+  async function openAttachmentInOneDrive() {
+    if (message.type !== "file" || isAttachmentWorking || isCloudMissing)
+      return;
+    setIsAttachmentWorking(true);
+    setIsMenuOpen(false);
+    try {
+      const response = await sendRequest({
+        type: "files/open-in-onedrive",
+        driveItemId: message.attachment.driveItemId,
+      });
+      if (!response.ok || response.type !== "files/onedrive-opened") {
+        throw new Error("Unexpected OneDrive response.");
+      }
+    } catch {
+      setAttachmentOperationError("Couldn’t open this file in OneDrive.");
+    } finally {
+      setIsAttachmentWorking(false);
+    }
+  }
+
+  async function showAttachmentInFolder() {
+    if (
+      message.type !== "file" ||
+      typeof localDownloadId !== "number" ||
+      isAttachmentWorking
+    )
+      return;
+    setIsAttachmentWorking(true);
+    setIsMenuOpen(false);
+    try {
+      const [download] = await browser.downloads.search({
+        id: localDownloadId,
+      });
+      const isMissing =
+        !download ||
+        download.exists === false ||
+        download.state === "interrupted";
+      if (isMissing) {
+        await markLocalAttachmentMissing();
+        return;
+      }
+      const response = await sendRequest({
+        type: "files/show-in-folder",
+        downloadId: localDownloadId,
+      });
+      if (!response.ok || response.type !== "files/folder-shown") {
+        throw new Error("Unexpected local folder response.");
+      }
+      if (!response.exists) {
+        await markLocalAttachmentMissing();
+      }
+    } catch {
+      setAttachmentOperationError("Couldn’t show this file in its folder.");
+    } finally {
+      setIsAttachmentWorking(false);
+    }
+  }
+
+  async function copyImage() {
+    if (!imagePreviewDataUrl) return;
+    setIsMenuOpen(false);
+    try {
+      const pngBlob = await imageDataUrlToPngBlob(imagePreviewDataUrl);
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": pngBlob }),
+      ]);
+    } catch {
+      setAttachmentOperationError("Couldn’t copy this image.");
+    }
   }
 
   function handleBubbleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
@@ -3390,6 +3467,7 @@ export function CommittedMessageItem({
             attachment={message.attachment}
             checkVersion={checkVersion}
             onAvailabilityChange={setCloudAvailability}
+            onPreviewChange={setImagePreviewDataUrl}
           />
         ) : (
           <FileAttachment
@@ -3399,38 +3477,42 @@ export function CommittedMessageItem({
           />
         )}
       </div>
-      {areSideActionsReady ? (
-        <span className="message-primary-actions message-primary-actions-ready">
-          {message.type === "file" &&
-          !isCloudMissing &&
-          localDownloadId !== undefined ? (
-            <button
-              aria-label={
-                localDownloadId === null ? "Download file" : "Open file"
-              }
-              className="message-local-button"
-              onClick={() => runAttachmentAction(false, "quick")}
-              type="button"
-            >
-              {localDownloadId === null ? (
-                <DownloadLocalIcon />
-              ) : (
-                <OpenLocalIcon />
-              )}
-            </button>
-          ) : null}
+      <span className="message-primary-actions message-primary-actions-ready">
+        {message.type === "file" &&
+        !isCloudChecking &&
+        !isCloudMissing &&
+        localDownloadId !== undefined ? (
           <button
-            aria-expanded={isMenuOpen}
-            aria-label="More message actions"
-            className="message-more-button"
-            onClick={() => setIsMenuOpen((open) => !open)}
-            ref={menuButtonRef}
+            aria-label={
+              localDownloadId === null ? "Download file" : "Open file"
+            }
+            className="message-local-button"
+            onClick={() => runAttachmentAction(false)}
             type="button"
           >
-            <span aria-hidden="true">•••</span>
+            {localDownloadId === null ? (
+              <DownloadLocalIcon />
+            ) : (
+              <OpenLocalIcon />
+            )}
           </button>
-        </span>
-      ) : null}
+        ) : null}
+        <button
+          aria-expanded={isMenuOpen}
+          aria-label={
+            isCloudChecking
+              ? "Checking message actions"
+              : "More message actions"
+          }
+          className={`message-more-button${isCloudChecking ? " message-more-button-checking" : ""}`}
+          disabled={isCloudChecking}
+          onClick={() => setIsMenuOpen((open) => !open)}
+          ref={menuButtonRef}
+          type="button"
+        >
+          <span aria-hidden="true">•••</span>
+        </button>
+      </span>
       <FloatingActionsMenu
         anchorRef={menuButtonRef}
         className="message-actions-menu"
@@ -3440,21 +3522,64 @@ export function CommittedMessageItem({
         preferredSide={isOwn ? "left" : "right"}
       >
         {message.type === "file" && !isCloudMissing ? (
-          <button
-            onClick={() => runAttachmentAction(true)}
-            role="menuitem"
-            type="button"
-          >
-            Save as
+          <>
+            <button
+              onClick={() => runAttachmentAction(false)}
+              role="menuitem"
+              type="button"
+            >
+              {localDownloadId === null ? "Download" : "Open"}
+            </button>
+            {typeof localDownloadId === "number" ? (
+              <button
+                onClick={() => void openAttachmentInOneDrive()}
+                role="menuitem"
+                type="button"
+              >
+                Open in OneDrive
+              </button>
+            ) : null}
+            <button
+              onClick={() => runAttachmentAction(true)}
+              role="menuitem"
+              type="button"
+            >
+              Save as
+            </button>
+            {localDownloadId === null ? (
+              <button
+                onClick={() => void openAttachmentInOneDrive()}
+                role="menuitem"
+                type="button"
+              >
+                Open in OneDrive
+              </button>
+            ) : null}
+            {isImage && imagePreviewDataUrl ? (
+              <button
+                onClick={() => void copyImage()}
+                role="menuitem"
+                type="button"
+              >
+                Copy image
+              </button>
+            ) : null}
+            {typeof localDownloadId === "number" ? (
+              <button
+                onClick={() => void showAttachmentInFolder()}
+                role="menuitem"
+                type="button"
+              >
+                Show in folder
+              </button>
+            ) : null}
+          </>
+        ) : null}
+        {message.type === "text" ? (
+          <button onClick={() => void copyText()} role="menuitem" type="button">
+            Copy
           </button>
         ) : null}
-        <button
-          onClick={() => void copyMessageValue()}
-          role="menuitem"
-          type="button"
-        >
-          {message.type === "text" ? "Copy text" : "Copy file name"}
-        </button>
         <button
           onClick={() => {
             setIsMenuOpen(false);
@@ -3463,7 +3588,7 @@ export function CommittedMessageItem({
           role="menuitem"
           type="button"
         >
-          Delete message
+          Delete
         </button>
       </FloatingActionsMenu>
       {attachmentOperationError ? (
@@ -3664,12 +3789,14 @@ export function ImageAttachment({
   attachment,
   checkVersion = 0,
   onAvailabilityChange,
+  onPreviewChange,
 }: {
   attachment: Attachment;
   checkVersion?: number;
   onAvailabilityChange?: (
     availability: "checking" | "available" | "missing" | "unknown",
   ) => void;
+  onPreviewChange?: (dataUrl: string | undefined) => void;
 }) {
   const [dataUrl, setDataUrl] = useState<string>();
   const [isMissing, setIsMissing] = useState(false);
@@ -3684,6 +3811,7 @@ export function ImageAttachment({
       if (!active) return;
       if (exists === false) {
         onAvailabilityChange?.("missing");
+        onPreviewChange?.(undefined);
         setDataUrl(undefined);
         setIsMissing(true);
         return;
@@ -3700,11 +3828,16 @@ export function ImageAttachment({
           await decodeImagePreview(response.dataUrl);
           if (!active) return;
           setDataUrl(response.dataUrl);
+          onPreviewChange?.(response.dataUrl);
         } else if (active) {
+          onPreviewChange?.(undefined);
           setPreviewFailed(true);
         }
       } catch {
-        if (active) setPreviewFailed(true);
+        if (active) {
+          onPreviewChange?.(undefined);
+          setPreviewFailed(true);
+        }
       }
     })();
     return () => {
@@ -3715,6 +3848,7 @@ export function ImageAttachment({
     attachment.mimeType,
     checkVersion,
     onAvailabilityChange,
+    onPreviewChange,
   ]);
 
   return (
@@ -4269,6 +4403,35 @@ async function decodeImagePreview(dataUrl: string): Promise<void> {
       },
     );
   });
+}
+
+async function imageDataUrlToPngBlob(dataUrl: string): Promise<Blob> {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = dataUrl;
+  if (typeof image.decode === "function") {
+    await image.decode();
+  } else {
+    await new Promise<void>((resolve, reject) => {
+      image.addEventListener("load", () => resolve(), { once: true });
+      image.addEventListener(
+        "error",
+        () => reject(new Error("Image decode failed")),
+        { once: true },
+      );
+    });
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = image.naturalHeight;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("Canvas is unavailable.");
+  context.drawImage(image, 0, 0);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png"),
+  );
+  if (!blob) throw new Error("Image conversion failed.");
+  return blob;
 }
 
 function delay(milliseconds: number): Promise<void> {

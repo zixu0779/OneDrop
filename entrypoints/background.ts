@@ -22,6 +22,7 @@ import {
 } from "../src/features/messages/create-file-message";
 import {
   checkAttachmentExists,
+  getAttachmentWebUrl,
   readImagePreview,
   uploadLargeFile,
   uploadSmallFile,
@@ -416,6 +417,25 @@ export default defineBackground(() => {
               type: "files/local-action",
               ...(await openOrDownloadAttachment(request.attachment, true)),
             };
+          case "files/open-in-onedrive":
+            await browser.tabs.create({
+              url: await getAttachmentWebUrl(request.driveItemId),
+            });
+            return { ok: true, type: "files/onedrive-opened" };
+          case "files/show-in-folder": {
+            await browser.downloads.show(request.downloadId);
+            const [download] = await browser.downloads.search({
+              id: request.downloadId,
+            });
+            return {
+              ok: true,
+              type: "files/folder-shown",
+              exists:
+                Boolean(download) &&
+                download?.exists !== false &&
+                download?.state !== "interrupted",
+            };
+          }
         }
       } catch (error) {
         return {

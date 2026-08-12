@@ -69,7 +69,9 @@ export type RuntimeRequest =
       attachment: Attachment;
       forceDownload?: boolean;
     }
-  | { type: "files/save-as"; attachment: Attachment };
+  | { type: "files/save-as"; attachment: Attachment }
+  | { type: "files/open-in-onedrive"; driveItemId: string }
+  | { type: "files/show-in-folder"; downloadId: number };
 
 export type AppFolderSummary = {
   id: string;
@@ -181,4 +183,6 @@ export type RuntimeResponse =
       action: "open";
       downloadId: number;
     }
+  | { ok: true; type: "files/onedrive-opened" }
+  | { ok: true; type: "files/folder-shown"; exists: boolean }
   | { ok: false; error: string };

@@ -21,6 +21,7 @@ vi.mock(
 import {
   checkAttachmentExists,
   getAttachmentDownloadUrl,
+  getAttachmentWebUrl,
   uploadLargeFile,
   uploadSmallFile,
 } from "../../src/infrastructure/onedrive/file-uploader";
@@ -160,6 +161,24 @@ describe("uploadSmallFile", () => {
 
     await expect(getAttachmentDownloadUrl("large-item")).resolves.toBe(
       "https://download.example/large-file?token=temporary",
+    );
+  });
+
+  it("returns the OneDrive web URL for an attachment", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ webUrl: "https://onedrive.example/item/large-item" }),
+        ),
+    );
+
+    await expect(getAttachmentWebUrl("large-item")).resolves.toBe(
+      "https://onedrive.example/item/large-item",
+    );
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toContain(
+      "/items/large-item?$select=webUrl",
     );
   });
 });

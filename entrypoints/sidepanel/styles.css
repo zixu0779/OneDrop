@@ -979,6 +979,11 @@ body {
     background-color 140ms ease;
 }
 
+.message-more-button > span,
+.pending-more-button > span {
+  transform: translateX(1px);
+}
+
 .message-primary-actions .message-more-button,
 .message-primary-actions .message-local-button {
   position: static;
@@ -1010,6 +1015,36 @@ body {
 .message-local-button:focus-visible {
   color: #d4dae2;
   background: rgb(142 152 167 / 14%);
+  outline: none;
+}
+
+.message-more-button.message-more-button-checking:disabled {
+  border: 1.5px dashed #778497;
+  border-radius: 7px;
+  color: #7d8796;
+  background: #171d25;
+  box-shadow: inset 0 0 0 100px rgb(68 78 92 / 16%);
+  cursor: not-allowed;
+  filter: grayscale(0.2) contrast(0.94);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease;
+}
+
+.message-item-shell:hover .message-more-button-checking:disabled,
+.message-item-shell:focus-within .message-more-button-checking:disabled {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.message-more-button.message-more-button-checking:disabled:is(
+    :hover,
+    :focus-visible,
+    :active
+  ) {
+  border-color: #778497;
+  color: #7d8796;
+  background: #171d25;
   outline: none;
 }
 

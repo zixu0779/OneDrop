@@ -27,6 +27,7 @@ const attachmentStateSchema = z.object({
 const attachmentDownloadSchema = z.object({
   "@microsoft.graph.downloadUrl": z.string().url(),
 });
+const attachmentWebSchema = z.object({ webUrl: z.string().url() });
 const uploadSessionSchema = z.object({ uploadUrl: z.string().url() });
 
 const FILE_OPERATION_TIMEOUT_MS = 12_000;
@@ -386,6 +387,22 @@ export async function getAttachmentDownloadUrl(
   return attachmentDownloadSchema.parse(await response.json())[
     "@microsoft.graph.downloadUrl"
   ];
+}
+
+export async function getAttachmentWebUrl(
+  driveItemId: string,
+): Promise<string> {
+  const accessToken = await getCurrentAccessToken();
+  const response = await fetch(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}?$select=webUrl`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `File location lookup failed: ${await readGraphError(response)}`,
+    );
+  }
+  return attachmentWebSchema.parse(await response.json()).webUrl;
 }
 
 export async function checkAttachmentExists(

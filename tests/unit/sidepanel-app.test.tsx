@@ -522,7 +522,7 @@ describe("side panel message composer", () => {
     fireEvent.click(
       screen.getAllByRole("button", { name: "More message actions" })[0]!,
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     await waitFor(() =>
@@ -544,7 +544,7 @@ describe("side panel message composer", () => {
     fireEvent.click(
       screen.getAllByRole("button", { name: "More message actions" })[0]!,
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith(
@@ -684,9 +684,7 @@ describe("side panel message composer", () => {
     fireEvent.click(
       screen.getAllByRole("button", { name: "More message actions" })[0]!,
     );
-    expect(
-      screen.getByRole("menuitem", { name: "Copy text" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "Copy" })).toBeInTheDocument();
 
     const composer = screen.getByPlaceholderText("Message");
     fireEvent.change(composer, { target: { value: "sent while syncing" } });
@@ -861,7 +859,7 @@ describe("side panel message composer", () => {
     fireEvent.click(
       screen.getAllByRole("button", { name: "More message actions" })[0]!,
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: "Delete message" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({

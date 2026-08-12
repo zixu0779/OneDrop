@@ -162,6 +162,7 @@ export function App() {
   const [deviceId, setDeviceId] = useState<string>();
   const [draft, setDraft] = useState("");
   const [isAccountOpen, setIsAccountOpen] = useState(false);
+  const [isAccountSwitcherOpen, setIsAccountSwitcherOpen] = useState(false);
   const [isTimelineScrolling, setIsTimelineScrolling] = useState(false);
   const [isTimelineScrollbarHovered, setIsTimelineScrollbarHovered] =
     useState(false);
@@ -574,11 +575,15 @@ export function App() {
         !accountCardRef.current?.contains(event.target)
       ) {
         setIsAccountOpen(false);
+        setIsAccountSwitcherOpen(false);
       }
     }
 
     function closeAccountWithKeyboard(event: KeyboardEvent) {
-      if (event.key === "Escape") setIsAccountOpen(false);
+      if (event.key === "Escape") {
+        setIsAccountOpen(false);
+        setIsAccountSwitcherOpen(false);
+      }
     }
 
     document.addEventListener("pointerdown", closeAccount);
@@ -1935,7 +1940,10 @@ export function App() {
             <button
               aria-expanded={isAccountOpen}
               className="account-summary"
-              onClick={() => setIsAccountOpen((open) => !open)}
+              onClick={() => {
+                setIsAccountOpen((open) => !open);
+                setIsAccountSwitcherOpen(false);
+              }}
               type="button"
             >
               <span className="account-avatar" aria-hidden="true">
@@ -1975,52 +1983,108 @@ export function App() {
             </FloatingErrorTooltip>
             {isAccountOpen ? (
               <div className="account-popover">
-                <strong>
-                  {status.account.displayName ?? "Microsoft account"}
-                </strong>
-                {status.account.username ? (
-                  <span>{status.account.username}</span>
-                ) : null}
-                <button
-                  className="account-popover-signout"
-                  disabled={isWorking || isSyncing}
-                  onClick={() => void run({ type: "auth/sign-out" })}
-                  type="button"
-                >
-                  Sign out
-                </button>
-                <button
-                  className="account-popover-add"
-                  disabled={isWorking}
-                  onClick={() => void openOneDropFolder()}
-                  type="button"
-                >
-                  Open OneDrop folder
-                </button>
-                <button
-                  className="account-popover-cleanup"
-                  disabled={isDeletedDataCleanupRunning}
-                  onClick={() => setShowDeletedDataCleanupConfirmation(true)}
-                  type="button"
-                >
-                  {isDeletedDataCleanupRunning ? <LoadingIcon /> : null}
-                  {isDeletedDataCleanupRunning
-                    ? "Cleaning up…"
-                    : "Clean up deleted data"}
-                </button>
-                <button className="account-popover-add" disabled type="button">
-                  Add account — coming later
-                </button>
-                {import.meta.env.DEV ? (
+                <div className="account-popover-current">
+                  <span className="account-popover-avatar" aria-hidden="true">
+                    {getAccountInitial(status)}
+                  </span>
+                  <span className="account-popover-identity">
+                    <strong>
+                      {status.account.displayName ?? "Microsoft account"}
+                    </strong>
+                    <small>
+                      {status.account.username ?? "Microsoft account"}
+                    </small>
+                  </span>
                   <button
-                    className="account-popover-add"
-                    disabled={isWorking || isSyncing}
-                    onClick={() => void rebuildDevelopmentTestData()}
+                    aria-expanded={isAccountSwitcherOpen}
+                    aria-label="Switch account"
+                    className="account-switch-toggle"
+                    onClick={() => setIsAccountSwitcherOpen((open) => !open)}
                     type="button"
                   >
-                    Rebuild test data
+                    <SwitchAccountIcon />
                   </button>
+                </div>
+
+                {isAccountSwitcherOpen ? (
+                  <div className="account-switcher">
+                    <span className="account-section-label">
+                      Switch account
+                    </span>
+                    <p className="account-switcher-empty">
+                      No other signed-in accounts
+                    </p>
+                    <button
+                      className="account-menu-action"
+                      disabled
+                      type="button"
+                    >
+                      <AddAccountIcon />
+                      <span>Add account</span>
+                    </button>
+                  </div>
                 ) : null}
+
+                <div className="account-menu-section">
+                  <button
+                    className="account-menu-action"
+                    disabled={isWorking}
+                    onClick={() => void openOneDropFolder()}
+                    type="button"
+                  >
+                    <FolderIcon />
+                    <span>Open OneDrive folder</span>
+                  </button>
+                  <button
+                    className="account-menu-action"
+                    disabled
+                    type="button"
+                  >
+                    <RecycleBinIcon />
+                    <span>Recycle bin</span>
+                    <small>Coming later</small>
+                  </button>
+                </div>
+
+                <div className="account-menu-section account-menu-footer">
+                  <button
+                    className="account-menu-action account-popover-signout"
+                    disabled={isWorking || isSyncing}
+                    onClick={() => void run({ type: "auth/sign-out" })}
+                    type="button"
+                  >
+                    <SignOutIcon />
+                    <span>Sign out…</span>
+                  </button>
+                  <button
+                    className="account-menu-action account-menu-cleanup"
+                    disabled={isDeletedDataCleanupRunning}
+                    onClick={() => setShowDeletedDataCleanupConfirmation(true)}
+                    type="button"
+                  >
+                    {isDeletedDataCleanupRunning ? (
+                      <LoadingIcon />
+                    ) : (
+                      <CleanupBroomIcon />
+                    )}
+                    <span>
+                      {isDeletedDataCleanupRunning
+                        ? "Cleaning up…"
+                        : "Clean up deleted data"}
+                    </span>
+                  </button>
+                  {import.meta.env.DEV ? (
+                    <button
+                      className="account-menu-action account-menu-development"
+                      disabled={isWorking || isSyncing}
+                      onClick={() => void rebuildDevelopmentTestData()}
+                      type="button"
+                    >
+                      <TestDataIcon />
+                      <span>Rebuild test data</span>
+                    </button>
+                  ) : null}
+                </div>
               </div>
             ) : null}
           </section>
@@ -4396,6 +4460,56 @@ function RefreshIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24">
       <path d="M8 4.5 4 7l4 2.5M16 14.5l4 2.5-4 2.5M20 9.3C17.6 2.6 9.2 1.6 4 7M4 14.7c2.4 6.7 10.8 7.7 16 2.3" />
+    </svg>
+  );
+}
+
+function SwitchAccountIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M4 6.5h10.5m-2.8-2.8 2.8 2.8-2.8 2.8M16 13.5H5.5m2.8 2.8-2.8-2.8 2.8-2.8" />
+    </svg>
+  );
+}
+
+function AddAccountIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <circle cx="7.5" cy="7" r="2.7" />
+      <path d="M2.8 15c.7-2.5 2.3-3.8 4.7-3.8s4 1.3 4.7 3.8M15 5v5m-2.5-2.5h5" />
+    </svg>
+  );
+}
+
+function FolderIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M2.8 5.6h5l1.5 1.7h7.9v7.1a1.8 1.8 0 0 1-1.8 1.8H4.6a1.8 1.8 0 0 1-1.8-1.8V5.6Z" />
+      <path d="M2.8 7.3V5.4a1.6 1.6 0 0 1 1.6-1.6h3l1.6 1.8" />
+    </svg>
+  );
+}
+
+function RecycleBinIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M4.7 6.2h10.6l-.7 10H5.4l-.7-10ZM3.5 6.2h13M7.4 6.2V3.8h5.2v2.4M8 9v4.5m4-4.5v4.5" />
+    </svg>
+  );
+}
+
+function SignOutIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M8.3 3.5H4.7a1.5 1.5 0 0 0-1.5 1.5v10a1.5 1.5 0 0 0 1.5 1.5h3.6M11.2 6.2 15 10l-3.8 3.8M6.8 10H15" />
+    </svg>
+  );
+}
+
+function TestDataIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M7 3.5h6M8 3.5v4l-4.2 7.1a1.3 1.3 0 0 0 1.1 1.9h10.2a1.3 1.3 0 0 0 1.1-1.9L12 7.5v-4M6.1 12h7.8" />
     </svg>
   );
 }

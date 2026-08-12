@@ -464,22 +464,32 @@ describe("side panel message composer", () => {
   it("closes account details when the user clicks outside", async () => {
     await screenForComposer();
     expect(
-      screen.queryByRole("button", { name: "Sign out" }),
+      screen.queryByRole("button", { name: "Sign out…" }),
     ).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", {
         name: /one@example.com|sycamore|microsoft account/iu,
       }),
     );
-    expect(screen.getByText("Add account — coming later")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Sign out" }),
+      screen.getByRole("button", { name: "Switch account" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Open OneDrive folder" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Recycle bin/ })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Sign out…" }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch account" }));
+    expect(screen.getByText("No other signed-in accounts")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
 
     fireEvent.pointerDown(document.body);
     await waitFor(() =>
       expect(
-        screen.queryByText("Add account — coming later"),
+        screen.queryByText("No other signed-in accounts"),
       ).not.toBeInTheDocument(),
     );
   });

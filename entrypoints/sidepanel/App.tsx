@@ -123,6 +123,8 @@ export type MonthReadToken = {
   writeVersion: number;
 };
 
+const FOREGROUND_SYNC_STALE_MS = 30_000;
+
 export function shouldApplyMonthRead(
   token: MonthReadToken,
   latestRequestVersion: number | undefined,
@@ -149,6 +151,34 @@ function withoutMessage(
   };
 }
 
+function mergeCurrentMonthSnapshots(
+  current: MonthReadResult | undefined,
+  incoming: MonthReadResult,
+  deletedMessageIds: Set<string>,
+): MonthReadResult {
+  if (incoming.state !== "loaded") return current ?? incoming;
+  const messages = new Map(
+    incoming.messages
+      .filter((message) => !deletedMessageIds.has(message.id))
+      .map((message) => [message.id, message]),
+  );
+  if (current?.state === "loaded") {
+    for (const message of current.messages) {
+      if (!deletedMessageIds.has(message.id) && !messages.has(message.id)) {
+        messages.set(message.id, message);
+      }
+    }
+  }
+  return {
+    ...incoming,
+    messages: [...messages.values()].sort(
+      (left, right) =>
+        left.createdAt.localeCompare(right.createdAt) ||
+        left.id.localeCompare(right.id),
+    ),
+  };
+}
+
 export function App() {
   const [status, setStatus] = useState<AuthStatus>();
   const [error, setError] = useState<string>();
@@ -169,6 +199,7 @@ export function App() {
   const [isPanelVisible, setIsPanelVisible] = useState(
     typeof document === "undefined" || document.visibilityState !== "hidden",
   );
+  const [foregroundRevision, setForegroundRevision] = useState(0);
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([]);
   const [pendingTexts, setPendingTexts] = useState<PendingText[]>([]);
   const [isCreatingPendingText, setIsCreatingPendingText] = useState(false);
@@ -228,6 +259,7 @@ export function App() {
   const accountCardRef = useRef<HTMLElement>(null);
   const isCreatingPendingTextRef = useRef(false);
   const syncInFlightRef = useRef(false);
+  const restoreInFlightRef = useRef(false);
   const lastSuccessfulSyncAtRef = useRef(0);
   const localOperationVersionsRef = useRef<Map<string, number>>(new Map());
   const activeLocalWritesRef = useRef<Map<string, number>>(new Map());
@@ -334,21 +366,28 @@ export function App() {
     result: MonthReadResult,
     token: MonthReadToken,
   ): boolean {
-    if (
-      !shouldApplyMonthRead(
-        token,
-        readRequestVersionsRef.current.get(result.month),
-        localOperationVersionsRef.current.get(result.month) ?? 0,
-        activeLocalWritesRef.current.get(result.month) ?? 0,
-      )
-    ) {
-      return false;
-    }
+    const canApplyDirectly = shouldApplyMonthRead(
+      token,
+      readRequestVersionsRef.current.get(result.month),
+      localOperationVersionsRef.current.get(result.month) ?? 0,
+      activeLocalWritesRef.current.get(result.month) ?? 0,
+    );
 
     if (result.month === getUtcMonth()) {
-      setMonthResult(result);
+      if (canApplyDirectly) {
+        setMonthResult(result);
+      } else {
+        setMonthResult((current) =>
+          mergeCurrentMonthSnapshots(
+            current,
+            result,
+            optimisticallyDeletedMessageIds,
+          ),
+        );
+      }
       return true;
     }
+    if (!canApplyDirectly) return false;
     setHistoricalMonthResults((results) =>
       results.map((current) =>
         current.month === result.month ? result : current,
@@ -602,11 +641,23 @@ export function App() {
   );
 
   useEffect(() => {
-    const updateVisibility = () =>
-      setIsPanelVisible(document.visibilityState !== "hidden");
+    const markForeground = () => {
+      setIsPanelVisible(true);
+      setForegroundRevision((revision) => revision + 1);
+    };
+    const updateVisibility = () => {
+      const visible = document.visibilityState !== "hidden";
+      setIsPanelVisible(visible);
+      if (visible) setForegroundRevision((revision) => revision + 1);
+    };
     document.addEventListener("visibilitychange", updateVisibility);
-    return () =>
+    window.addEventListener("focus", markForeground);
+    window.addEventListener("pageshow", markForeground);
+    return () => {
       document.removeEventListener("visibilitychange", updateVisibility);
+      window.removeEventListener("focus", markForeground);
+      window.removeEventListener("pageshow", markForeground);
+    };
   }, []);
 
   useEffect(() => {
@@ -614,13 +665,14 @@ export function App() {
       !isPanelVisible ||
       status?.state !== "signed-in" ||
       !monthResult ||
-      Date.now() - lastSuccessfulSyncAtRef.current < 30_000
+      Date.now() - lastSuccessfulSyncAtRef.current < FOREGROUND_SYNC_STALE_MS
     ) {
       return;
     }
     void syncCurrentMonthSilently();
   }, [
     historicalMonthResults.map((result) => result.month).join("|"),
+    foregroundRevision,
     isPanelVisible,
     monthResult?.month,
     status?.state,
@@ -762,7 +814,11 @@ export function App() {
 
   useEffect(() => {
     async function restore() {
+      if (restoreInFlightRef.current) return;
+      restoreInFlightRef.current = true;
+      syncInFlightRef.current = true;
       setIsWorking(true);
+      setIsSyncing(true);
 
       try {
         const restoredStatus = await sendAuthRequest({ type: "auth/status" });
@@ -776,6 +832,9 @@ export function App() {
           cause instanceof Error ? cause.message : "Unable to read status",
         );
       } finally {
+        syncInFlightRef.current = false;
+        restoreInFlightRef.current = false;
+        setIsSyncing(false);
         setIsWorking(false);
       }
     }
@@ -877,10 +936,10 @@ export function App() {
       void sendRequest({ type: "files/check-cleanup" }).catch(() => undefined);
     }
     if (restoreTransfers) {
-      await Promise.all([
+      void Promise.all([
         restorePendingFiles(monthResponse.result),
         restorePendingTexts(monthResponse.result),
-      ]);
+      ]).catch(() => undefined);
     }
     lastSuccessfulSyncAtRef.current = Date.now();
   }

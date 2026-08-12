@@ -206,6 +206,89 @@ describe("side panel message composer", () => {
     });
   });
 
+  it("does not start a competing foreground read during initial restoration", async () => {
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    let resolveInitialRead!: (response: RuntimeResponse) => void;
+    const initialRead = new Promise<RuntimeResponse>((resolve) => {
+      resolveInitialRead = resolve;
+    });
+    sendMessage.mockImplementation((request: RuntimeRequest) =>
+      request.type === "messages/read-current-month"
+        ? initialRead
+        : originalImplementation(request),
+    );
+
+    render(<App />);
+    await waitFor(() =>
+      expect(
+        sendMessage.mock.calls.filter(
+          ([request]) => request.type === "messages/read-current-month",
+        ),
+      ).toHaveLength(1),
+    );
+    expect(
+      screen.getByRole("button", { name: "Refresh messages and files" }),
+    ).toBeDisabled();
+    const originalNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(originalNow + 31_000);
+    fireEvent.focus(window);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "messages/read-current-month",
+      ),
+    ).toHaveLength(1);
+
+    resolveInitialRead(
+      await originalImplementation({
+        type: "messages/read-current-month",
+      }),
+    );
+    expect(await screen.findByText("from this Edge")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Refresh messages and files" }),
+      ).not.toBeDisabled(),
+    );
+  });
+
+  it("shows a newer network snapshot during the first restoration", async () => {
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    let currentMonthReads = 0;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type !== "messages/read-current-month") {
+        return originalImplementation(request);
+      }
+      currentMonthReads += 1;
+      return {
+        ok: true,
+        type: "messages/month",
+        result: {
+          state: "loaded",
+          month: "2026-08",
+          eTag: "new-network-etag",
+          messages: [
+            {
+              schemaVersion: 1,
+              id: "01989f5e-7700-7000-8000-000000000777",
+              type: "text",
+              text: "new from Android on first restoration",
+              createdAt: "2026-08-03T00:01:00.000Z",
+              senderDeviceId: "01989f5e-7700-7000-8000-000000000777",
+            },
+          ],
+        },
+      };
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("new from Android on first restoration"),
+    ).toBeInTheDocument();
+    expect(currentMonthReads).toBe(1);
+  });
+
   it("warns before manual cleanup and shows its final success result", async () => {
     await screenForComposer();
     fireEvent.click(
@@ -626,6 +709,39 @@ describe("side panel message composer", () => {
       ).toHaveLength(2),
     );
     expect(screen.getByText("from July")).toBeInTheDocument();
+  });
+
+  it("synchronizes when a retained panel receives focus again", async () => {
+    await screenForComposer();
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "messages/read-current-month",
+      ),
+    ).toHaveLength(1);
+
+    const originalNow = Date.now();
+    vi.spyOn(Date, "now").mockReturnValue(originalNow + 31_000);
+    fireEvent.focus(window);
+
+    await waitFor(() =>
+      expect(
+        sendMessage.mock.calls.filter(
+          ([request]) => request.type === "messages/read-current-month",
+        ),
+      ).toHaveLength(2),
+    );
+  });
+
+  it("keeps foreground focus synchronization throttled", async () => {
+    await screenForComposer();
+    fireEvent.focus(window);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "messages/read-current-month",
+      ),
+    ).toHaveLength(1);
   });
 
   it("does not add blank space for a missing earlier month", async () => {

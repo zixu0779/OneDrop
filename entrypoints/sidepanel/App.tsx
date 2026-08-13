@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -196,6 +197,7 @@ export function App() {
   const [isTimelineScrolling, setIsTimelineScrolling] = useState(false);
   const [isTimelineScrollbarHovered, setIsTimelineScrollbarHovered] =
     useState(false);
+  const [isFileDragActive, setIsFileDragActive] = useState(false);
   const [isPanelVisible, setIsPanelVisible] = useState(
     typeof document === "undefined" || document.visibilityState !== "hidden",
   );
@@ -267,6 +269,7 @@ export function App() {
   const activePendingTextWriteIdsRef = useRef<Set<string>>(new Set());
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fileDragDepthRef = useRef(0);
   const historyScrollHeightRef = useRef<number | undefined>(undefined);
   const historyLoadingHeightRef = useRef(0);
   const historyLoadingElementRef = useRef<HTMLSpanElement>(null);
@@ -1661,6 +1664,47 @@ export function App() {
     await uploadPendingFile(pending);
   }
 
+  function canAcceptDesktopFileDrop(event: ReactDragEvent<HTMLElement>) {
+    return (
+      !document.body.classList.contains("mobile-surface") &&
+      status?.state === "signed-in" &&
+      Boolean(monthResult) &&
+      Array.from(event.dataTransfer.types).includes("Files")
+    );
+  }
+
+  function handleFileDragEnter(event: ReactDragEvent<HTMLElement>) {
+    if (!canAcceptDesktopFileDrop(event)) return;
+    event.preventDefault();
+    fileDragDepthRef.current += 1;
+    setIsFileDragActive(true);
+  }
+
+  function handleFileDragOver(event: ReactDragEvent<HTMLElement>) {
+    if (!canAcceptDesktopFileDrop(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  function handleFileDragLeave(event: ReactDragEvent<HTMLElement>) {
+    if (!canAcceptDesktopFileDrop(event)) return;
+    event.preventDefault();
+    fileDragDepthRef.current = Math.max(0, fileDragDepthRef.current - 1);
+    if (fileDragDepthRef.current === 0) setIsFileDragActive(false);
+  }
+
+  function handleFileDrop(event: ReactDragEvent<HTMLElement>) {
+    if (!canAcceptDesktopFileDrop(event)) return;
+    event.preventDefault();
+    fileDragDepthRef.current = 0;
+    setIsFileDragActive(false);
+    const files = Array.from(event.dataTransfer.files);
+    if (files.length === 0) return;
+    void (async () => {
+      for (const file of files) await selectFile(file);
+    })();
+  }
+
   async function uploadPendingFile(pending: PendingFile) {
     if (!pending.file) {
       reselectPendingIdRef.current = pending.id;
@@ -1955,7 +1999,13 @@ export function App() {
     (!status || (status.state === "signed-in" && monthResult === undefined));
 
   return (
-    <main className="shell">
+    <main
+      className="shell"
+      onDragEnter={handleFileDragEnter}
+      onDragLeave={handleFileDragLeave}
+      onDragOver={handleFileDragOver}
+      onDrop={handleFileDrop}
+    >
       {status?.state === "unconfigured" ? (
         <section className="card" aria-labelledby="configuration-title">
           <span className="eyebrow">Configuration required</span>
@@ -2531,6 +2581,15 @@ export function App() {
           onClose={() => setDeletedDataCleanupNotice(undefined)}
           onRetry={() => void cleanDeletedData()}
         />
+      ) : null}
+      {isFileDragActive ? (
+        <div className="file-drop-overlay" role="status">
+          <span className="file-drop-icon" aria-hidden="true">
+            <PlusIcon />
+          </span>
+          <strong>Drop to send</strong>
+          <span>Files will be uploaded to OneDrop</span>
+        </div>
       ) : null}
     </main>
   );

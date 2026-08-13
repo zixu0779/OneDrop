@@ -1098,6 +1098,46 @@ describe("side panel message composer", () => {
       text: "中文",
     });
   });
+
+  it("uploads a file dropped onto the desktop side panel", async () => {
+    await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type !== "files/send") return originalImplementation(request);
+      const month = await originalImplementation({
+        type: "messages/read-current-month",
+      });
+      if (!month.ok || month.type !== "messages/month") return month;
+      return {
+        ok: true,
+        type: "files/transfer",
+        transfer: { state: "sent", result: month.result },
+      };
+    });
+    const shell = document.querySelector<HTMLElement>(".shell")!;
+    const file = new File(["dropped content"], "dropped.txt", {
+      type: "text/plain",
+    });
+    const dataTransfer = {
+      types: ["Files"],
+      files: [file],
+      dropEffect: "none",
+    };
+
+    fireEvent.dragEnter(shell, { dataTransfer });
+    expect(screen.getByText("Drop to send")).toBeInTheDocument();
+    fireEvent.drop(shell, { dataTransfer });
+
+    expect(screen.queryByText("Drop to send")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "files/send",
+          file: expect.objectContaining({ name: "dropped.txt" }),
+        }),
+      ),
+    );
+  });
 });
 
 describe("message presentation groups", () => {

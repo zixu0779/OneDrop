@@ -1153,23 +1153,6 @@ export function App() {
     }
   }
 
-  async function rebuildDevelopmentTestData() {
-    setIsWorking(true);
-    setError(undefined);
-    setIsAccountOpen(false);
-    try {
-      const response = await sendRequest({ type: "dev/rebuild-test-data" });
-      if (!response.ok || response.type !== "dev/test-data-rebuilt") {
-        throw new Error("OneDrop could not rebuild the test data.");
-      }
-      await loadOneDriveState(true, true, false);
-    } catch (cause) {
-      setError(getClientError(cause));
-    } finally {
-      setIsWorking(false);
-    }
-  }
-
   async function openOneDropFolder() {
     setIsAccountOpen(false);
     setError(undefined);
@@ -2182,17 +2165,6 @@ export function App() {
                         : "Clean up deleted data"}
                     </span>
                   </button>
-                  {import.meta.env.DEV ? (
-                    <button
-                      className="account-menu-action account-menu-development"
-                      disabled={isWorking || isSyncing}
-                      onClick={() => void rebuildDevelopmentTestData()}
-                      type="button"
-                    >
-                      <TestDataIcon />
-                      <span>Rebuild test data</span>
-                    </button>
-                  ) : null}
                 </div>
               </div>
             ) : null}

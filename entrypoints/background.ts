@@ -22,6 +22,7 @@ import {
 } from "../src/features/messages/create-file-message";
 import {
   checkAttachmentExists,
+  getAttachmentDownloadUrl,
   getAttachmentWebUrl,
   readImagePreview,
   uploadLargeFile,
@@ -41,12 +42,10 @@ import {
   getCorruptMonthFileFolderUrl,
 } from "../src/infrastructure/onedrive/corrupt-month-file";
 import { deleteMonthCache } from "../src/infrastructure/indexed-db/sync-cache";
-import { rebuildTestData } from "../src/dev/rebuild-test-data";
 import { writeMessageTombstone } from "../src/infrastructure/onedrive/tombstones";
 import {
   checkArchiveTasks,
   dismissArchiveNotice,
-  resetArchiveTasks,
   resumeArchiveTasksAfterSignIn,
   retryArchiveTask,
 } from "../src/infrastructure/onedrive/archive-scheduler";
@@ -56,13 +55,37 @@ import {
   resetAttachmentCleanup,
 } from "../src/infrastructure/onedrive/attachment-cleanup";
 import { enqueueMonthWrite } from "../src/infrastructure/onedrive/month-write-coordinator";
+import {
+  cancelMobileNavigationDownload,
+  claimMobileNavigationDownload,
+  clearMobileNavigationDownload,
+  prepareMobileNavigationDownload,
+  readMobileNavigationDownloadStatus,
+} from "../src/features/downloads/mobile-navigation-download";
 
 const activeFileUploads = new Map<string, AbortController>();
 const cancelledFileUploads = new Set<string>();
 
 export default defineBackground(() => {
+  browser.downloads.onCreated.addListener((item) => {
+    void claimMobileNavigationDownload(item).catch(() => undefined);
+  });
+  const hasSidePanelPermission =
+    browser.runtime.getManifest().permissions?.includes("sidePanel") ?? false;
+  if (!hasSidePanelPermission) {
+    browser.action.onClicked.addListener(() => {
+      void openOrFocusMobilePage().catch(async (error: unknown) => {
+        console.error("OneDrop mobile page could not be opened.", error);
+        await browser.action.setBadgeBackgroundColor({ color: "#d93025" });
+        await browser.action.setBadgeText({ text: "!" });
+      });
+    });
+  }
+
   browser.runtime.onInstalled.addListener(() => {
-    void browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    if (browser.sidePanel?.setPanelBehavior) {
+      void browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    }
   });
 
   browser.runtime.onMessage.addListener(
@@ -93,14 +116,6 @@ export default defineBackground(() => {
               type: "device/id",
               deviceId: await getOrCreateDeviceId(),
             };
-          case "dev/rebuild-test-data":
-            if (!import.meta.env.DEV) {
-              throw new Error("Test data rebuilding is development-only.");
-            }
-            await resetArchiveTasks();
-            await resetAttachmentCleanup();
-            await rebuildTestData();
-            return { ok: true, type: "dev/test-data-rebuilt" };
           case "onedrive/verify-app-folder":
             return {
               ok: true,
@@ -393,6 +408,36 @@ export default defineBackground(() => {
               type: "files/cleanup-checked",
               cleaned: await checkAttachmentCleanup(),
             };
+          case "files/get-download-url":
+            return {
+              ok: true,
+              type: "files/download-url",
+              url: await getAttachmentDownloadUrl(request.driveItemId),
+            };
+          case "files/prepare-mobile-download":
+            return {
+              ok: true,
+              type: "files/mobile-download",
+              download: await prepareMobileNavigationDownload(
+                request.attachment,
+              ),
+            };
+          case "files/mobile-download-status": {
+            const download = await readMobileNavigationDownloadStatus(
+              request.driveItemId,
+            );
+            return {
+              ok: true,
+              type: "files/mobile-download",
+              ...(download ? { download } : {}),
+            };
+          }
+          case "files/cancel-mobile-download":
+            await cancelMobileNavigationDownload(request.driveItemId);
+            return { ok: true, type: "files/mobile-download-cleared" };
+          case "files/clear-mobile-download":
+            await clearMobileNavigationDownload(request.driveItemId);
+            return { ok: true, type: "files/mobile-download-cleared" };
           case "deleted-data/clean-now": {
             const result = await cleanDeletedDataNow();
             return {
@@ -446,6 +491,21 @@ export default defineBackground(() => {
     },
   );
 });
+
+async function openOrFocusMobilePage() {
+  const path = "/mobile.html";
+  const mobilePageUrl = browser.runtime.getURL(path);
+  const matchingTabs = await browser.tabs.query({ url: `${mobilePageUrl}*` });
+  const existingTab = matchingTabs.find(
+    (tab) => tab.id !== undefined && tab.windowId !== undefined,
+  );
+  if (existingTab?.id !== undefined && existingTab.windowId !== undefined) {
+    await browser.windows.update(existingTab.windowId, { focused: true });
+    await browser.tabs.update(existingTab.id, { active: true });
+    return;
+  }
+  await browser.tabs.create({ url: mobilePageUrl });
+}
 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown file transfer error";

@@ -544,10 +544,6 @@ body {
   color: #344054;
 }
 
-.account-menu-development {
-  color: #667085;
-}
-
 .account-menu-action .loading-spinner {
   width: 13px;
   height: 13px;
@@ -3068,8 +3064,7 @@ body {
 
   .account-menu-action,
   .account-popover .account-popover-signout,
-  .account-menu-cleanup,
-  .account-menu-development {
+  .account-menu-cleanup {
     color: #d4dae2;
   }
 

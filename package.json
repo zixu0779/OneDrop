@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "wxt --browser edge",
     "build": "wxt build --browser edge",
+    "build:android": "wxt build --browser edge --config wxt.android.config.ts --filter-entrypoint mobile --filter-entrypoint background",
+    "pack:android": "npm run build:android && node scripts/pack-android.mjs",
     "zip": "wxt zip --browser edge",
     "compile": "wxt prepare && tsc --noEmit",
     "test": "vitest run",

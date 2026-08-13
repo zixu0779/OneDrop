@@ -17,7 +17,6 @@ export type RuntimeRequest =
   | { type: "device/id" }
   | { type: "onedrive/verify-app-folder" }
   | { type: "onedrive/open-app-folder" }
-  | { type: "dev/rebuild-test-data" }
   | { type: "messages/read-current-month" }
   | { type: "messages/read-month"; month: string }
   | { type: "archives/check" }
@@ -63,6 +62,11 @@ export type RuntimeRequest =
   | { type: "files/read-preview"; driveItemId: string; mimeType: string }
   | { type: "files/check-attachment"; driveItemId: string }
   | { type: "files/check-cleanup" }
+  | { type: "files/get-download-url"; driveItemId: string }
+  | { type: "files/prepare-mobile-download"; attachment: Attachment }
+  | { type: "files/mobile-download-status"; driveItemId: string }
+  | { type: "files/cancel-mobile-download"; driveItemId: string }
+  | { type: "files/clear-mobile-download"; driveItemId: string }
   | { type: "deleted-data/clean-now" }
   | {
       type: "files/open-local";
@@ -134,7 +138,6 @@ export type RuntimeResponse =
       appFolder: AppFolderSummary;
     }
   | { ok: true; type: "onedrive/app-folder-opened" }
-  | { ok: true; type: "dev/test-data-rebuilt" }
   | { ok: true; type: "archives/notices"; notices: ArchiveNotice[] }
   | { ok: true; type: "archives/notice"; notice?: ArchiveNotice }
   | { ok: true; type: "archives/dismissed" }
@@ -165,6 +168,13 @@ export type RuntimeResponse =
   | { ok: true; type: "files/placeholder-discarded" }
   | { ok: true; type: "files/cancelled" }
   | { ok: true; type: "files/cleanup-checked"; cleaned: number }
+  | { ok: true; type: "files/download-url"; url: string }
+  | {
+      ok: true;
+      type: "files/mobile-download";
+      download?: import("../features/downloads/mobile-navigation-download").MobileDownloadStatus;
+    }
+  | { ok: true; type: "files/mobile-download-cleared" }
   | {
       ok: true;
       type: "deleted-data/cleaned";

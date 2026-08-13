@@ -2,7 +2,7 @@
 
 Status: persistent sign-in and refresh-token rotation implemented for the development extension.
 
-OneDrop is a public client and contains no client secret. The validation flow uses OAuth 2.0 Authorization Code with PKCE, initiated through `browser.identity.launchWebAuthFlow` in the MV3 service worker.
+OneDrop is a public client and contains no client secret. The validation flow uses OAuth 2.0 Authorization Code with PKCE, initiated through `browser.identity.launchWebAuthFlow` in the MV3 service worker. Android Edge cannot create that identity window, so OneDrop opens the same SPA authorization request in a normal Edge tab, observes only its exact registered callback URI, and closes the tab after the callback arrives.
 
 ## Register a development application
 
@@ -47,7 +47,8 @@ After authentication succeeds, the Side Panel automatically verifies the OneDriv
 - Access and refresh tokens are stored in `browser.storage.local`, which is private to the extension but is not an operating-system credential vault.
 - OneDrop requests `offline_access` and refreshes the access token on demand shortly before expiry. A rotated refresh token replaces the previous value atomically.
 - Because the extension redirect URI is registered as an SPA, Microsoft limits that refresh-token family to 24 hours; rotated tokens do not extend that original deadline.
-- When that grant expires, OneDrop first runs a non-interactive authorization-code flow with `prompt=none`. If the Microsoft browser session is still active, this obtains a fresh token family without asking for credentials. If silent authorization requires interaction, OneDrop clears the unusable local grant and shows the normal sign-in state.
+- When that grant expires, OneDrop first runs a non-interactive authorization-code flow with `prompt=none`. Desktop Edge uses the identity window; Android Edge uses a temporary inactive tab. If the Microsoft browser session is still active, this obtains a fresh token family without asking for credentials and closes the tab automatically. If silent authorization requires interaction, OneDrop clears the unusable local grant and shows the normal sign-in state.
+- Device Code tokens are deliberately not used by the browser extension. Although Device Code can complete the first Android sign-in, Entra rejects their later redemption from an extension origin with `AADSTS90023`.
 - Temporary refresh failures are reported without deleting the refresh token.
 - **Sign out locally** clears both local and legacy session token storage but does not terminate the Microsoft Entra browser session.
 - Uninstalling the extension clears its local token storage.

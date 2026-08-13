@@ -145,6 +145,68 @@ export async function signIn(): Promise<AuthStatus> {
   return getAuthStatus();
 }
 
+function shouldUseTabAuthorizationFallback(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /couldn['’]?t create a browser window|cannot create a browser window/iu.test(
+    message,
+  );
+}
+
+async function launchTabAuthorizationFlow(
+  url: string,
+  redirectUri: string,
+  interactive: boolean,
+): Promise<string> {
+  const tab = await browser.tabs.create({ url, active: interactive });
+  if (tab.id === undefined) {
+    throw new Error("Microsoft sign-in tab could not be created.");
+  }
+
+  const timeoutMs = interactive ? 5 * 60_000 : 30_000;
+  try {
+    return await new Promise<string>((resolve, reject) => {
+      const finish = (callback?: string, error?: Error) => {
+        clearTimeout(timeout);
+        browser.tabs.onUpdated.removeListener(onUpdated);
+        browser.tabs.onRemoved.removeListener(onRemoved);
+        if (callback) resolve(callback);
+        else reject(error ?? new Error("Microsoft sign-in was interrupted."));
+      };
+      const onUpdated = (
+        updatedTabId: number,
+        changeInfo: { url?: string },
+      ) => {
+        if (
+          updatedTabId === tab.id &&
+          changeInfo.url?.startsWith(redirectUri)
+        ) {
+          finish(changeInfo.url);
+        }
+      };
+      const onRemoved = (removedTabId: number) => {
+        if (removedTabId === tab.id) {
+          finish(
+            undefined,
+            new Error("Microsoft sign-in was cancelled before it completed."),
+          );
+        }
+      };
+      const timeout = setTimeout(
+        () =>
+          finish(
+            undefined,
+            new Error("Microsoft sign-in timed out. Try again."),
+          ),
+        timeoutMs,
+      );
+      browser.tabs.onUpdated.addListener(onUpdated);
+      browser.tabs.onRemoved.addListener(onRemoved);
+    });
+  } finally {
+    await browser.tabs.remove(tab.id).catch(() => undefined);
+  }
+}
+
 async function acquireAuthorizationCodeToken(options: {
   interactive: boolean;
   previous?: StoredToken;
@@ -186,13 +248,28 @@ async function acquireAuthorizationCodeToken(options: {
       interactive: options.interactive,
     });
   } catch (cause) {
-    if (!options.interactive) {
+    if (shouldUseTabAuthorizationFallback(cause)) {
+      try {
+        callbackUrl = await launchTabAuthorizationFlow(
+          authorizeUrl.toString(),
+          redirectUri,
+          options.interactive,
+        );
+      } catch (fallbackCause) {
+        if (options.interactive) throw fallbackCause;
+        throw new SignInRequiredError(
+          "The Microsoft browser session cannot renew OneDrop silently.",
+          { cause: fallbackCause },
+        );
+      }
+    } else if (!options.interactive) {
       throw new SignInRequiredError(
         "The Microsoft browser session cannot renew OneDrop silently.",
         { cause },
       );
+    } else {
+      throw cause;
     }
-    throw cause;
   }
 
   if (!callbackUrl) {
@@ -324,8 +401,14 @@ async function refreshAccessToken(previous: StoredToken): Promise<StoredToken> {
 function isPermanentRefreshFailure(body: unknown): boolean {
   if (typeof body !== "object" || body === null) return false;
 
-  const code = (body as Record<string, unknown>).error;
-  return code === "invalid_grant" || code === "interaction_required";
+  const candidate = body as Record<string, unknown>;
+  const code = candidate.error;
+  const description = candidate.error_description;
+  return (
+    code === "invalid_grant" ||
+    code === "interaction_required" ||
+    (typeof description === "string" && description.includes("AADSTS90023"))
+  );
 }
 
 function getTokenErrorMessage(body: unknown): string {

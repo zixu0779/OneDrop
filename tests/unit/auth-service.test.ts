@@ -29,6 +29,10 @@ function token(overrides: Record<string, unknown> = {}) {
 describe("persistent authentication lifecycle", () => {
   const localState: StorageState = {};
   const sessionState: StorageState = {};
+  const tabUpdatedListeners = new Set<
+    (tabId: number, changeInfo: { url?: string }) => void
+  >();
+  const tabRemovedListeners = new Set<(tabId: number) => void>();
 
   beforeEach(() => {
     vi.resetModules();
@@ -36,6 +40,8 @@ describe("persistent authentication lifecycle", () => {
     vi.stubEnv("WXT_ONEDROP_ENTRA_CLIENT_ID", "client-id");
     for (const key of Object.keys(localState)) delete localState[key];
     for (const key of Object.keys(sessionState)) delete sessionState[key];
+    tabUpdatedListeners.clear();
+    tabRemovedListeners.clear();
 
     vi.stubGlobal("browser", {
       identity: {
@@ -45,6 +51,22 @@ describe("persistent authentication lifecycle", () => {
       storage: {
         local: storageArea(localState),
         session: storageArea(sessionState),
+      },
+      tabs: {
+        create: vi.fn(async () => ({ id: 17 })),
+        remove: vi.fn(async () => undefined),
+        onUpdated: {
+          addListener: vi.fn((listener) => tabUpdatedListeners.add(listener)),
+          removeListener: vi.fn((listener) =>
+            tabUpdatedListeners.delete(listener),
+          ),
+        },
+        onRemoved: {
+          addListener: vi.fn((listener) => tabRemovedListeners.add(listener)),
+          removeListener: vi.fn((listener) =>
+            tabRemovedListeners.delete(listener),
+          ),
+        },
       },
     });
     vi.stubGlobal("fetch", vi.fn());
@@ -57,6 +79,46 @@ describe("persistent authentication lifecycle", () => {
 
     await expect(getCurrentAccessToken()).resolves.toBe("old-access-token");
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("uses a normal Edge tab for SPA sign-in when Android cannot create an identity window", async () => {
+    vi.mocked(browser.identity.launchWebAuthFlow).mockRejectedValue(
+      new Error("Couldn't create a browser window"),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          token_type: "Bearer",
+          scope: "openid offline_access",
+          expires_in: 3600,
+          access_token: "android-spa-access-token",
+          refresh_token: "android-spa-refresh-token",
+        }),
+      ),
+    );
+    const { signIn } = await import("../../src/features/auth/auth-service");
+
+    const signInPromise = signIn();
+    await vi.waitFor(() => expect(browser.tabs.create).toHaveBeenCalled());
+    const authorizeUrl = new URL(
+      vi.mocked(browser.tabs.create).mock.calls[0]![0].url!,
+    );
+    for (const listener of tabUpdatedListeners) {
+      listener(17, {
+        url: `https://extension.chromiumapp.org/auth?code=android-code&state=${authorizeUrl.searchParams.get("state")}`,
+      });
+    }
+
+    await expect(signInPromise).resolves.toMatchObject({ state: "signed-in" });
+    expect(browser.tabs.create).toHaveBeenCalledWith(
+      expect.objectContaining({ active: true }),
+    );
+    expect(browser.tabs.remove).toHaveBeenCalledWith(17);
+    expect(
+      (localState["onedrop.auth.token"] as Record<string, unknown>)
+        .refresh_token,
+    ).toBe("android-spa-refresh-token");
   });
 
   it("refreshes an expired access token and retains the refresh token when Microsoft omits a replacement", async () => {
@@ -153,6 +215,42 @@ describe("persistent authentication lifecycle", () => {
     await expect(getAuthStatus()).resolves.toMatchObject({
       state: "signed-out",
     });
+    expect(localState["onedrop.auth.token"]).toBeUndefined();
+  });
+
+  it("returns signed-out when Android rejects cross-origin native token refresh", async () => {
+    localState["onedrop.auth.token"] = token({
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    });
+    vi.mocked(browser.identity.launchWebAuthFlow).mockRejectedValue(
+      new Error("Couldn't create a browser window"),
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json(
+          {
+            error: "invalid_request",
+            error_description:
+              "AADSTS90023: Cross-origin token redemption is permitted only for the Single-Page Application client-type.",
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+    const { getAuthStatus } =
+      await import("../../src/features/auth/auth-service");
+
+    const statusPromise = getAuthStatus();
+    await vi.waitFor(() => expect(browser.tabs.create).toHaveBeenCalled());
+    for (const listener of tabRemovedListeners) listener(17);
+
+    await expect(statusPromise).resolves.toMatchObject({
+      state: "signed-out",
+    });
+    expect(browser.identity.launchWebAuthFlow).toHaveBeenCalledWith(
+      expect.objectContaining({ interactive: false }),
+    );
     expect(localState["onedrop.auth.token"]).toBeUndefined();
   });
 

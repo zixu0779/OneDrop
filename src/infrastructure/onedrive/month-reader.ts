@@ -55,7 +55,13 @@ export type MonthSnapshot =
 export async function readMonthDocument(
   month: string,
 ): Promise<MonthReadResult> {
-  const accessToken = await getCurrentAccessToken();
+  return readMonthDocumentWithAccessToken(month, await getCurrentAccessToken());
+}
+
+export async function readMonthDocumentWithAccessToken(
+  month: string,
+  accessToken: string,
+): Promise<MonthReadResult> {
   const snapshot = await readMonthSnapshot(month, accessToken, true);
 
   return snapshot.state === "missing"
@@ -77,7 +83,16 @@ export async function readMonthDocument(
 export async function readHistoricalMonthDocument(
   month: string,
 ): Promise<MonthReadResult> {
-  const accessToken = await getCurrentAccessToken();
+  return readHistoricalMonthDocumentWithAccessToken(
+    month,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function readHistoricalMonthDocumentWithAccessToken(
+  month: string,
+  accessToken: string,
+): Promise<MonthReadResult> {
   if (isMonthArchiveEligible(month)) {
     try {
       const archive = await runArchiveOptimization(() =>

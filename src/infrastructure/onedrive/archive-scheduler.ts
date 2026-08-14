@@ -3,7 +3,7 @@ import { z } from "zod";
 import { oneDropConfig } from "../../config/onedrop";
 import type { ArchiveNotice } from "../../contracts/runtime-messages";
 import type { MonthDocument } from "../../domain/month-document";
-import { getCurrentAccessToken } from "../../features/auth/auth-service";
+import { getOneDriveRuntime } from "../../platform/onedrive-runtime";
 import { readGraphError } from "../graph/graph-error";
 import {
   isMonthArchiveEligible,
@@ -45,7 +45,7 @@ const childrenPageSchema = z.object({
 });
 
 export async function checkArchiveTasks(): Promise<ArchiveNotice[]> {
-  const accessToken = await getCurrentAccessToken();
+  const accessToken = await getOneDriveRuntime().getAccessToken();
   const store = await readStore();
   const months = await listSourceMonths(accessToken);
 
@@ -90,7 +90,7 @@ export async function dismissArchiveNotice(month: string): Promise<void> {
 export async function resetArchiveTasks(): Promise<void> {
   schedulerGeneration += 1;
   runningMonths.clear();
-  await browser.storage.local.remove(STORAGE_KEY);
+  await getOneDriveRuntime().storage.remove(STORAGE_KEY);
 }
 
 export async function resumeArchiveTasksAfterSignIn(): Promise<void> {
@@ -153,7 +153,7 @@ async function runArchive(
   let timeoutReported = false;
   let timeoutReport = Promise.resolve<ArchiveNotice | undefined>(undefined);
   try {
-    const accessToken = await getCurrentAccessToken();
+    const accessToken = await getOneDriveRuntime().getAccessToken();
     const result = await waitForArchiveCompletion(
       archiveMonth(month, accessToken),
       () => {
@@ -331,7 +331,7 @@ async function listSourceMonths(accessToken: string): Promise<string[]> {
 }
 
 async function readStore(): Promise<Record<string, ArchiveTask>> {
-  const value = (await browser.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
+  const value = await getOneDriveRuntime().storage.get(STORAGE_KEY);
   return storeSchema.safeParse(value).data ?? {};
 }
 
@@ -342,7 +342,7 @@ async function writeTask(task: ArchiveTask): Promise<void> {
 }
 
 async function writeStore(store: Record<string, ArchiveTask>): Promise<void> {
-  await browser.storage.local.set({ [STORAGE_KEY]: store });
+  await getOneDriveRuntime().storage.set(STORAGE_KEY, store);
 }
 
 function visibleNotices(store: Record<string, ArchiveTask>): ArchiveNotice[] {
@@ -360,7 +360,7 @@ function toNotice(task: ArchiveTask): ArchiveNotice | undefined {
 async function emitNotice(notice: ArchiveNotice | undefined): Promise<void> {
   if (!notice) return;
   try {
-    await browser.runtime.sendMessage({ type: "archives/event", notice });
+    await getOneDriveRuntime().emit({ type: "archives/event", notice });
   } catch {
     // The Side Panel may be closed; persisted state is returned on next sync.
   }

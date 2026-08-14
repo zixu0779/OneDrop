@@ -161,6 +161,85 @@ describe("appendTextMessage conflict recovery", () => {
     );
   });
 
+  it("writes around a damaged fixture without reusing its chunk number", async () => {
+    const messages = largeMessages();
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(undefined);
+    vi.mocked(readMonthSnapshot).mockResolvedValue({
+      ...loaded("etag-2", messages),
+      corruptFiles: [{ itemId: "damaged-3", name: "0003.json" }],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 200 }))
+        .mockResolvedValueOnce(
+          Response.json({ id: "chunk-4", eTag: "etag-4" }, { status: 201 }),
+        ),
+    );
+
+    await expect(appendTextMessage("2026-08", second)).resolves.toMatchObject({
+      state: "loaded",
+    });
+    expect(readMonthSnapshot).toHaveBeenCalledWith(
+      "2026-08",
+      "access-token",
+      true,
+    );
+    expect(vi.mocked(fetch).mock.calls[1]?.[0]).toContain(
+      "/messages/2026-08/0004.json:/content",
+    );
+  });
+
+  it("writes around a conflict that belongs to another message", async () => {
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(undefined);
+    vi.mocked(readMonthSnapshot).mockResolvedValue({
+      ...loaded("etag-2"),
+      messageConflicts: [
+        {
+          messageId: first.id,
+          versions: [
+            { itemId: "chunk-1", name: "0001.json", line: 5 },
+            { itemId: "chunk-2", name: "0002.json", line: 5 },
+          ],
+        },
+      ],
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ id: "chunk-1", eTag: "etag-3" }, { status: 200 }),
+        ),
+    );
+
+    await expect(appendTextMessage("2026-08", second)).resolves.toMatchObject({
+      state: "loaded",
+    });
+  });
+
+  it("still blocks writes targeting the conflicted message itself", async () => {
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(undefined);
+    vi.mocked(readMonthSnapshot).mockResolvedValue({
+      ...loaded("etag-2"),
+      messageConflicts: [
+        {
+          messageId: second.id,
+          versions: [
+            { itemId: "chunk-1", name: "0001.json", line: 5 },
+            { itemId: "chunk-2", name: "0002.json", line: 5 },
+          ],
+        },
+      ],
+    });
+
+    await expect(appendTextMessage("2026-08", second)).rejects.toThrow(
+      "conflicting versions",
+    );
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("fails explicitly after five consecutive conflicts", async () => {
     vi.mocked(getCachedMonthSnapshot).mockResolvedValue(loaded("etag-1"));
     vi.mocked(readMonthSnapshot).mockResolvedValue(loaded("etag-new"));

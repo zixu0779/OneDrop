@@ -9,7 +9,8 @@ import {
 import { getCurrentAccessToken } from "../../features/auth/auth-service";
 import { readGraphError } from "../graph/graph-error";
 import { deleteMonthCache } from "../indexed-db/sync-cache";
-import { verifyAppFolder } from "./app-folder";
+import { verifyAppFolderWithAccessToken } from "./app-folder";
+import type { RecycleBinSetting } from "../../domain/settings";
 
 const MAX_ATTEMPTS = 5;
 const itemSchema = z.object({ id: z.string().min(1), eTag: z.string().min(1) });
@@ -39,12 +40,38 @@ export async function writeMessageTombstone(
   messageId: string,
 ): Promise<void> {
   const accessToken = await getCurrentAccessToken();
+  return writeMessageTombstoneWithAccessToken(month, messageId, accessToken);
+}
+
+export async function writeMessageTombstoneWithAccessToken(
+  month: string,
+  messageId: string,
+  accessToken: string,
+  recycle: RecycleBinSetting = {
+    mode: "retention",
+    retention: 10,
+    updatedAt: new Date().toISOString(),
+  },
+): Promise<void> {
   await ensureTombstonesFolder(accessToken);
+  const deletedAt = new Date();
   const tombstone: MessageTombstone = {
     schemaVersion: 1,
     messageId,
     originalMonth: month,
-    deletedAt: new Date().toISOString(),
+    deletedAt: deletedAt.toISOString(),
+    recovery:
+      recycle.mode === "disabled"
+        ? { mode: "disabled" }
+        : recycle.retention === "forever"
+          ? { mode: "retention", retention: "forever" }
+          : {
+              mode: "retention",
+              retention: recycle.retention,
+              recoverableUntil: new Date(
+                deletedAt.getTime() + recycle.retention * 86_400_000,
+              ).toISOString(),
+            },
   };
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
@@ -75,6 +102,90 @@ export async function writeMessageTombstone(
       );
     }
     itemSchema.parse(await response.json());
+    await deleteMonthCache(month);
+    return;
+  }
+  throw new Error("Message deletion records changed repeatedly. Try again.");
+}
+
+export async function listMessageTombstonesWithAccessToken(
+  accessToken: string,
+): Promise<MessageTombstone[]> {
+  const folder = await fetch(
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/tombstones:/children?$select=id,name&$top=200`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (folder.status === 404) return [];
+  if (!folder.ok) {
+    throw new Error(
+      `Message deletion records could not be listed: ${await readGraphError(folder)}`,
+    );
+  }
+  const pageSchema = z.object({
+    value: z.array(z.object({ id: z.string().min(1), name: z.string() })),
+    "@odata.nextLink": z.string().url().optional(),
+  });
+  const tombstones: MessageTombstone[] = [];
+  let page = pageSchema.parse(await folder.json());
+  while (true) {
+    for (const item of page.value) {
+      if (!/^\d{4}-\d{2}\.json$/u.test(item.name)) continue;
+      const response = await fetch(
+        `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}/content`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      if (!response.ok) {
+        throw new Error(
+          `Message deletion records could not be read: ${await readGraphError(response)}`,
+        );
+      }
+      const document = tombstoneDocumentSchema.parse(await response.json());
+      if (`${document.month}.json` !== item.name) {
+        throw new Error("A message deletion record belongs to another month.");
+      }
+      tombstones.push(...document.tombstones);
+    }
+    if (!page["@odata.nextLink"]) break;
+    if (!page["@odata.nextLink"].startsWith(`${oneDropConfig.graphBaseUrl}/`)) {
+      throw new Error("OneDrive returned an invalid tombstone pagination URL.");
+    }
+    const next = await fetch(page["@odata.nextLink"], {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!next.ok) {
+      throw new Error(
+        `Message deletion records could not be listed: ${await readGraphError(next)}`,
+      );
+    }
+    page = pageSchema.parse(await next.json());
+  }
+  return tombstones;
+}
+
+export async function removeMessageTombstoneWithAccessToken(
+  month: string,
+  messageId: string,
+  accessToken: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const current = await readTombstoneDocument(month, accessToken);
+    if (!current) return;
+    const tombstones = current.document.tombstones.filter(
+      (item) => item.messageId !== messageId,
+    );
+    if (tombstones.length === current.document.tombstones.length) return;
+    const response = await updateDocument(
+      accessToken,
+      current.item.id,
+      current.item.eTag,
+      { ...current.document, tombstones },
+    );
+    if (response.status === 409 || response.status === 412) continue;
+    if (!response.ok) {
+      throw new Error(
+        `Message restoration failed: ${await readGraphError(response)}`,
+      );
+    }
     await deleteMonthCache(month);
     return;
   }
@@ -124,7 +235,7 @@ async function ensureTombstonesFolder(accessToken: string): Promise<void> {
       `Tombstones folder lookup failed: ${await readGraphError(existing)}`,
     );
   }
-  const appRoot = await verifyAppFolder();
+  const appRoot = await verifyAppFolderWithAccessToken(accessToken);
   const created = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(appRoot.id)}/children`,
     {

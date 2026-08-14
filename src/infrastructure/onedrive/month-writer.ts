@@ -15,7 +15,6 @@ import {
 } from "../indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
-  readMonthDocument,
   readMonthSnapshot,
   type MonthSnapshot,
 } from "./month-reader";
@@ -45,16 +44,36 @@ export async function appendTextMessage(
   return appendMessage(month, message);
 }
 
+export function appendTextMessageWithAccessToken(
+  month: string,
+  message: TextMessage,
+  accessToken: string,
+): Promise<MonthReadResult> {
+  return appendMessageWithAccessToken(month, message, accessToken);
+}
+
 export async function appendMessage(
   month: string,
   message: Message,
 ): Promise<MonthReadResult> {
   const accessToken = await getCurrentAccessToken();
+  return appendMessageWithAccessToken(month, message, accessToken);
+}
+
+export async function appendMessageWithAccessToken(
+  month: string,
+  message: Message,
+  accessToken: string,
+): Promise<MonthReadResult> {
   await ensureMessagesFolder(accessToken);
   let snapshot: MonthSnapshot | undefined = await getCachedMonthSnapshot(month);
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    snapshot ??= await readMonthSnapshot(month, accessToken);
+    snapshot ??= await readWritableMonthSnapshot(
+      month,
+      accessToken,
+      message.id,
+    );
     const existingMessages =
       snapshot.state === "loaded" ? snapshot.document.messages : [];
 
@@ -88,7 +107,7 @@ export async function appendMessage(
     }
 
     const chunkIndex = shouldCreateChunk
-      ? (active?.index ?? 0) + 1
+      ? nextAvailableChunkIndex(snapshot)
       : active.index;
     if (chunkIndex > 9_999) {
       throw new Error("The current month reached OneDrop's chunk count limit.");
@@ -176,11 +195,23 @@ export async function replaceMessage(
   message: Message,
 ): Promise<MonthReadResult> {
   const accessToken = await getCurrentAccessToken();
+  return replaceMessageWithAccessToken(month, message, accessToken);
+}
+
+export async function replaceMessageWithAccessToken(
+  month: string,
+  message: Message,
+  accessToken: string,
+): Promise<MonthReadResult> {
   await ensureMessagesFolder(accessToken);
   let snapshot: MonthSnapshot | undefined = await getCachedMonthSnapshot(month);
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    snapshot ??= await readMonthSnapshot(month, accessToken);
+    snapshot ??= await readWritableMonthSnapshot(
+      month,
+      accessToken,
+      message.id,
+    );
     if (snapshot.state === "missing") {
       throw new Error("The registered file message no longer exists.");
     }
@@ -284,10 +315,18 @@ export async function removeMessage(
   messageId: string,
 ): Promise<void> {
   const accessToken = await getCurrentAccessToken();
+  return removeMessageWithAccessToken(month, messageId, accessToken);
+}
+
+export async function removeMessageWithAccessToken(
+  month: string,
+  messageId: string,
+  accessToken: string,
+): Promise<void> {
   let snapshot: MonthSnapshot | undefined = await getCachedMonthSnapshot(month);
 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-    snapshot ??= await readMonthSnapshot(month, accessToken);
+    snapshot ??= await readWritableMonthSnapshot(month, accessToken, messageId);
     if (snapshot.state === "missing") return;
     const chunkPosition = snapshot.chunks.findIndex((chunk) =>
       chunk.document.messages.some(
@@ -363,7 +402,20 @@ export async function resolveMessageConflict(
   messageId: string,
   keepItemId: string,
 ): Promise<MonthReadResult> {
-  const accessToken = await getCurrentAccessToken();
+  return resolveMessageConflictWithAccessToken(
+    month,
+    messageId,
+    keepItemId,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function resolveMessageConflictWithAccessToken(
+  month: string,
+  messageId: string,
+  keepItemId: string,
+  accessToken: string,
+): Promise<MonthReadResult> {
   const snapshot = await readMonthSnapshot(month, accessToken, true);
   if (snapshot.state === "missing") {
     throw new Error("The conflicting message no longer exists.");
@@ -371,7 +423,7 @@ export async function resolveMessageConflict(
   const conflict = snapshot.messageConflicts?.find(
     (item) => item.messageId === messageId,
   );
-  if (!conflict) return readMonthDocument(month);
+  if (!conflict) return monthSnapshotResult(snapshot);
   if (!conflict.versions.some((version) => version.itemId === keepItemId)) {
     throw new Error("The selected message version no longer exists.");
   }
@@ -409,7 +461,24 @@ export async function resolveMessageConflict(
   }
 
   await deleteMonthCache(month);
-  return readMonthDocument(month);
+  const resolved = await readMonthSnapshot(month, accessToken, true);
+  return monthSnapshotResult(resolved);
+}
+
+function monthSnapshotResult(snapshot: MonthSnapshot): MonthReadResult {
+  if (snapshot.state === "missing") return snapshot;
+  return {
+    state: "loaded",
+    month: snapshot.month,
+    eTag: snapshot.eTag,
+    messages: snapshot.document.messages,
+    ...((snapshot.corruptFiles?.length ?? 0) > 0
+      ? { corruptFiles: snapshot.corruptFiles }
+      : {}),
+    ...((snapshot.messageConflicts?.length ?? 0) > 0
+      ? { messageConflicts: snapshot.messageConflicts }
+      : {}),
+  };
 }
 
 export function mergeTextMessage(
@@ -568,6 +637,38 @@ function createChunk(
       body,
     },
   );
+}
+
+async function readWritableMonthSnapshot(
+  month: string,
+  accessToken: string,
+  targetMessageId: string,
+): Promise<MonthSnapshot> {
+  const snapshot = await readMonthSnapshot(month, accessToken, true);
+  const conflict =
+    snapshot.state === "loaded"
+      ? snapshot.messageConflicts?.find(
+          (item) => item.messageId === targetMessageId,
+        )
+      : undefined;
+  if (conflict) {
+    throw new Error(
+      `OneDrive contains conflicting versions of message ${conflict.messageId}.`,
+    );
+  }
+  return snapshot;
+}
+
+function nextAvailableChunkIndex(snapshot: MonthSnapshot): number {
+  const healthyIndexes =
+    snapshot.state === "loaded"
+      ? snapshot.chunks.map((chunk) => chunk.index)
+      : [];
+  const damagedIndexes = (snapshot.corruptFiles ?? [])
+    .map((file) => file.name.match(/^(\d{4})\.json$/u)?.[1])
+    .filter((value): value is string => value !== undefined)
+    .map(Number);
+  return Math.max(0, ...healthyIndexes, ...damagedIndexes) + 1;
 }
 
 function serializedBytes(

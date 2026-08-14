@@ -4,13 +4,14 @@ import { oneDropConfig } from "../../config/onedrop";
 import { tombstoneDocumentSchema } from "../../domain/tombstone";
 import type { Message } from "../../domain/message";
 import type { CorruptMonthFile } from "../../contracts/runtime-messages";
-import { getCurrentAccessToken } from "../../features/auth/auth-service";
+import { getOneDriveRuntime } from "../../platform/onedrive-runtime";
 import { readGraphError } from "../graph/graph-error";
 import { deleteMonthCache } from "../indexed-db/sync-cache";
 import { readRawMonthArchive } from "./month-archive";
 import { recordRewrittenArchive } from "./archive-scheduler";
 import { readMonthSnapshot } from "./month-reader";
 import { serializeMonthDocument } from "./month-serialization";
+import { enqueueDeletedDataMaintenance } from "./deleted-data-coordinator";
 
 const STORAGE_KEY = "onedrop.deleted-data-cleanup.v2";
 const ATTACHMENT_GRACE_PERIOD_MS = 10 * 24 * 60 * 60 * 1_000;
@@ -45,8 +46,9 @@ class DeferredCleanupError extends Error {}
 
 export async function checkAttachmentCleanup(
   now = new Date(),
+  forceScan = false,
 ): Promise<number> {
-  return (await scheduleCleanup(now, false)).attachments;
+  return (await scheduleCleanup(now, false, forceScan)).attachments;
 }
 
 export async function cleanDeletedDataNow(
@@ -60,17 +62,20 @@ export async function cleanDeletedDataNow(
       // The manual run below is an explicit retry with no grace or throttle.
     }
   }
-  return scheduleCleanup(now, true);
+  return scheduleCleanup(now, true, true);
 }
 
 function scheduleCleanup(
   now: Date,
   manual: boolean,
+  forceScan: boolean,
 ): Promise<DeletedDataCleanupSummary> {
   const existing = runningCheck;
   if (existing) return existing;
   const generation = cleanupGeneration;
-  const check = runScheduledCheck(now, generation, manual).finally(() => {
+  const check = enqueueDeletedDataMaintenance(() =>
+    runScheduledCheck(now, generation, manual, forceScan),
+  ).finally(() => {
     if (runningCheck === check) runningCheck = undefined;
   });
   runningCheck = check;
@@ -80,24 +85,26 @@ function scheduleCleanup(
 export async function resetAttachmentCleanup(): Promise<void> {
   cleanupGeneration += 1;
   runningCheck = undefined;
-  await browser.storage.local.remove(STORAGE_KEY);
+  await getOneDriveRuntime().storage.remove(STORAGE_KEY);
 }
 
 async function runScheduledCheck(
   now: Date,
   generation: number,
   manual: boolean,
+  forceScan: boolean,
 ): Promise<DeletedDataCleanupSummary> {
   const state = await readState();
   if (
     !manual &&
+    !forceScan &&
     state.lastScanAt &&
     now.getTime() - Date.parse(state.lastScanAt) < SCAN_INTERVAL_MS
   ) {
     return { messages: 0, attachments: 0 };
   }
 
-  const accessToken = await getCurrentAccessToken();
+  const accessToken = await getOneDriveRuntime().getAccessToken();
   const tombstones = await listTombstones(accessToken);
   assertCurrentGeneration(generation);
   const deletedIdsByMonth = new Map<string, Set<string>>();
@@ -113,11 +120,17 @@ async function runScheduledCheck(
     if (!manual && inspected >= MAX_ITEMS_PER_SCAN) break;
     const key = `${tombstone.originalMonth}:${tombstone.messageId}`;
     if (state.completed[key]) continue;
-    if (
-      !manual &&
-      now.getTime() - Date.parse(tombstone.deletedAt) <
-        ATTACHMENT_GRACE_PERIOD_MS
-    ) {
+    const eligibleAt =
+      tombstone.recovery?.mode === "disabled"
+        ? Date.parse(tombstone.deletedAt)
+        : tombstone.recovery?.mode === "retention" &&
+            tombstone.recovery.retention === "forever"
+          ? Number.POSITIVE_INFINITY
+          : tombstone.recovery?.mode === "retention" &&
+              tombstone.recovery.recoverableUntil
+            ? Date.parse(tombstone.recovery.recoverableUntil)
+            : Date.parse(tombstone.deletedAt) + ATTACHMENT_GRACE_PERIOD_MS;
+    if (!manual && now.getTime() < eligibleAt) {
       continue;
     }
     inspected += 1;
@@ -572,12 +585,12 @@ async function listTombstones(
 }
 
 async function readState(): Promise<CleanupState> {
-  const value = (await browser.storage.local.get(STORAGE_KEY))[STORAGE_KEY];
+  const value = await getOneDriveRuntime().storage.get(STORAGE_KEY);
   return cleanupStateSchema.parse(value ?? {});
 }
 
 async function writeState(state: CleanupState): Promise<void> {
-  await browser.storage.local.set({ [STORAGE_KEY]: state });
+  await getOneDriveRuntime().storage.set(STORAGE_KEY, state);
 }
 
 function assertCurrentGeneration(generation: number): void {

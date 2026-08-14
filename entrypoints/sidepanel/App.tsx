@@ -43,6 +43,7 @@ import {
   deleteDownloadRecord,
   getDownloadRecord,
   markDownloadOpened,
+  putDownloadRecord,
 } from "../../src/infrastructure/indexed-db/downloads";
 import { getMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
 import { getUtcMonth } from "../../src/features/messages/month";
@@ -2857,6 +2858,31 @@ function UploadProgressRing({ progress }: { progress: number }) {
   );
 }
 
+function DownloadProgressRing({ progress }: { progress: number }) {
+  const normalizedProgress = Math.max(0, Math.min(100, progress));
+  return (
+    <svg
+      aria-label="Download progress"
+      aria-valuemax={100}
+      aria-valuemin={0}
+      aria-valuenow={Math.floor(normalizedProgress)}
+      className="download-progress-ring"
+      role="progressbar"
+      viewBox="0 0 20 20"
+    >
+      <circle className="download-progress-ring-track" cx="10" cy="10" r="8" />
+      <circle
+        className="download-progress-ring-value"
+        cx="10"
+        cy="10"
+        pathLength="100"
+        r="8"
+        style={{ strokeDashoffset: 100 - normalizedProgress }}
+      />
+    </svg>
+  );
+}
+
 function RetryIcon() {
   return (
     <svg aria-hidden="true" className="retry-icon" viewBox="0 0 16 16">
@@ -3317,15 +3343,21 @@ export function CommittedMessageItem({
   const [attachmentOperationError, setAttachmentOperationError] =
     useState<string>();
   const [localDownloadId, setLocalDownloadId] = useState<number | null>();
+  const [downloadProgress, setDownloadProgress] = useState<number>();
   const [imagePreviewDataUrl, setImagePreviewDataUrl] = useState<string>();
+  const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false);
   const [cloudAvailability, setCloudAvailability] = useState<
     "checking" | "available" | "missing" | "unknown"
   >(message.type === "file" ? "checking" : "unknown");
   const shellRef = useRef<HTMLDivElement>(null);
   const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const mobileDownloadControllerRef = useRef<AbortController | undefined>(
+    undefined,
+  );
   const isAttachment = message.type === "file";
   const isImage =
     isAttachment && message.attachment.mimeType.startsWith("image/");
+  const isMobileSurface = document.body.classList.contains("mobile-surface");
   const isCloudChecking = cloudAvailability === "checking";
   const isCloudMissing = cloudAvailability === "missing";
   const attachmentDriveItemId =
@@ -3333,18 +3365,20 @@ export function CommittedMessageItem({
 
   useEffect(() => {
     let active = true;
-    if (message.type !== "file") return;
+    if (!isAttachment || message.type !== "file") return;
     void getDownloadRecord(message.attachment.driveItemId)
       .then(async (record) => {
         if (!record) {
-          if (active) setLocalDownloadId(null);
+          if (active) {
+            setLocalDownloadId(null);
+            if (isMobileSurface) {
+              void resumeMobileDownloadIfPresent();
+            }
+          }
           return;
         }
-        const [download] = await browser.downloads.search({
-          id: record.downloadId,
-        });
-        const isAvailable =
-          download?.state === "complete" && download.exists !== false;
+        const download = await verifyLocalDownload(record.downloadId);
+        const isAvailable = Boolean(download);
         if (!isAvailable) {
           await deleteDownloadRecord(message.attachment.driveItemId);
           if (active) setLocalDownloadId(null);
@@ -3358,7 +3392,7 @@ export function CommittedMessageItem({
     return () => {
       active = false;
     };
-  }, [attachmentDriveItemId]);
+  }, [attachmentDriveItemId, isAttachment, isMobileSurface]);
 
   useEffect(() => {
     if (attachmentDriveItemId) setCloudAvailability("checking");
@@ -3385,6 +3419,47 @@ export function CommittedMessageItem({
   ) {
     if (message.type !== "file") return;
     try {
+      if (isMobileSurface) {
+        const controller = new AbortController();
+        mobileDownloadControllerRef.current = controller;
+        const response = await sendRequest({
+          type: "files/prepare-mobile-download",
+          attachment: message.attachment,
+        });
+        if (
+          !response.ok ||
+          response.type !== "files/mobile-download" ||
+          !response.download
+        ) {
+          throw new Error("OneDrop could not prepare the download.");
+        }
+        setDownloadProgress(0);
+        location.assign(response.download.sourceUrl);
+        const completed = await waitForMobileNavigationDownload(
+          message.attachment.driveItemId,
+          controller.signal,
+          setDownloadProgress,
+        );
+        const downloadId = completed.downloadId;
+        if (downloadId === undefined) {
+          throw new Error("Edge did not provide a completed download record.");
+        }
+        setDownloadProgress(100);
+        const [download] = await browser.downloads.search({ id: downloadId });
+        await putDownloadRecord({
+          driveItemId: message.attachment.driveItemId,
+          downloadId,
+          cloudName: message.attachment.name,
+          ...(download?.filename ? { localFilename: download.filename } : {}),
+          createdAt: new Date().toISOString(),
+        });
+        setLocalDownloadId(downloadId);
+        await sendRequest({
+          type: "files/clear-mobile-download",
+          driveItemId: message.attachment.driveItemId,
+        });
+        return;
+      }
       const response = await sendRequest({
         type: saveAs ? "files/save-as" : "files/open-local",
         attachment: message.attachment,
@@ -3395,18 +3470,114 @@ export function CommittedMessageItem({
       } else {
         throw new Error("Unexpected local file response.");
       }
-    } catch {
+    } catch (cause) {
+      if (cause instanceof DOMException && cause.name === "AbortError") return;
       setAttachmentOperationError(
-        saveAs
-          ? "Couldn’t save this file."
-          : "Download failed. Please try again.",
+        isMobileSurface && cause instanceof Error
+          ? cause.message
+          : saveAs
+            ? "Couldn’t save this file."
+            : "Download failed. Please try again.",
       );
     } finally {
+      mobileDownloadControllerRef.current = undefined;
+      setDownloadProgress(undefined);
       setIsAttachmentWorking(false);
     }
   }
 
-  function runAttachmentAction(saveAs: boolean) {
+  function cancelMobileDownload() {
+    mobileDownloadControllerRef.current?.abort(
+      new DOMException("Download canceled", "AbortError"),
+    );
+    if (message.type === "file") {
+      void sendRequest({
+        type: "files/cancel-mobile-download",
+        driveItemId: message.attachment.driveItemId,
+      }).catch(() => undefined);
+    }
+  }
+
+  async function resumeMobileDownloadIfPresent() {
+    if (message.type !== "file" || mobileDownloadControllerRef.current) return;
+    try {
+      const response = await sendRequest({
+        type: "files/mobile-download-status",
+        driveItemId: message.attachment.driveItemId,
+      });
+      if (
+        !response.ok ||
+        response.type !== "files/mobile-download" ||
+        !response.download
+      ) {
+        return;
+      }
+      if (
+        response.download.state === "failed" ||
+        response.download.state === "cancelled"
+      ) {
+        setAttachmentOperationError(
+          response.download.error ?? "Download failed.",
+        );
+        await sendRequest({
+          type: "files/clear-mobile-download",
+          driveItemId: message.attachment.driveItemId,
+        });
+        return;
+      }
+      const controller = new AbortController();
+      mobileDownloadControllerRef.current = controller;
+      setIsAttachmentWorking(true);
+      setDownloadProgress(
+        response.download.totalBytes > 0
+          ? Math.min(
+              99,
+              (response.download.bytesReceived / response.download.totalBytes) *
+                100,
+            )
+          : 0,
+      );
+      const completed =
+        response.download.state === "complete"
+          ? response.download
+          : await waitForMobileNavigationDownload(
+              message.attachment.driveItemId,
+              controller.signal,
+              setDownloadProgress,
+            );
+      if (completed.downloadId === undefined) return;
+      const [download] = await browser.downloads.search({
+        id: completed.downloadId,
+      });
+      await putDownloadRecord({
+        driveItemId: message.attachment.driveItemId,
+        downloadId: completed.downloadId,
+        cloudName: message.attachment.name,
+        ...(download?.filename ? { localFilename: download.filename } : {}),
+        createdAt: new Date().toISOString(),
+      });
+      setLocalDownloadId(completed.downloadId);
+      await sendRequest({
+        type: "files/clear-mobile-download",
+        driveItemId: message.attachment.driveItemId,
+      });
+    } catch (cause) {
+      if (!(cause instanceof DOMException && cause.name === "AbortError")) {
+        setAttachmentOperationError(
+          cause instanceof Error ? cause.message : "Download failed.",
+        );
+      }
+    } finally {
+      mobileDownloadControllerRef.current = undefined;
+      setDownloadProgress(undefined);
+      setIsAttachmentWorking(false);
+    }
+  }
+
+  function runAttachmentAction(
+    saveAs: boolean,
+    source: "control" | "bubble" = "control",
+  ) {
     if (message.type !== "file" || isAttachmentWorking || isCloudMissing) {
       return;
     }
@@ -3417,14 +3588,17 @@ export function CommittedMessageItem({
       const downloadId = localDownloadId;
       void (async () => {
         try {
-          const [download] = await browser.downloads.search({ id: downloadId });
-          const isMissing =
-            !download ||
-            download.exists === false ||
-            download.state === "interrupted";
+          const download = await verifyLocalDownload(downloadId);
+          const isMissing = !download;
 
           if (isMissing) {
-            await markLocalAttachmentMissing();
+            await deleteDownloadRecord(message.attachment.driveItemId);
+            setLocalDownloadId(null);
+            if (source === "bubble") {
+              await requestAttachmentDownload(false, true);
+            } else {
+              await markLocalAttachmentMissing();
+            }
             return;
           }
 
@@ -3472,13 +3646,8 @@ export function CommittedMessageItem({
     setIsAttachmentWorking(true);
     setIsMenuOpen(false);
     try {
-      const [download] = await browser.downloads.search({
-        id: localDownloadId,
-      });
-      const isMissing =
-        !download ||
-        download.exists === false ||
-        download.state === "interrupted";
+      const download = await verifyLocalDownload(localDownloadId);
+      const isMissing = !download;
       if (isMissing) {
         await markLocalAttachmentMissing();
         return;
@@ -3516,7 +3685,8 @@ export function CommittedMessageItem({
   function handleBubbleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     if (!isAttachment || (event.key !== "Enter" && event.key !== " ")) return;
     event.preventDefault();
-    runAttachmentAction(false);
+    if (isImage && imagePreviewDataUrl) setIsImagePreviewOpen(true);
+    else runAttachmentAction(false, "bubble");
   }
 
   return (
@@ -3540,7 +3710,11 @@ export function CommittedMessageItem({
                 ) {
                   return;
                 }
-                runAttachmentAction(false);
+                if (isImage && imagePreviewDataUrl && isMobileSurface) {
+                  setIsImagePreviewOpen(true);
+                } else {
+                  runAttachmentAction(false, "bubble");
+                }
               }
             : undefined
         }
@@ -3568,6 +3742,25 @@ export function CommittedMessageItem({
         )}
       </div>
       <span className="message-primary-actions message-primary-actions-ready">
+        {isMobileSurface && downloadProgress !== undefined ? (
+          <button
+            aria-label="Cancel download"
+            className="message-local-button mobile-download-cancel-button"
+            onClick={(event) => {
+              event.stopPropagation();
+              cancelMobileDownload();
+            }}
+            type="button"
+          >
+            <svg
+              aria-hidden="true"
+              className="cancel-upload-icon"
+              viewBox="0 0 20 20"
+            >
+              <rect height="11.5" rx="2.3" width="11.5" x="4.25" y="4.25" />
+            </svg>
+          </button>
+        ) : null}
         {message.type === "file" &&
         !isCloudChecking &&
         !isCloudMissing &&
@@ -3576,11 +3769,14 @@ export function CommittedMessageItem({
             aria-label={
               localDownloadId === null ? "Download file" : "Open file"
             }
-            className="message-local-button"
+            className={`message-local-button${downloadProgress !== undefined ? " message-local-button-working" : ""}`}
+            disabled={isAttachmentWorking}
             onClick={() => runAttachmentAction(false)}
             type="button"
           >
-            {localDownloadId === null ? (
+            {downloadProgress !== undefined ? (
+              <DownloadProgressRing progress={downloadProgress} />
+            ) : localDownloadId === null ? (
               <DownloadLocalIcon />
             ) : (
               <OpenLocalIcon />
@@ -3629,13 +3825,15 @@ export function CommittedMessageItem({
                 Open in OneDrive
               </button>
             ) : null}
-            <button
-              onClick={() => runAttachmentAction(true)}
-              role="menuitem"
-              type="button"
-            >
-              Save as
-            </button>
+            {!isMobileSurface ? (
+              <button
+                onClick={() => runAttachmentAction(true)}
+                role="menuitem"
+                type="button"
+              >
+                Save as
+              </button>
+            ) : null}
             {localDownloadId === null ? (
               <button
                 onClick={() => void openAttachmentInOneDrive()}
@@ -3681,6 +3879,33 @@ export function CommittedMessageItem({
           Delete
         </button>
       </FloatingActionsMenu>
+      {isImagePreviewOpen && imagePreviewDataUrl
+        ? createPortal(
+            <div
+              aria-label={`Preview ${message.type === "file" ? message.attachment.name : "image"}`}
+              aria-modal="true"
+              className="mobile-image-preview"
+              onClick={() => setIsImagePreviewOpen(false)}
+              role="dialog"
+            >
+              <button
+                aria-label="Close image preview"
+                onClick={() => setIsImagePreviewOpen(false)}
+                type="button"
+              >
+                <CloseIcon />
+              </button>
+              <img
+                alt={
+                  message.type === "file" ? message.attachment.name : "Image"
+                }
+                onClick={(event) => event.stopPropagation()}
+                src={imagePreviewDataUrl}
+              />
+            </div>,
+            document.body,
+          )
+        : null}
       {attachmentOperationError ? (
         <CenteredOperationDialog
           id={`attachment-operation-error-${message.id}`}
@@ -3690,6 +3915,50 @@ export function CommittedMessageItem({
       ) : null}
     </div>
   );
+}
+
+async function waitForMobileNavigationDownload(
+  driveItemId: string,
+  signal: AbortSignal,
+  onProgress: (progress: number) => void,
+) {
+  while (true) {
+    signal.throwIfAborted();
+    const response = await sendRequest({
+      type: "files/mobile-download-status",
+      driveItemId,
+    });
+    if (
+      !response.ok ||
+      response.type !== "files/mobile-download" ||
+      !response.download
+    ) {
+      throw new Error("OneDrop could not read the download status.");
+    }
+    const { download } = response;
+    if (download.state === "complete") return download;
+    if (download.state === "failed" || download.state === "cancelled") {
+      throw new Error(download.error ?? "Download failed.");
+    }
+    onProgress(
+      download.totalBytes > 0
+        ? Math.min(99, (download.bytesReceived / download.totalBytes) * 100)
+        : 0,
+    );
+    await new Promise<void>((resolve, reject) => {
+      const timer = window.setTimeout(finish, 250);
+      function finish() {
+        signal.removeEventListener("abort", abort);
+        resolve();
+      }
+      function abort() {
+        window.clearTimeout(timer);
+        signal.removeEventListener("abort", abort);
+        reject(signal.reason);
+      }
+      signal.addEventListener("abort", abort, { once: true });
+    });
+  }
 }
 
 function CenteredOperationDialog({
@@ -4635,6 +4904,20 @@ async function checkAttachmentAvailability(
   return undefined;
 }
 
+async function verifyLocalDownload(
+  downloadId: number,
+): Promise<Browser.downloads.DownloadItem | undefined> {
+  // The first query asks Edge to refresh DownloadItem.exists asynchronously.
+  // Read the item again after that refresh window before opening the local file.
+  await browser.downloads.search({ id: downloadId });
+  await delay(400);
+  const [download] = await browser.downloads.search({ id: downloadId });
+  if (!download || download.state !== "complete" || download.exists === false) {
+    return undefined;
+  }
+  return download;
+}
+
 type MessageGroup = {
   isOwn: boolean;
   senderKey: string;
@@ -4755,14 +5038,6 @@ function SignOutIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
       <path d="M8.3 3.5H4.7a1.5 1.5 0 0 0-1.5 1.5v10a1.5 1.5 0 0 0 1.5 1.5h3.6M11.2 6.2 15 10l-3.8 3.8M6.8 10H15" />
-    </svg>
-  );
-}
-
-function TestDataIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20">
-      <path d="M7 3.5h6M8 3.5v4l-4.2 7.1a1.3 1.3 0 0 0 1.1 1.9h10.2a1.3 1.3 0 0 0 1.1-1.9L12 7.5v-4M6.1 12h7.8" />
     </svg>
   );
 }

@@ -1055,6 +1055,29 @@ body {
   pointer-events: auto;
 }
 
+.message-local-button.message-local-button-working:disabled {
+  color: #75aef8;
+  cursor: progress;
+  opacity: 1;
+  pointer-events: none;
+}
+
+.message-local-button.mobile-download-cancel-button {
+  border: 1px solid rgb(48 119 212 / 32%);
+  border-radius: 50%;
+  color: #3077d4;
+  background: rgb(48 119 212 / 10%);
+  cursor: pointer;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.message-local-button.mobile-download-cancel-button:hover,
+.message-local-button.mobile-download-cancel-button:focus-visible {
+  color: #75aef8;
+  background: rgb(48 119 212 / 18%);
+}
+
 .message-more-button:hover,
 .message-more-button:focus-visible,
 .message-local-button:hover,
@@ -2875,6 +2898,30 @@ body {
 .upload-progress-ring-value {
   fill: none;
   stroke-width: 2;
+}
+
+.download-progress-ring {
+  width: 18px;
+  height: 18px;
+  overflow: visible;
+  transform: rotate(-90deg);
+}
+
+.download-progress-ring-track,
+.download-progress-ring-value {
+  fill: none;
+  stroke-width: 2;
+}
+
+.download-progress-ring-track {
+  stroke: rgb(48 119 212 / 25%);
+}
+
+.download-progress-ring-value {
+  stroke: #3077d4;
+  stroke-dasharray: 100;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 100ms linear;
 }
 
 .upload-progress-ring-track {

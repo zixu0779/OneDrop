@@ -367,6 +367,8 @@ describe("file transfer failure UI", () => {
     const search = vi
       .fn()
       .mockResolvedValueOnce([{ id: 42, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 42, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 42, state: "complete", exists: true }])
       .mockResolvedValueOnce([{ id: 42, state: "complete", exists: false }]);
     const open = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("browser", {
@@ -454,9 +456,11 @@ describe("file transfer failure UI", () => {
       />,
     );
 
+    await screen.findByRole("button", { name: "Open file" });
     fireEvent.click(
-      await screen.findByRole("button", { name: "More message actions" }),
+      screen.getByRole("button", { name: "More message actions" }),
     );
+    await screen.findByRole("menuitem", { name: "Open in OneDrive" });
     const actions = screen
       .getAllByRole("menuitem")
       .map((item) => item.textContent);
@@ -479,6 +483,8 @@ describe("file transfer failure UI", () => {
     const search = vi
       .fn()
       .mockResolvedValueOnce([{ id: 43, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 43, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 43, state: "complete", exists: true }])
       .mockResolvedValueOnce([{ id: 43, state: "complete", exists: false }]);
     const sendMessage = vi.fn().mockResolvedValue({
       ok: true,
@@ -491,8 +497,9 @@ describe("file transfer failure UI", () => {
     });
 
     renderDownloadedFile("missing-local-file", "missing.pdf");
+    await screen.findByRole("button", { name: "Open file" });
     fireEvent.click(
-      await screen.findByRole("button", { name: "More message actions" }),
+      screen.getByRole("button", { name: "More message actions" }),
     );
     fireEvent.click(screen.getByRole("menuitem", { name: "Open" }));
 
@@ -520,6 +527,8 @@ describe("file transfer failure UI", () => {
     const search = vi
       .fn()
       .mockResolvedValueOnce([{ id: 44, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 44, state: "complete", exists: true }])
+      .mockResolvedValueOnce([{ id: 44, state: "complete", exists: true }])
       .mockResolvedValueOnce([{ id: 44, state: "complete", exists: false }]);
     const sendMessage = vi.fn().mockResolvedValue({
       ok: true,
@@ -532,8 +541,9 @@ describe("file transfer failure UI", () => {
     });
 
     renderDownloadedFile("missing-folder-file", "missing-folder.pdf");
+    await screen.findByRole("button", { name: "Open file" });
     fireEvent.click(
-      await screen.findByRole("button", { name: "More message actions" }),
+      screen.getByRole("button", { name: "More message actions" }),
     );
     fireEvent.click(screen.getByRole("menuitem", { name: "Show in folder" }));
 
@@ -615,8 +625,9 @@ describe("file transfer failure UI", () => {
     });
 
     renderDownloadedFile("stale-folder-file", "stale-folder.pdf");
+    await screen.findByRole("button", { name: "Open file" });
     fireEvent.click(
-      await screen.findByRole("button", { name: "More message actions" }),
+      screen.getByRole("button", { name: "More message actions" }),
     );
     fireEvent.click(screen.getByRole("menuitem", { name: "Show in folder" }));
 

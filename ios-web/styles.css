@@ -1,0 +1,46 @@
+.ios-surface {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.ios-surface .shell {
+  height: 100dvh;
+}
+
+.ios-surface textarea,
+.ios-surface input,
+.ios-surface button {
+  touch-action: manipulation;
+}
+
+/* Keep the established message scale, but make the two information-dense
+   surfaces easier to read at a normal iPhone viewing distance. */
+.ios-surface .corrupt-record-notice {
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.ios-surface .corrupt-record-actions button,
+.ios-surface .conflict-record-actions button {
+  font-size: 13px;
+}
+
+.ios-surface .account-popover-identity strong {
+  font-size: 14px;
+}
+
+.ios-surface .account-popover-identity small,
+.ios-surface .account-switcher-empty {
+  font-size: 12px;
+}
+
+.ios-surface .account-section-label {
+  font-size: 11px;
+}
+
+.ios-surface .account-menu-action {
+  font-size: 13px;
+}
+
+.ios-surface .account-menu-action small {
+  font-size: 10px;
+}

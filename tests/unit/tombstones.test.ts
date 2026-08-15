@@ -9,7 +9,10 @@ vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
 }));
 
 import { deleteMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
-import { writeMessageTombstone } from "../../src/infrastructure/onedrive/tombstones";
+import {
+  removeMessageTombstoneWithAccessToken,
+  writeMessageTombstone,
+} from "../../src/infrastructure/onedrive/tombstones";
 
 const messageId = "01989f5e-7700-7000-8000-000000000001";
 
@@ -105,5 +108,51 @@ describe("message tombstones", () => {
         (item: { messageId: string }) => item.messageId,
       ),
     ).toEqual([otherMessageId, messageId]);
+  });
+
+  it("restores a message by removing its tombstone with an ETag guard", async () => {
+    const otherMessageId = "01989f5e-7700-7000-8000-000000000002";
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({ id: "tombstone-file", eTag: "restore-etag" }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          schemaVersion: 1,
+          month: "2026-08",
+          tombstones: [
+            {
+              schemaVersion: 1,
+              messageId,
+              originalMonth: "2026-08",
+              deletedAt: "2026-08-09T00:00:00.000Z",
+            },
+            {
+              schemaVersion: 1,
+              messageId: otherMessageId,
+              originalMonth: "2026-08",
+              deletedAt: "2026-08-10T00:00:00.000Z",
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(Response.json({ id: "tombstone-file" }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await removeMessageTombstoneWithAccessToken(
+      "2026-08",
+      messageId,
+      "access-token",
+    );
+
+    const update = fetchMock.mock.calls[2]!;
+    expect(update[1]?.headers).toMatchObject({ "If-Match": "restore-etag" });
+    expect(
+      JSON.parse(String(update[1]?.body)).tombstones.map(
+        (item: { messageId: string }) => item.messageId,
+      ),
+    ).toEqual([otherMessageId]);
+    expect(deleteMonthCache).toHaveBeenCalledWith("2026-08");
   });
 });

@@ -7,12 +7,12 @@ describe("parseAppFolder", () => {
     expect(
       parseAppFolder({
         id: "drive-item-id",
-        name: "OneDrop Development",
+        name: "OneDrop",
         webUrl: "https://example.com/Apps/OneDrop",
       }),
     ).toEqual({
       id: "drive-item-id",
-      name: "OneDrop Development",
+      name: "OneDrop",
       webUrl: "https://example.com/Apps/OneDrop",
     });
   });
@@ -21,12 +21,12 @@ describe("parseAppFolder", () => {
     expect(
       parseAppFolder({
         id: "drive-item-id",
-        name: "OneDrop Development",
+        name: "OneDrop",
         specialFolder: { name: "approot" },
       }),
     ).toEqual({
       id: "drive-item-id",
-      name: "OneDrop Development",
+      name: "OneDrop",
     });
   });
 });

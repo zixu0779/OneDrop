@@ -1,4 +1,11 @@
 import type { Attachment, Message } from "../domain/message";
+import type { DeletedMessageItem } from "../domain/deleted-message";
+import type {
+  AccountSettings,
+  DevicePlatform,
+  DeviceSettings,
+} from "../domain/settings";
+import type { SettingsSnapshot } from "../infrastructure/onedrive/settings";
 
 export type AuthStatus =
   | { state: "unconfigured"; redirectUri: string }
@@ -15,6 +22,16 @@ export type RuntimeRequest =
   | { type: "auth/sign-in" }
   | { type: "auth/sign-out" }
   | { type: "device/id" }
+  | { type: "settings/read"; platform: DevicePlatform; deviceName: string }
+  | { type: "settings/save-account"; account: AccountSettings }
+  | { type: "settings/save-device"; device: DeviceSettings }
+  | {
+      type: "settings/copy-device";
+      sourceDeviceId: string;
+      platform: DevicePlatform;
+    }
+  | { type: "settings/reset-device"; platform: DevicePlatform }
+  | { type: "app/open-project" }
   | { type: "onedrive/verify-app-folder" }
   | { type: "onedrive/open-app-folder" }
   | { type: "messages/read-current-month" }
@@ -68,6 +85,12 @@ export type RuntimeRequest =
   | { type: "files/cancel-mobile-download"; driveItemId: string }
   | { type: "files/clear-mobile-download"; driveItemId: string }
   | { type: "deleted-data/clean-now" }
+  | { type: "deleted-data/read" }
+  | {
+      type: "deleted-data/restore";
+      messageId: string;
+      month: string;
+    }
   | {
       type: "files/open-local";
       attachment: Attachment;
@@ -132,6 +155,10 @@ export type FileTransferRuntimeEvent = {
 export type RuntimeResponse =
   | { ok: true; type: "auth/status"; status: AuthStatus }
   | { ok: true; type: "device/id"; deviceId: string }
+  | { ok: true; type: "settings/snapshot"; snapshot: SettingsSnapshot }
+  | { ok: true; type: "settings/account"; account: AccountSettings }
+  | { ok: true; type: "settings/device"; device: DeviceSettings }
+  | { ok: true; type: "app/project-opened" }
   | {
       ok: true;
       type: "onedrive/app-folder";
@@ -180,6 +207,17 @@ export type RuntimeResponse =
       type: "deleted-data/cleaned";
       messages: number;
       attachments: number;
+    }
+  | {
+      ok: true;
+      type: "deleted-data/items";
+      items: DeletedMessageItem[];
+    }
+  | {
+      ok: true;
+      type: "deleted-data/restored";
+      item: DeletedMessageItem;
+      result: MonthReadResult;
     }
   | {
       ok: true;

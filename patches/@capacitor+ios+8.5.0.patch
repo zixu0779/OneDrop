@@ -1,0 +1,18 @@
+diff --git a/node_modules/@capacitor/ios/Capacitor/Capacitor/CapacitorBridge.swift b/node_modules/@capacitor/ios/Capacitor/Capacitor/CapacitorBridge.swift
+index 2634363..4cdb798 100644
+--- a/node_modules/@capacitor/ios/Capacitor/Capacitor/CapacitorBridge.swift
++++ b/node_modules/@capacitor/ios/Capacitor/Capacitor/CapacitorBridge.swift
+@@ -663,11 +663,11 @@ open class CapacitorBridge: NSObject, CAPBridgeProtocol {
+     }
+
+     @objc public func triggerJSEvent(eventName: String, target: String) {
+-        self.eval(js: "window.Capacitor.triggerEvent('\(eventName)', '\(target)')")
++        self.eval(js: "window.Capacitor?.triggerEvent?.('\(eventName)', '\(target)')")
+     }
+
+     @objc public func triggerJSEvent(eventName: String, target: String, data: String) {
+-        self.eval(js: "window.Capacitor.triggerEvent('\(eventName)', '\(target)', \(data))")
++        self.eval(js: "window.Capacitor?.triggerEvent?.('\(eventName)', '\(target)', \(data))")
+     }
+
+     @objc public func triggerWindowJSEvent(eventName: String) {

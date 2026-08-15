@@ -1,6 +1,6 @@
 {
   "name": "onedrop",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "A serverless Microsoft Edge extension for sharing through a user's OneDrive.",
@@ -9,6 +9,10 @@
     "build": "wxt build --browser edge",
     "build:android": "wxt build --browser edge --config wxt.android.config.ts --filter-entrypoint mobile --filter-entrypoint background",
     "pack:android": "npm run build:android && node scripts/pack-android.mjs",
+    "postinstall": "patch-package",
+    "build:ios": "vite build --config vite.ios.config.ts",
+    "sync:ios": "npm run build:ios && cap sync ios",
+    "open:ios": "cap open ios",
     "zip": "wxt zip --browser edge",
     "compile": "wxt prepare && tsc --noEmit",
     "test": "vitest run",
@@ -18,6 +22,7 @@
     "format:check": "prettier --check ."
   },
   "dependencies": {
+    "@capacitor/core": "^8.5.0",
     "dexie": "4.4.4",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -25,18 +30,23 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.5.0",
+    "@capacitor/ios": "^8.5.0",
     "@eslint/js": "10.0.1",
     "@testing-library/jest-dom": "7.0.0",
     "@testing-library/react": "16.3.2",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
     "@wxt-dev/module-react": "1.2.2",
     "eslint": "10.8.0",
     "globals": "17.8.0",
     "jsdom": "29.1.1",
+    "patch-package": "^8.0.1",
     "prettier": "3.9.6",
     "typescript": "6.0.3",
     "typescript-eslint": "8.65.0",
+    "vite": "^8.2.1",
     "vitest": "4.1.10",
     "wxt": "0.21.3"
   },

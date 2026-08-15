@@ -12,6 +12,9 @@ vi.mock("../../src/infrastructure/onedrive/app-folder", () => ({
   verifyAppFolder: vi
     .fn()
     .mockResolvedValue({ id: "app-root", name: "OneDrop" }),
+  verifyAppFolderWithAccessToken: vi
+    .fn()
+    .mockResolvedValue({ id: "app-root", name: "OneDrop" }),
 }));
 vi.mock(
   "../../src/infrastructure/indexed-db/upload-throughput",
@@ -299,5 +302,53 @@ describe("uploadLargeFile", () => {
         signal: new AbortController().signal,
       }),
     ).resolves.toMatchObject({ driveItemId: "large-item" });
+  });
+
+  it("uploads images of at least 1 MiB in confirmed 640 KiB fragments", async () => {
+    throughput.getAverageUploadBytesPerSecond.mockResolvedValue(1024 * 1024);
+    throughput.recordUploadThroughput.mockResolvedValue(1024 * 1024);
+    const size = 1024 * 1024;
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const callIndex = fetchMock.mock.calls.length - 1;
+        if (callIndex < 4) {
+          return Response.json({
+            id: ["files", "year", "month", "message"][callIndex],
+            folder: {},
+          });
+        }
+        if (callIndex === 4) {
+          return Response.json({ uploadUrl: "https://upload.example/image" });
+        }
+        const range = (init?.headers as Record<string, string>)[
+          "Content-Range"
+        ];
+        const end = Number(/bytes \d+-(\d+)\//u.exec(range!)?.[1]);
+        return end === size - 1
+          ? Response.json(
+              { id: "image-item", name: "photo.jpg", size },
+              { status: 201 },
+            )
+          : Response.json({}, { status: 202 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await uploadLargeFile({
+      name: "photo.jpg",
+      mimeType: "image/jpeg",
+      size,
+      blob: new Blob([new Uint8Array(size)]),
+      messageId: "01989f5e-7700-7000-8000-000000000001",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      signal: new AbortController().signal,
+    });
+
+    expect(fetchMock.mock.calls[5]?.[1]?.headers).toMatchObject({
+      "Content-Range": `bytes 0-${640 * 1024 - 1}/${size}`,
+    });
+    expect(fetchMock.mock.calls[6]?.[1]?.headers).toMatchObject({
+      "Content-Range": `bytes ${640 * 1024}-${size - 1}/${size}`,
+    });
   });
 });

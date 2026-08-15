@@ -3,10 +3,19 @@ import type {
   RuntimeResponse,
 } from "../src/contracts/runtime-messages";
 import {
+  getCurrentAccessToken,
   getAuthStatus,
   signIn,
   signOut,
 } from "../src/features/auth/auth-service";
+import {
+  copyDevicePreferencesWithAccessToken,
+  readAccountSettingsWithAccessToken,
+  readSettingsWithAccessToken,
+  resetDevicePreferences,
+  saveAccountSettingsWithAccessToken,
+  saveDeviceSettingsWithAccessToken,
+} from "../src/infrastructure/onedrive/settings";
 import { verifyAppFolder } from "../src/infrastructure/onedrive/app-folder";
 import { createTextMessage } from "../src/features/messages/create-text-message";
 import { getUtcMonth } from "../src/features/messages/month";
@@ -16,6 +25,7 @@ import {
 } from "../src/infrastructure/onedrive/month-reader";
 import { appendTextMessage } from "../src/infrastructure/onedrive/month-writer";
 import { getOrCreateDeviceId } from "../src/features/device/device-service";
+import { appMetadata } from "../src/config/app";
 import {
   createFileMessage,
   createUploadingFileMessage,
@@ -28,7 +38,7 @@ import {
   uploadLargeFile,
   uploadSmallFile,
 } from "../src/infrastructure/onedrive/file-uploader";
-import { MAX_DIRECT_FILE_BYTES } from "../src/config/files";
+import { shouldUseUploadSession } from "../src/config/files";
 import { getPendingTransfer } from "../src/infrastructure/indexed-db/pending-transfers";
 import {
   appendMessage,
@@ -42,7 +52,7 @@ import {
   getCorruptMonthFileFolderUrl,
 } from "../src/infrastructure/onedrive/corrupt-month-file";
 import { deleteMonthCache } from "../src/infrastructure/indexed-db/sync-cache";
-import { writeMessageTombstone } from "../src/infrastructure/onedrive/tombstones";
+import { writeMessageTombstoneWithAccessToken } from "../src/infrastructure/onedrive/tombstones";
 import {
   checkArchiveTasks,
   dismissArchiveNotice,
@@ -54,6 +64,10 @@ import {
   checkAttachmentCleanup,
   resetAttachmentCleanup,
 } from "../src/infrastructure/onedrive/attachment-cleanup";
+import {
+  readDeletedMessages,
+  restoreDeletedMessage,
+} from "../src/infrastructure/onedrive/recycle-bin";
 import { enqueueMonthWrite } from "../src/infrastructure/onedrive/month-write-coordinator";
 import {
   cancelMobileNavigationDownload,
@@ -116,6 +130,70 @@ export default defineBackground(() => {
               type: "device/id",
               deviceId: await getOrCreateDeviceId(),
             };
+          case "settings/read": {
+            const accessToken = await getCurrentAccessToken();
+            const snapshot = await readSettingsWithAccessToken(
+              accessToken,
+              await getOrCreateDeviceId(),
+              request.platform,
+              request.deviceName,
+            );
+            return { ok: true, type: "settings/snapshot", snapshot };
+          }
+          case "settings/save-account":
+            return {
+              ok: true,
+              type: "settings/account",
+              account: await saveAccountSettingsWithAccessToken(
+                await getCurrentAccessToken(),
+                request.account,
+              ),
+            };
+          case "settings/save-device":
+            return {
+              ok: true,
+              type: "settings/device",
+              device: await saveDeviceSettingsWithAccessToken(
+                await getCurrentAccessToken(),
+                request.device,
+              ),
+            };
+          case "settings/copy-device": {
+            const token = await getCurrentAccessToken();
+            const snapshot = await readSettingsWithAccessToken(
+              token,
+              await getOrCreateDeviceId(),
+              request.platform,
+            );
+            return {
+              ok: true,
+              type: "settings/device",
+              device: await copyDevicePreferencesWithAccessToken(
+                token,
+                snapshot.device,
+                request.sourceDeviceId,
+              ),
+            };
+          }
+          case "settings/reset-device": {
+            const token = await getCurrentAccessToken();
+            const snapshot = await readSettingsWithAccessToken(
+              token,
+              await getOrCreateDeviceId(),
+              request.platform,
+            );
+            return {
+              ok: true,
+              type: "settings/device",
+              device: await saveDeviceSettingsWithAccessToken(
+                token,
+                resetDevicePreferences(snapshot.device),
+              ),
+            };
+          }
+          case "app/open-project":
+            await browser.tabs.create({ url: appMetadata.repositoryUrl });
+            return { ok: true, type: "app/project-opened" };
           case "onedrive/verify-app-folder":
             return {
               ok: true,
@@ -163,7 +241,18 @@ export default defineBackground(() => {
             return { ok: true, type: "archives/dismissed" };
           case "messages/delete":
             return enqueueMonthWrite(async () => {
-              await writeMessageTombstone(request.month, request.messageId);
+              const token = await getCurrentAccessToken();
+              const recycle = (await readAccountSettingsWithAccessToken(token))
+                .recycleBin;
+              await writeMessageTombstoneWithAccessToken(
+                request.month,
+                request.messageId,
+                token,
+                recycle,
+              );
+              void checkAttachmentCleanup(new Date(), true).catch(
+                () => undefined,
+              );
               return {
                 ok: true,
                 type: "messages/deleted",
@@ -243,7 +332,7 @@ export default defineBackground(() => {
 
             let attachment;
             try {
-              if (request.file.size > MAX_DIRECT_FILE_BYTES) {
+              if (shouldUseUploadSession(request.file)) {
                 const pending = await getPendingTransfer(request.messageId);
                 if (!pending || pending.blob.size !== request.file.size) {
                   throw new Error(
@@ -291,13 +380,43 @@ export default defineBackground(() => {
                 if (!request.file.base64) {
                   throw new Error("The selected file content is unavailable.");
                 }
-                attachment = await uploadSmallFile({
-                  ...request.file,
-                  base64: request.file.base64,
-                  messageId: request.messageId,
-                  createdAt: request.createdAt,
-                  ...(request.reuseExisting ? { reuseExisting: true } : {}),
-                });
+                if (cancelledFileUploads.has(request.messageId)) {
+                  throw new DOMException("Upload cancelled", "AbortError");
+                }
+                const controller = new AbortController();
+                activeFileUploads.set(request.messageId, controller);
+                try {
+                  attachment = await uploadSmallFile({
+                    ...request.file,
+                    base64: request.file.base64,
+                    messageId: request.messageId,
+                    createdAt: request.createdAt,
+                    signal: controller.signal,
+                    onProgress: (
+                      uploadedBytes,
+                      totalBytes,
+                      segmentEndBytes,
+                      averageUploadBytesPerSecond,
+                    ) => {
+                      void browser.runtime
+                        .sendMessage({
+                          type: "files/progress",
+                          messageId: request.messageId,
+                          uploadedBytes,
+                          segmentEndBytes,
+                          totalBytes,
+                          ...(averageUploadBytesPerSecond
+                            ? { averageUploadBytesPerSecond }
+                            : {}),
+                        })
+                        .catch(() => undefined);
+                    },
+                    ...(request.reuseExisting ? { reuseExisting: true } : {}),
+                  });
+                } finally {
+                  activeFileUploads.delete(request.messageId);
+                  cancelledFileUploads.delete(request.messageId);
+                }
               }
             } catch (error) {
               try {
@@ -446,6 +565,28 @@ export default defineBackground(() => {
               ...result,
             };
           }
+          case "deleted-data/read":
+            return {
+              ok: true,
+              type: "deleted-data/items",
+              items: await readDeletedMessages(),
+            };
+          case "deleted-data/restore":
+            return enqueueMonthWrite(async () => {
+              const item = await restoreDeletedMessage(
+                request.month,
+                request.messageId,
+              );
+              return {
+                ok: true,
+                type: "deleted-data/restored",
+                item,
+                result:
+                  request.month === getUtcMonth()
+                    ? await readMonthDocument(request.month)
+                    : await readHistoricalMonthDocument(request.month),
+              };
+            });
           case "files/open-local":
             return {
               ok: true,

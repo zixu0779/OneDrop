@@ -10,7 +10,16 @@ const parentSchema = z.object({
 const folderSchema = z.object({ webUrl: z.url() });
 
 export async function deleteCorruptMonthFile(itemId: string): Promise<void> {
-  const accessToken = await getCurrentAccessToken();
+  return deleteCorruptMonthFileWithAccessToken(
+    itemId,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function deleteCorruptMonthFileWithAccessToken(
+  itemId: string,
+  accessToken: string,
+): Promise<void> {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(itemId)}`,
     {
@@ -28,7 +37,16 @@ export async function deleteCorruptMonthFile(itemId: string): Promise<void> {
 export async function getCorruptMonthFileFolderUrl(
   itemId: string,
 ): Promise<string> {
-  const accessToken = await getCurrentAccessToken();
+  return getCorruptMonthFileFolderUrlWithAccessToken(
+    itemId,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function getCorruptMonthFileFolderUrlWithAccessToken(
+  itemId: string,
+  accessToken: string,
+): Promise<string> {
   const itemResponse = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(itemId)}?$select=parentReference`,
     { headers: { Authorization: `Bearer ${accessToken}` } },

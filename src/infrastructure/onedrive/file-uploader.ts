@@ -1,7 +1,11 @@
 import { z } from "zod";
 
 import { oneDropConfig } from "../../config/onedrop";
-import { MAX_DIRECT_FILE_BYTES } from "../../config/files";
+import {
+  getUploadChunkBytes,
+  MAX_DIRECT_FILE_BYTES,
+  shouldUseUploadSession,
+} from "../../config/files";
 import type { Attachment } from "../../domain/message";
 import { getCurrentAccessToken } from "../../features/auth/auth-service";
 import { readGraphError } from "../graph/graph-error";
@@ -9,7 +13,7 @@ import {
   getAverageUploadBytesPerSecond,
   recordUploadThroughput,
 } from "../indexed-db/upload-throughput";
-import { verifyAppFolder } from "./app-folder";
+import { verifyAppFolderWithAccessToken } from "./app-folder";
 
 const folderSchema = z.object({
   id: z.string().min(1),
@@ -43,7 +47,40 @@ export async function uploadSmallFile(input: {
   imageWidth?: number;
   imageHeight?: number;
   thumbHash?: string;
+  signal?: AbortSignal;
+  onProgress?: (
+    uploadedBytes: number,
+    totalBytes: number,
+    segmentEndBytes: number,
+    averageUploadBytesPerSecond?: number,
+  ) => void;
 }): Promise<Attachment> {
+  const accessToken = await getCurrentAccessToken();
+  return uploadSmallFileWithAccessToken(input, accessToken);
+}
+
+export async function uploadSmallFileWithAccessToken(
+  input: {
+    name: string;
+    mimeType: string;
+    size: number;
+    base64: string;
+    messageId: string;
+    createdAt: string;
+    reuseExisting?: boolean;
+    imageWidth?: number;
+    imageHeight?: number;
+    thumbHash?: string;
+    signal?: AbortSignal;
+    onProgress?: (
+      uploadedBytes: number,
+      totalBytes: number,
+      segmentEndBytes: number,
+      averageUploadBytesPerSecond?: number,
+    ) => void;
+  },
+  accessToken: string,
+): Promise<Attachment> {
   if (input.size > MAX_DIRECT_FILE_BYTES) {
     throw new Error("Large-file upload sessions are not implemented yet.");
   }
@@ -53,15 +90,20 @@ export async function uploadSmallFile(input: {
     throw new Error("The selected file changed before upload.");
   }
 
-  const controller = new AbortController();
-  let timeout = setTimeout(() => controller.abort(), FILE_OPERATION_TIMEOUT_MS);
+  const timeoutController = new AbortController();
+  const signal = input.signal
+    ? AbortSignal.any([timeoutController.signal, input.signal])
+    : timeoutController.signal;
+  let timeout = setTimeout(
+    () => timeoutController.abort(),
+    FILE_OPERATION_TIMEOUT_MS,
+  );
   try {
-    const accessToken = await getCurrentAccessToken();
     const parentId = await prepareUploadFolder(
       accessToken,
       input.createdAt,
       input.messageId,
-      controller.signal,
+      signal,
     );
 
     if (input.reuseExisting) {
@@ -70,7 +112,7 @@ export async function uploadSmallFile(input: {
         parentId,
         input.name,
         input.size,
-        controller.signal,
+        signal,
       );
       if (existing) {
         return {
@@ -88,13 +130,24 @@ export async function uploadSmallFile(input: {
     // Folder discovery can require several Graph round trips. Give the actual
     // content transfer its own timeout budget instead of sharing what remains.
     clearTimeout(timeout);
-    timeout = setTimeout(() => controller.abort(), FILE_OPERATION_TIMEOUT_MS);
+    timeout = setTimeout(
+      () => timeoutController.abort(),
+      FILE_OPERATION_TIMEOUT_MS,
+    );
 
+    let averageUploadBytesPerSecond: number | undefined;
+    try {
+      averageUploadBytesPerSecond = await getAverageUploadBytesPerSecond();
+    } catch {
+      // Local telemetry must never block an upload.
+    }
+    input.onProgress?.(0, input.size, input.size, averageUploadBytesPerSecond);
+    const uploadStartedAt = performance.now();
     const response = await fetch(
       `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(parentId)}:/${encodeURIComponent(input.name)}:/content`,
       {
         method: "PUT",
-        signal: controller.signal,
+        signal,
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": input.mimeType || "application/octet-stream",
@@ -105,6 +158,21 @@ export async function uploadSmallFile(input: {
     if (!response.ok) {
       throw new Error(`File upload failed: ${await readGraphError(response)}`);
     }
+    try {
+      averageUploadBytesPerSecond =
+        (await recordUploadThroughput(
+          input.size,
+          Math.max(performance.now() - uploadStartedAt, 1),
+        )) ?? averageUploadBytesPerSecond;
+    } catch {
+      // Keep the previous estimate if local telemetry cannot be persisted.
+    }
+    input.onProgress?.(
+      input.size,
+      input.size,
+      input.size,
+      averageUploadBytesPerSecond,
+    );
     const item = uploadedFileSchema.parse(await response.json());
     return {
       driveItemId: item.id,
@@ -116,7 +184,10 @@ export async function uploadSmallFile(input: {
       ...(input.thumbHash ? { thumbHash: input.thumbHash } : {}),
     };
   } catch (error) {
-    if (controller.signal.aborted) {
+    if (input.signal?.aborted) {
+      throw new DOMException("Upload cancelled", "AbortError");
+    }
+    if (timeoutController.signal.aborted) {
       throw new Error(
         "File upload timed out. Check your connection and Resend.",
         { cause: error },
@@ -147,14 +218,39 @@ export async function uploadLargeFile(input: {
     averageUploadBytesPerSecond?: number,
   ) => void;
 }): Promise<Attachment> {
-  if (input.size <= MAX_DIRECT_FILE_BYTES) {
-    throw new Error("Upload sessions are only used for large files.");
+  const accessToken = await getCurrentAccessToken();
+  return uploadLargeFileWithAccessToken(input, accessToken);
+}
+
+export async function uploadLargeFileWithAccessToken(
+  input: {
+    name: string;
+    mimeType: string;
+    size: number;
+    blob: Blob;
+    messageId: string;
+    createdAt: string;
+    reuseExisting?: boolean;
+    imageWidth?: number;
+    imageHeight?: number;
+    thumbHash?: string;
+    signal: AbortSignal;
+    onProgress?: (
+      uploadedBytes: number,
+      totalBytes: number,
+      segmentEndBytes: number,
+      averageUploadBytesPerSecond?: number,
+    ) => void;
+  },
+  accessToken: string,
+): Promise<Attachment> {
+  if (!shouldUseUploadSession(input)) {
+    throw new Error("This file does not require an upload session.");
   }
   if (input.blob.size !== input.size) {
     throw new Error("The selected file changed before upload.");
   }
 
-  const accessToken = await getCurrentAccessToken();
   const parentId = await prepareUploadFolder(
     accessToken,
     input.createdAt,
@@ -192,7 +288,7 @@ export async function uploadLargeFile(input: {
     );
   }
   const { uploadUrl } = uploadSessionSchema.parse(await sessionResponse.json());
-  const chunkSize = 5 * 1024 * 1024;
+  const chunkSize = getUploadChunkBytes(input);
   let uploadedBytes = 0;
   let averageUploadBytesPerSecond: number | undefined;
   try {
@@ -295,7 +391,7 @@ async function prepareUploadFolder(
   messageId: string,
   signal: AbortSignal,
 ): Promise<string> {
-  const root = await verifyAppFolder(signal);
+  const root = await verifyAppFolderWithAccessToken(accessToken, signal);
   const createdAt = new Date(createdAtValue);
   const folderNames = [
     "files",
@@ -348,17 +444,44 @@ export async function readImagePreview(
   driveItemId: string,
   mimeType: string,
 ): Promise<string> {
+  return readImagePreviewWithAccessToken(
+    driveItemId,
+    mimeType,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function readImagePreviewWithAccessToken(
+  driveItemId: string,
+  mimeType: string,
+  accessToken: string,
+): Promise<string> {
   if (!mimeType.startsWith("image/")) {
     throw new Error("OneDrop only creates inline previews for images.");
   }
-  return readAttachmentDataUrl(driveItemId, mimeType);
+  return readAttachmentDataUrlWithAccessToken(
+    driveItemId,
+    mimeType,
+    accessToken,
+  );
 }
 
 export async function readAttachmentDataUrl(
   driveItemId: string,
   mimeType: string,
 ): Promise<string> {
-  const accessToken = await getCurrentAccessToken();
+  return readAttachmentDataUrlWithAccessToken(
+    driveItemId,
+    mimeType,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function readAttachmentDataUrlWithAccessToken(
+  driveItemId: string,
+  mimeType: string,
+  accessToken: string,
+): Promise<string> {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}/content`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -376,7 +499,16 @@ export async function readAttachmentDataUrl(
 export async function getAttachmentDownloadUrl(
   driveItemId: string,
 ): Promise<string> {
-  const accessToken = await getCurrentAccessToken();
+  return getAttachmentDownloadUrlWithAccessToken(
+    driveItemId,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function getAttachmentDownloadUrlWithAccessToken(
+  driveItemId: string,
+  accessToken: string,
+): Promise<string> {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -392,7 +524,16 @@ export async function getAttachmentDownloadUrl(
 export async function getAttachmentWebUrl(
   driveItemId: string,
 ): Promise<string> {
-  const accessToken = await getCurrentAccessToken();
+  return getAttachmentWebUrlWithAccessToken(
+    driveItemId,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function getAttachmentWebUrlWithAccessToken(
+  driveItemId: string,
+  accessToken: string,
+): Promise<string> {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}?$select=webUrl`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
@@ -408,7 +549,16 @@ export async function getAttachmentWebUrl(
 export async function checkAttachmentExists(
   driveItemId: string,
 ): Promise<boolean> {
-  const accessToken = await getCurrentAccessToken();
+  return checkAttachmentExistsWithAccessToken(
+    driveItemId,
+    await getCurrentAccessToken(),
+  );
+}
+
+export async function checkAttachmentExistsWithAccessToken(
+  driveItemId: string,
+  accessToken: string,
+): Promise<boolean> {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}?$select=id,file,deleted`,
     { headers: { Authorization: `Bearer ${accessToken}` } },

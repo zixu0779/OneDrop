@@ -1,22 +1,20 @@
 # Authentication compatibility check
 
-Status: persistent sign-in and refresh-token rotation implemented for the development extension.
+Status: persistent sign-in and refresh-token rotation implemented for OneDrop.
 
 OneDrop is a public client and contains no client secret. The validation flow uses OAuth 2.0 Authorization Code with PKCE, initiated through `browser.identity.launchWebAuthFlow` in the MV3 service worker. Android Edge cannot create that identity window, so OneDrop opens the same SPA authorization request in a normal Edge tab, observes only its exact registered callback URI, and closes the tab after the callback arrives.
 
-## Register a development application
+## Microsoft Entra application
 
 1. Open the Microsoft Entra admin center and go to **Identity > Applications > App registrations**.
-2. Select **New registration**.
-3. Name it `OneDrop Development`.
-4. Select **Accounts in any organizational directory and personal Microsoft accounts**.
-5. Complete the registration and copy the **Application (client) ID**.
-6. In OneDrop's loaded Side Panel, copy the displayed Redirect URI. It has the form `https://<extension-id>.chromiumapp.org/auth`.
-7. In the Entra registration, open **Authentication > Add a platform > Single-page application** and add that exact URI.
-8. Under **API permissions**, add the Microsoft Graph delegated permission `Files.ReadWrite.AppFolder`. Retain the OpenID scopes requested dynamically by the application.
-9. Do not create a client secret.
+2. Select the `OneDrop` registration (application/client ID `1cef78e3-cd82-4c41-bd05-71e00bf1bd3f`).
+3. Keep **Accounts in any organizational directory and personal Microsoft accounts** enabled.
+4. Under **Authentication**, retain the desktop and Android **Single-page application** redirect URIs displayed by their respective builds.
+5. Retain the **iOS/macOS** platform with bundle ID `com.sycamore.onedrop` and redirect URI `msauth.com.sycamore.onedrop://auth`.
+6. Under **API permissions**, retain the Microsoft Graph delegated permission `Files.ReadWrite.AppFolder` and the OpenID scopes requested dynamically by the application.
+7. Do not create a client secret.
 
-The redirect URI must match exactly, including the `/auth` path. A separately packaged production extension will have a different stable extension ID and should use a separate production registration.
+Every redirect URI must match exactly. A newly packaged browser build with a different stable extension ID must have its exact `https://<extension-id>.chromiumapp.org/auth` URI added to this registration before release.
 
 ## Configure the local build
 

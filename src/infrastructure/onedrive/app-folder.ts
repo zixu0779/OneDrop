@@ -20,6 +20,13 @@ export async function verifyAppFolder(
   signal?: AbortSignal,
 ): Promise<AppFolderSummary> {
   const accessToken = await getCurrentAccessToken();
+  return verifyAppFolderWithAccessToken(accessToken, signal);
+}
+
+export async function verifyAppFolderWithAccessToken(
+  accessToken: string,
+  signal?: AbortSignal,
+): Promise<AppFolderSummary> {
   const response = await fetch(
     `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}`,
     {

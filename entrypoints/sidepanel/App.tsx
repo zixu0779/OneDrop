@@ -11,15 +11,15 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  createContext,
+  useContext,
 } from "react";
 import { createPortal } from "react-dom";
 import { rgbaToThumbHash, thumbHashToDataURL } from "thumbhash";
 
 import type {
   ArchiveNotice,
-  ArchiveRuntimeEvent,
   AuthStatus,
-  FileTransferRuntimeEvent,
   MonthReadResult,
   RuntimeRequest,
   RuntimeResponse,
@@ -29,9 +29,25 @@ import type {
   Message,
   UploadingFileMessage,
 } from "../../src/domain/message";
+import type { DeletedMessageItem } from "../../src/domain/deleted-message";
+import { appMetadata } from "../../src/config/app";
+import {
+  defaultDevicePreferences,
+  type AccountSettings,
+  type DevicePlatform,
+  type DevicePreferences,
+  type DeviceSettings,
+} from "../../src/domain/settings";
+import {
+  cacheSettings,
+  cachedPreferences,
+  clearCachedSettings,
+  readCachedAccountSettings,
+  readCachedDeviceSettings,
+} from "../../src/features/settings/settings-cache";
 import {
   DEFAULT_UPLOAD_BYTES_PER_SECOND,
-  MAX_DIRECT_FILE_BYTES,
+  shouldUseUploadSession,
 } from "../../src/config/files";
 import {
   deletePendingTransfer,
@@ -53,6 +69,11 @@ import {
   putPendingText,
   updatePendingText,
 } from "../../src/infrastructure/indexed-db/pending-texts";
+import {
+  getPlatformBridge,
+  type PlatformDownload,
+  type PlatformRuntimeEvent,
+} from "../../src/platform/platform-bridge";
 
 export type PendingFile = {
   id: string;
@@ -99,9 +120,7 @@ function formatArchiveMonth(month: string): string {
 }
 
 async function sendRequest(request: RuntimeRequest): Promise<RuntimeResponse> {
-  const response = (await browser.runtime.sendMessage(
-    request,
-  )) as RuntimeResponse;
+  const response = await getPlatformBridge().request(request);
 
   if (!response.ok) {
     throw new Error(response.error);
@@ -126,6 +145,10 @@ export type MonthReadToken = {
 };
 
 const FOREGROUND_SYNC_STALE_MS = 30_000;
+const RECYCLE_BIN_CACHE_MS = 30_000;
+const PreferencesContext = createContext<DevicePreferences>(
+  defaultDevicePreferences(),
+);
 
 export function shouldApplyMonthRead(
   token: MonthReadToken,
@@ -220,13 +243,28 @@ export function App() {
     setShowDeletedDataCleanupConfirmation,
   ] = useState(false);
   const [deletedDataCleanupNotice, setDeletedDataCleanupNotice] = useState<{
-    phase: "failed" | "succeeded";
-    messages?: number;
-    attachments?: number;
+    phase: "failed";
     error?: string;
   }>();
   const [isDeletedDataCleanupRunning, setIsDeletedDataCleanupRunning] =
     useState(false);
+  const [isRecycleBinOpen, setIsRecycleBinOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [accountSettings, setAccountSettings] = useState<AccountSettings>(() =>
+    readCachedAccountSettings(),
+  );
+  const [deviceSettings, setDeviceSettings] = useState<
+    DeviceSettings | undefined
+  >(() => readCachedDeviceSettings());
+  const [knownDevices, setKnownDevices] = useState<DeviceSettings[]>([]);
+  const [isSettingsSaving, setIsSettingsSaving] = useState(false);
+  const [isRecycleBinLoading, setIsRecycleBinLoading] = useState(false);
+  const [deletedMessageItems, setDeletedMessageItems] = useState<
+    DeletedMessageItem[]
+  >([]);
+  const [restoringDeletedMessageIds, setRestoringDeletedMessageIds] = useState<
+    Set<string>
+  >(new Set());
   const [pendingDeleteMessage, setPendingDeleteMessage] = useState<{
     messageId: string;
     month: string;
@@ -264,11 +302,14 @@ export function App() {
   const syncInFlightRef = useRef(false);
   const restoreInFlightRef = useRef(false);
   const lastSuccessfulSyncAtRef = useRef(0);
+  const lastRecycleBinLoadAtRef = useRef(0);
   const localOperationVersionsRef = useRef<Map<string, number>>(new Map());
   const activeLocalWritesRef = useRef<Map<string, number>>(new Map());
   const readRequestVersionsRef = useRef<Map<string, number>>(new Map());
   const activePendingTextWriteIdsRef = useRef<Set<string>>(new Set());
   const writeQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const settingsWriteQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const settingsWriteRevisionRef = useRef(0);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileDragDepthRef = useRef(0);
   const historyScrollHeightRef = useRef<number | undefined>(undefined);
@@ -282,6 +323,9 @@ export function App() {
   const shouldStickToBottomRef = useRef(true);
   const preservedTimelineViewportRef = useRef<
     { scrollTop: number; scrollHeight: number } | undefined
+  >(undefined);
+  const recycleBinReturnViewportRef = useRef<
+    { scrollTop: number; shouldStickToBottom: boolean } | undefined
   >(undefined);
   const forceScrollToBottomRef = useRef(false);
   const initialBottomFrameRef = useRef<number | undefined>(undefined);
@@ -370,6 +414,17 @@ export function App() {
     result: MonthReadResult,
     token: MonthReadToken,
   ): boolean {
+    if (
+      deviceSettings?.preferences.messages.autoScrollForNewMessages === false &&
+      monthResult?.state === "loaded" &&
+      result.state === "loaded" &&
+      result.messages.some(
+        (message) =>
+          !monthResult.messages.some((current) => current.id === message.id),
+      )
+    ) {
+      shouldStickToBottomRef.current = false;
+    }
     const canApplyDirectly = shouldApplyMonthRead(
       token,
       readRequestVersionsRef.current.get(result.month),
@@ -401,9 +456,7 @@ export function App() {
   }
 
   useEffect(() => {
-    const listener = (
-      message: ArchiveRuntimeEvent | FileTransferRuntimeEvent,
-    ) => {
+    const listener = (message: PlatformRuntimeEvent) => {
       if (message?.type === "archives/event") {
         updateArchiveNotice(message.notice);
       } else if (message?.type === "files/progress") {
@@ -427,8 +480,7 @@ export function App() {
         });
       }
     };
-    browser.runtime.onMessage.addListener(listener);
-    return () => browser.runtime.onMessage.removeListener(listener);
+    return getPlatformBridge().subscribe(listener);
   }, []);
 
   useEffect(() => {
@@ -562,6 +614,13 @@ export function App() {
   useLayoutEffect(() => {
     const timeline = timelineScrollRef.current;
     if (!timeline) return;
+    const recycleBinViewport = recycleBinReturnViewportRef.current;
+    if (recycleBinViewport !== undefined) {
+      timeline.scrollTop = recycleBinViewport.scrollTop;
+      shouldStickToBottomRef.current = recycleBinViewport.shouldStickToBottom;
+      recycleBinReturnViewportRef.current = undefined;
+      return;
+    }
     const preservedViewport = preservedTimelineViewportRef.current;
     if (preservedViewport !== undefined) {
       timeline.scrollTop = Math.max(
@@ -578,7 +637,7 @@ export function App() {
       forceScrollToBottomRef.current = false;
       alignTimelineToBottom(timeline);
     }
-  }, [timelineIdentity, scrollRevision]);
+  }, [timelineIdentity, scrollRevision, isRecycleBinOpen, isSettingsOpen]);
 
   useLayoutEffect(() => {
     const timeline = timelineScrollRef.current;
@@ -591,7 +650,7 @@ export function App() {
     });
     observer.observe(content);
     return () => observer.disconnect();
-  }, [monthResult]);
+  }, [monthResult, isRecycleBinOpen, isSettingsOpen]);
 
   useLayoutEffect(() => {
     if (!isLoadingHistory) return;
@@ -665,11 +724,18 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const syncMode = deviceSettings?.preferences.sync.mode ?? "normal";
+    const staleMs =
+      syncMode === "manual"
+        ? Number.POSITIVE_INFINITY
+        : syncMode === "reduced"
+          ? 300_000
+          : FOREGROUND_SYNC_STALE_MS;
     if (
       !isPanelVisible ||
       status?.state !== "signed-in" ||
       !monthResult ||
-      Date.now() - lastSuccessfulSyncAtRef.current < FOREGROUND_SYNC_STALE_MS
+      Date.now() - lastSuccessfulSyncAtRef.current < staleMs
     ) {
       return;
     }
@@ -680,6 +746,7 @@ export function App() {
     isPanelVisible,
     monthResult?.month,
     status?.state,
+    deviceSettings?.preferences.sync.mode,
   ]);
 
   const hasUploadingMessages =
@@ -887,6 +954,9 @@ export function App() {
       throw new Error("OneDrop could not identify this Edge installation.");
     }
     setDeviceId(deviceResponse.deviceId);
+    void loadSettings().catch(() => {
+      // Settings are cached locally and must never block the message timeline.
+    });
     if (cachedTimeline && !monthResult) setMonthResult(cachedTimeline);
     if (restoreTransfers) {
       const localReconciliationResult: MonthReadResult = cachedTimeline ?? {
@@ -946,6 +1016,153 @@ export function App() {
       ]).catch(() => undefined);
     }
     lastSuccessfulSyncAtRef.current = Date.now();
+  }
+
+  function platform(): DevicePlatform {
+    if (document.body.classList.contains("ios-surface")) return "ios";
+    if (document.body.classList.contains("mobile-surface"))
+      return "android-edge";
+    return "desktop-edge";
+  }
+
+  async function loadSettings() {
+    const response = await sendRequest({
+      type: "settings/read",
+      platform: platform(),
+      deviceName: detectedDeviceName(),
+    });
+    if (!response.ok || response.type !== "settings/snapshot")
+      throw new Error("OneDrop received an unexpected settings response.");
+    setAccountSettings(response.snapshot.account);
+    setDeviceSettings(response.snapshot.device);
+    setKnownDevices(response.snapshot.devices);
+    cacheSettings(response.snapshot.account, response.snapshot.device);
+  }
+
+  function detectedDeviceName(): string {
+    if (document.body.classList.contains("ios-surface")) return "iOS";
+    const userAgent = navigator.userAgent;
+    if (/Android/iu.test(userAgent)) return "Android";
+    if (/Windows/iu.test(userAgent)) return "Windows";
+    if (/Macintosh|Mac OS X/iu.test(userAgent)) return "macOS";
+    if (/Linux/iu.test(userAgent)) return "Linux";
+    return "Desktop";
+  }
+
+  async function saveDevicePreferences(preferences: DevicePreferences) {
+    if (!deviceSettings) return;
+    const next = {
+      ...deviceSettings,
+      lastSeenAt: new Date().toISOString(),
+      preferences,
+    };
+    setDeviceSettings(next);
+    cacheSettings(accountSettings, next);
+    enqueueSettingsWrite(async () => {
+      const response = await sendRequest({
+        type: "settings/save-device",
+        device: next,
+      });
+      if (!response.ok || response.type !== "settings/device")
+        throw new Error("OneDrop received an unexpected settings response.");
+    });
+  }
+
+  async function saveRecycleBinSetting(
+    value: "disabled" | 3 | 7 | 10 | 30 | "forever",
+  ) {
+    const next: AccountSettings = {
+      schemaVersion: 1,
+      recycleBin:
+        value === "disabled"
+          ? { mode: "disabled", updatedAt: new Date().toISOString() }
+          : {
+              mode: "retention",
+              retention: value,
+              updatedAt: new Date().toISOString(),
+            },
+    };
+    setAccountSettings(next);
+    if (deviceSettings) cacheSettings(next, deviceSettings);
+    enqueueSettingsWrite(async () => {
+      const response = await sendRequest({
+        type: "settings/save-account",
+        account: next,
+      });
+      if (!response.ok || response.type !== "settings/account")
+        throw new Error("OneDrop received an unexpected settings response.");
+      setAccountSettings(response.account);
+      if (deviceSettings) cacheSettings(response.account, deviceSettings);
+    });
+  }
+
+  function enqueueSettingsWrite(operation: () => Promise<void>) {
+    const revision = ++settingsWriteRevisionRef.current;
+    setIsSettingsSaving(true);
+    const queued = settingsWriteQueueRef.current
+      .catch(() => undefined)
+      .then(operation);
+    settingsWriteQueueRef.current = queued
+      .then(
+        () => undefined,
+        (cause) => {
+          setError(
+            cause instanceof Error
+              ? cause.message
+              : "Settings could not be saved.",
+          );
+        },
+      )
+      .finally(() => {
+        if (settingsWriteRevisionRef.current === revision)
+          setIsSettingsSaving(false);
+      });
+  }
+
+  async function resetCurrentDeviceSettings() {
+    const response = await sendRequest({
+      type: "settings/reset-device",
+      platform: platform(),
+    });
+    if (!response.ok || response.type !== "settings/device")
+      throw new Error("OneDrop received an unexpected settings response.");
+    setDeviceSettings(response.device);
+    cacheSettings(accountSettings, response.device);
+  }
+
+  async function copySettingsFrom(sourceDeviceId: string) {
+    const response = await sendRequest({
+      type: "settings/copy-device",
+      sourceDeviceId,
+      platform: platform(),
+    });
+    if (!response.ok || response.type !== "settings/device")
+      throw new Error("OneDrop received an unexpected settings response.");
+    setDeviceSettings(response.device);
+    cacheSettings(accountSettings, response.device);
+  }
+
+  function renameCurrentDevice(displayName: string) {
+    if (!deviceSettings || !displayName.trim()) return;
+    const next = {
+      ...deviceSettings,
+      displayName: displayName.trim(),
+      lastSeenAt: new Date().toISOString(),
+    };
+    setDeviceSettings(next);
+    setKnownDevices((items) =>
+      items.map((item) => (item.deviceId === next.deviceId ? next : item)),
+    );
+    cacheSettings(accountSettings, next);
+    enqueueSettingsWrite(async () => {
+      const response = await sendRequest({
+        type: "settings/save-device",
+        device: next,
+      });
+      if (!response.ok || response.type !== "settings/device") {
+        throw new Error("OneDrop received an unexpected settings response.");
+      }
+    });
   }
 
   async function checkArchiveTasks() {
@@ -1008,6 +1225,13 @@ export function App() {
     try {
       const nextStatus = await sendAuthRequest(request);
       setStatus(nextStatus);
+      if (request.type === "auth/sign-out") {
+        clearCachedSettings();
+        setAccountSettings(readCachedAccountSettings());
+        setDeviceSettings(undefined);
+        setKnownDevices([]);
+        setIsSettingsOpen(false);
+      }
       setMonthResult(undefined);
       setHistoricalMonthResults([]);
       historyCursorRef.current = undefined;
@@ -1049,6 +1273,7 @@ export function App() {
     setDismissedNoticeKeys(new Set());
     try {
       await loadOneDriveState(false);
+      if (isRecycleBinOpen) await loadRecycleBin(true);
       setAttachmentCheckVersion((version) => version + 1);
     } catch (cause) {
       setError(
@@ -1093,6 +1318,7 @@ export function App() {
       for (const historical of refreshedHistory) {
         applySynchronizedSnapshot(historical.result, historical.readToken);
       }
+      if (isRecycleBinOpen) await loadRecycleBin(true);
       lastSuccessfulSyncAtRef.current = Date.now();
     } catch {
       // Automatic foreground synchronization is best effort. The explicit
@@ -1178,11 +1404,8 @@ export function App() {
       if (response.type !== "deleted-data/cleaned") {
         throw new Error("OneDrop received an unexpected cleanup response.");
       }
-      setDeletedDataCleanupNotice({
-        phase: "succeeded",
-        messages: response.messages,
-        attachments: response.attachments,
-      });
+      setDeletedDataCleanupNotice(undefined);
+      if (isRecycleBinOpen) await loadRecycleBin(true);
     } catch (cause) {
       setDeletedDataCleanupNotice({
         phase: "failed",
@@ -1190,6 +1413,98 @@ export function App() {
       });
     } finally {
       setIsDeletedDataCleanupRunning(false);
+    }
+  }
+
+  async function loadRecycleBin(force = false) {
+    if (
+      !force &&
+      lastRecycleBinLoadAtRef.current > 0 &&
+      Date.now() - lastRecycleBinLoadAtRef.current < RECYCLE_BIN_CACHE_MS
+    ) {
+      return;
+    }
+    setIsRecycleBinLoading(true);
+    setError(undefined);
+    try {
+      const response = await sendRequest({ type: "deleted-data/read" });
+      if (!response.ok || response.type !== "deleted-data/items") {
+        throw new Error("OneDrop received an unexpected recycle-bin response.");
+      }
+      setDeletedMessageItems(response.items);
+      lastRecycleBinLoadAtRef.current = Date.now();
+    } catch (cause) {
+      setError(getClientError(cause));
+    } finally {
+      setIsRecycleBinLoading(false);
+    }
+  }
+
+  async function openRecycleBin() {
+    const timeline = timelineScrollRef.current;
+    if (timeline) {
+      if (initialBottomFrameRef.current !== undefined) {
+        cancelAnimationFrame(initialBottomFrameRef.current);
+        initialBottomFrameRef.current = undefined;
+      }
+      recycleBinReturnViewportRef.current = {
+        scrollTop: timeline.scrollTop,
+        shouldStickToBottom: shouldStickToBottomRef.current,
+      };
+      shouldStickToBottomRef.current = false;
+    }
+    setIsAccountOpen(false);
+    setIsRecycleBinOpen(true);
+    await loadRecycleBin();
+  }
+
+  function openSettings() {
+    const timeline = timelineScrollRef.current;
+    if (timeline) {
+      recycleBinReturnViewportRef.current = {
+        scrollTop: timeline.scrollTop,
+        shouldStickToBottom: shouldStickToBottomRef.current,
+      };
+      shouldStickToBottomRef.current = false;
+    }
+    setIsAccountOpen(false);
+    setIsRecycleBinOpen(false);
+    setIsSettingsOpen(true);
+  }
+
+  async function restoreRecycleBinMessage(item: DeletedMessageItem) {
+    const messageId = item.message.id;
+    const finishLocalWrite = beginLocalWrite(item.originalMonth);
+    setRestoringDeletedMessageIds((current) => new Set(current).add(messageId));
+    setError(undefined);
+    try {
+      const response = await sendRequest({
+        type: "deleted-data/restore",
+        messageId,
+        month: item.originalMonth,
+      });
+      if (!response.ok || response.type !== "deleted-data/restored") {
+        throw new Error("OneDrop received an unexpected restoration response.");
+      }
+      applyWriteSnapshot(response.result);
+      setOptimisticallyDeletedMessageIds((current) => {
+        const next = new Set(current);
+        next.delete(messageId);
+        return next;
+      });
+      setDeletedMessageItems((current) =>
+        current.filter((deleted) => deleted.message.id !== messageId),
+      );
+    } catch (cause) {
+      setError(getClientError(cause));
+      await loadRecycleBin(true);
+    } finally {
+      finishLocalWrite();
+      setRestoringDeletedMessageIds((current) => {
+        const next = new Set(current);
+        next.delete(messageId);
+        return next;
+      });
     }
   }
 
@@ -1719,7 +2034,12 @@ export function App() {
     try {
       let base64: string | undefined;
       try {
-        if (pending.file.size <= MAX_DIRECT_FILE_BYTES) {
+        if (
+          !shouldUseUploadSession({
+            size: pending.file.size,
+            mimeType: pending.file.type || "application/octet-stream",
+          })
+        ) {
           base64 = await fileToBase64(pending.file);
         }
       } catch {
@@ -1967,6 +2287,7 @@ export function App() {
   ) {
     if (
       event.key !== "Enter" ||
+      deviceSettings?.preferences.messages.enterToSend === false ||
       event.shiftKey ||
       event.nativeEvent.isComposing ||
       event.nativeEvent.keyCode === 229
@@ -1993,11 +2314,11 @@ export function App() {
       {status?.state === "unconfigured" ? (
         <section className="card" aria-labelledby="configuration-title">
           <span className="eyebrow">Configuration required</span>
-          <h2 id="configuration-title">Register the development extension</h2>
+          <h2 id="configuration-title">Connect OneDrop to Microsoft</h2>
           <p>
             Create a Microsoft Entra app registration, add the redirect URI
-            below, and place its Application (client) ID in{" "}
-            <code>.env.local</code>.
+            below, then add the application client ID to OneDrop&apos;s
+            configuration.
           </p>
           <RedirectUri value={status.redirectUri} />
         </section>
@@ -2005,11 +2326,11 @@ export function App() {
 
       {status?.state === "signed-out" ? (
         <section className="card" aria-labelledby="sign-in-title">
-          <span className="eyebrow">Ready to verify</span>
+          <span className="eyebrow">OneDrop</span>
           <h2 id="sign-in-title">Connect your Microsoft account</h2>
           <p>
-            This test requests access only to OneDrop&apos;s dedicated OneDrive
-            App Folder. No files or messages will be created yet.
+            OneDrop stores messages and transferred files in its dedicated
+            OneDrive App Folder.
           </p>
           <button
             className="primary-button"
@@ -2019,240 +2340,339 @@ export function App() {
           >
             {isWorking ? "Opening Microsoft…" : "Sign in with Microsoft"}
           </button>
-          <RedirectUri value={status.redirectUri} />
         </section>
       ) : null}
 
       {status?.state === "signed-in" ? (
-        <div className="signed-in-layout">
-          <section
-            className="account-card"
-            aria-label="Connected account"
-            ref={accountCardRef}
-          >
-            <button
-              aria-expanded={isAccountOpen}
-              className="account-summary"
-              onClick={() => {
-                setIsAccountOpen((open) => !open);
-                setIsAccountSwitcherOpen(false);
-              }}
-              type="button"
-            >
-              <span className="account-avatar" aria-hidden="true">
-                {getAccountInitial(status)}
-              </span>
-              <span className="account-email">
-                {status.account.username ?? "Microsoft account"}
-              </span>
-            </button>
-            {isDeletedDataCleanupRunning ? (
-              <FloatingErrorTooltip
-                className="account-cleanup-tooltip"
-                message="Cleaning up deleted data…"
-              >
-                <span
-                  aria-label="Cleaning up deleted data"
-                  className="account-cleanup-status"
-                  role="status"
-                >
-                  <CleanupBroomIcon />
-                </span>
-              </FloatingErrorTooltip>
-            ) : null}
-            <FloatingErrorTooltip
-              className="account-refresh-tooltip"
-              message="Sync messages and files"
+        <PreferencesContext.Provider
+          value={deviceSettings?.preferences ?? cachedPreferences()}
+        >
+          <div className="signed-in-layout">
+            <section
+              className="account-card"
+              aria-label="Connected account"
+              ref={accountCardRef}
             >
               <button
-                aria-label="Refresh messages and files"
-                className="account-refresh"
-                disabled={isSyncing || isWorking}
-                onClick={() => void refreshTimeline()}
+                aria-expanded={isAccountOpen}
+                className="account-summary"
+                onClick={() => {
+                  setIsAccountOpen((open) => !open);
+                  setIsAccountSwitcherOpen(false);
+                }}
                 type="button"
               >
-                {isSyncing ? <LoadingIcon /> : <RefreshIcon />}
+                <span className="account-avatar" aria-hidden="true">
+                  {getAccountInitial(status)}
+                </span>
+                <span className="account-email">
+                  {status.account.username ?? "Microsoft account"}
+                </span>
               </button>
-            </FloatingErrorTooltip>
-            {isAccountOpen ? (
-              <div className="account-popover">
-                <div className="account-popover-current">
-                  <span className="account-popover-avatar" aria-hidden="true">
-                    {getAccountInitial(status)}
+              {isDeletedDataCleanupRunning && !isRecycleBinOpen ? (
+                <FloatingErrorTooltip
+                  className="account-cleanup-tooltip"
+                  message="Cleaning up deleted data…"
+                >
+                  <span
+                    aria-label="Cleaning up deleted data"
+                    className="account-cleanup-status"
+                    role="status"
+                  >
+                    <CleanupBroomIcon animated />
                   </span>
-                  <span className="account-popover-identity">
-                    <strong>
-                      {status.account.displayName ?? "Microsoft account"}
-                    </strong>
-                    <small>
-                      {status.account.username ?? "Microsoft account"}
-                    </small>
-                  </span>
-                  <button
-                    aria-expanded={isAccountSwitcherOpen}
-                    aria-label="Switch account"
-                    className="account-switch-toggle"
-                    onClick={() => setIsAccountSwitcherOpen((open) => !open)}
-                    type="button"
-                  >
-                    <SwitchAccountIcon />
-                  </button>
-                </div>
-
-                {isAccountSwitcherOpen ? (
-                  <div className="account-switcher">
-                    <span className="account-section-label">
-                      Switch account
+                </FloatingErrorTooltip>
+              ) : null}
+              <FloatingErrorTooltip
+                className="account-refresh-tooltip"
+                message="Sync messages and files"
+              >
+                <button
+                  aria-label="Refresh messages and files"
+                  className="account-refresh"
+                  disabled={isSyncing || isWorking}
+                  onClick={() => void refreshTimeline()}
+                  type="button"
+                >
+                  {isSyncing ? <LoadingIcon /> : <RefreshIcon />}
+                </button>
+              </FloatingErrorTooltip>
+              {isAccountOpen ? (
+                <div className="account-popover">
+                  <div className="account-popover-current">
+                    <span className="account-popover-avatar" aria-hidden="true">
+                      {getAccountInitial(status)}
                     </span>
-                    <p className="account-switcher-empty">
-                      No other signed-in accounts
-                    </p>
-                    <button
-                      className="account-menu-action"
-                      disabled
-                      type="button"
-                    >
-                      <AddAccountIcon />
-                      <span>Add account</span>
-                    </button>
-                  </div>
-                ) : null}
-
-                <div className="account-menu-section">
-                  <button
-                    className="account-menu-action"
-                    disabled={isWorking}
-                    onClick={() => void openOneDropFolder()}
-                    type="button"
-                  >
-                    <FolderIcon />
-                    <span>Open OneDrive folder</span>
-                  </button>
-                  <button
-                    className="account-menu-action"
-                    disabled
-                    type="button"
-                  >
-                    <RecycleBinIcon />
-                    <span>Recycle bin</span>
-                    <small>Coming later</small>
-                  </button>
-                </div>
-
-                <div className="account-menu-section account-menu-footer">
-                  <button
-                    className="account-menu-action account-popover-signout"
-                    disabled={isWorking || isSyncing}
-                    onClick={() => void run({ type: "auth/sign-out" })}
-                    type="button"
-                  >
-                    <SignOutIcon />
-                    <span>Sign out…</span>
-                  </button>
-                  <button
-                    className="account-menu-action account-menu-cleanup"
-                    disabled={isDeletedDataCleanupRunning}
-                    onClick={() => setShowDeletedDataCleanupConfirmation(true)}
-                    type="button"
-                  >
-                    {isDeletedDataCleanupRunning ? (
-                      <LoadingIcon />
-                    ) : (
-                      <CleanupBroomIcon />
-                    )}
-                    <span>
-                      {isDeletedDataCleanupRunning
-                        ? "Cleaning up…"
-                        : "Clean up deleted data"}
+                    <span className="account-popover-identity">
+                      <strong>
+                        {status.account.displayName ?? "Microsoft account"}
+                      </strong>
+                      <small>
+                        {status.account.username ?? "Microsoft account"}
+                      </small>
                     </span>
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </section>
-          {notificationCount > 0 ? (
-            <div
-              aria-label={`Notifications, ${activeNoticeIndex + 1} of ${notificationCount}`}
-              className={`notification-stack notification-count-${Math.min(notificationCount, 4)}${isNoticeDragging ? " is-dragging" : ""}${noticeCycleDirection !== null ? ` is-cycling is-cycling-${noticeCycleDirection > 0 ? "forward" : "backward"} is-cycle-motion-${noticeCycleMotion} is-cycle-${noticeCycleGesture}` : ""}`}
-              onPointerCancel={() => {
-                noticeDragStartYRef.current = null;
-                setIsNoticeDragging(false);
-                setNoticeDragOffset(0);
-              }}
-              onPointerDown={handleNotificationPointerDown}
-              onPointerMove={handleNotificationPointerMove}
-              onPointerUp={handleNotificationPointerUp}
-              onWheel={handleNotificationWheel}
-              style={
-                {
-                  "--notification-drag-y": `${noticeDragOffset}px`,
-                  "--notification-drag-back-y": `${noticeDragOffset * 0.18}px`,
-                } as CSSProperties
-              }
-            >
-              {visibleCorruptFiles.map((file, index) => {
-                const noticeKey = `corrupt:${file.itemId}`;
-                const isProcessing = processingNoticeKey === noticeKey;
-                const depth = getNotificationDepth(
-                  index,
-                  activeNoticeIndex,
-                  notificationCount,
-                );
-                const cycleTargetIndex =
-                  noticeCycleDirection === null
-                    ? -1
-                    : (activeNoticeIndex +
-                        noticeCycleDirection +
-                        notificationCount) %
-                      notificationCount;
-                return (
-                  <aside
-                    aria-hidden={depth !== 0}
-                    className={`corrupt-record-notice record-damage-notice notification-depth-${Math.min(depth, 3)}${index === cycleTargetIndex ? " notification-cycle-target" : ""}${isProcessing ? " notice-processing" : ""}`}
-                    inert={depth !== 0}
-                    key={noticeKey}
-                  >
-                    <button
-                      aria-label="Remind me later"
-                      className="notice-dismiss-button"
-                      onClick={() =>
-                        setDismissedNoticeKeys((current) => {
-                          const next = new Set(current);
-                          next.add(noticeKey);
-                          return next;
-                        })
-                      }
-                      title="Remind me later"
-                      type="button"
-                    >
-                      <CloseIcon />
-                    </button>
-                    <div className="corrupt-record-summary">
-                      <p className="corrupt-record-title">
-                        A message record is damaged and OneDrop could not read
-                        its contents.
-                      </p>
-                      <p className="corrupt-record-detail">
-                        Other messages are still available.
-                      </p>
-                    </div>
-                    <div className="corrupt-record-footer">
+                    <span className="account-popover-actions">
                       <button
-                        className="corrupt-record-link"
-                        disabled={openingRecordItemId === file.itemId}
+                        aria-label="Settings"
+                        className="account-switch-toggle"
+                        onClick={openSettings}
+                        type="button"
+                      >
+                        <SettingsIcon />
+                      </button>
+                      <button
+                        aria-expanded={isAccountSwitcherOpen}
+                        aria-label="Switch account"
+                        className="account-switch-toggle"
                         onClick={() =>
-                          void openCorruptFileLocation(file.itemId)
+                          setIsAccountSwitcherOpen((open) => !open)
                         }
                         type="button"
                       >
-                        {openingRecordItemId === file.itemId ? (
-                          <LoadingIcon />
-                        ) : (
-                          <span aria-hidden="true">↗</span>
-                        )}
-                        {file.name}
+                        <SwitchAccountIcon />
                       </button>
-                      <div className="corrupt-record-actions">
+                    </span>
+                  </div>
+
+                  {isAccountSwitcherOpen ? (
+                    <div className="account-switcher">
+                      <span className="account-section-label">
+                        Switch account
+                      </span>
+                      <p className="account-switcher-empty">
+                        No other signed-in accounts
+                      </p>
+                      <button
+                        className="account-menu-action"
+                        disabled
+                        type="button"
+                      >
+                        <AddAccountIcon />
+                        <span>Add account</span>
+                      </button>
+                    </div>
+                  ) : null}
+
+                  <div className="account-menu-section">
+                    <button
+                      className="account-menu-action"
+                      disabled={isWorking}
+                      onClick={() => void openOneDropFolder()}
+                      type="button"
+                    >
+                      <FolderIcon />
+                      <span>Open OneDrive folder</span>
+                    </button>
+                    {accountSettings.recycleBin.mode !== "disabled" ? (
+                      <button
+                        className="account-menu-action"
+                        onClick={() => void openRecycleBin()}
+                        type="button"
+                      >
+                        <RecycleBinIcon />
+                        <span>Recycle bin</span>
+                        {deletedMessageItems.length > 0 ? (
+                          <small>{deletedMessageItems.length}</small>
+                        ) : null}
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <div className="account-menu-section account-menu-footer">
+                    <button
+                      className="account-menu-action account-popover-signout"
+                      disabled={isWorking || isSyncing}
+                      onClick={() => void run({ type: "auth/sign-out" })}
+                      type="button"
+                    >
+                      <SignOutIcon />
+                      <span>Sign out…</span>
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+            {notificationCount > 0 ? (
+              <div
+                aria-label={`Notifications, ${activeNoticeIndex + 1} of ${notificationCount}`}
+                className={`notification-stack notification-count-${Math.min(notificationCount, 4)}${isNoticeDragging ? " is-dragging" : ""}${noticeCycleDirection !== null ? ` is-cycling is-cycling-${noticeCycleDirection > 0 ? "forward" : "backward"} is-cycle-motion-${noticeCycleMotion} is-cycle-${noticeCycleGesture}` : ""}`}
+                onPointerCancel={() => {
+                  noticeDragStartYRef.current = null;
+                  setIsNoticeDragging(false);
+                  setNoticeDragOffset(0);
+                }}
+                onPointerDown={handleNotificationPointerDown}
+                onPointerMove={handleNotificationPointerMove}
+                onPointerUp={handleNotificationPointerUp}
+                onWheel={handleNotificationWheel}
+                style={
+                  {
+                    "--notification-drag-y": `${noticeDragOffset}px`,
+                    "--notification-drag-back-y": `${noticeDragOffset * 0.18}px`,
+                  } as CSSProperties
+                }
+              >
+                {visibleCorruptFiles.map((file, index) => {
+                  const noticeKey = `corrupt:${file.itemId}`;
+                  const isProcessing = processingNoticeKey === noticeKey;
+                  const depth = getNotificationDepth(
+                    index,
+                    activeNoticeIndex,
+                    notificationCount,
+                  );
+                  const cycleTargetIndex =
+                    noticeCycleDirection === null
+                      ? -1
+                      : (activeNoticeIndex +
+                          noticeCycleDirection +
+                          notificationCount) %
+                        notificationCount;
+                  return (
+                    <aside
+                      aria-hidden={depth !== 0}
+                      className={`corrupt-record-notice record-damage-notice notification-depth-${Math.min(depth, 3)}${index === cycleTargetIndex ? " notification-cycle-target" : ""}${isProcessing ? " notice-processing" : ""}`}
+                      inert={depth !== 0}
+                      key={noticeKey}
+                    >
+                      <button
+                        aria-label="Remind me later"
+                        className="notice-dismiss-button"
+                        onClick={() =>
+                          setDismissedNoticeKeys((current) => {
+                            const next = new Set(current);
+                            next.add(noticeKey);
+                            return next;
+                          })
+                        }
+                        title="Remind me later"
+                        type="button"
+                      >
+                        <CloseIcon />
+                      </button>
+                      <div className="corrupt-record-summary">
+                        <p className="corrupt-record-title">
+                          A message record is damaged and OneDrop could not read
+                          its contents.
+                        </p>
+                        <p className="corrupt-record-detail">
+                          Other messages are still available.
+                        </p>
+                      </div>
+                      <div className="corrupt-record-footer">
+                        <button
+                          className="corrupt-record-link"
+                          disabled={openingRecordItemId === file.itemId}
+                          onClick={() =>
+                            void openCorruptFileLocation(file.itemId)
+                          }
+                          type="button"
+                        >
+                          {openingRecordItemId === file.itemId ? (
+                            <LoadingIcon />
+                          ) : (
+                            <span aria-hidden="true">↗</span>
+                          )}
+                          {file.name}
+                        </button>
+                        <div className="corrupt-record-actions">
+                          <button
+                            disabled={isWorking}
+                            onClick={() => void retryNotice(noticeKey)}
+                            type="button"
+                          >
+                            I&apos;ve fixed it — check again
+                          </button>
+                          <button
+                            className="corrupt-record-delete"
+                            disabled={isWorking}
+                            onClick={() => void deleteCorruptFile(file.itemId)}
+                            type="button"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </div>
+                      {isProcessing ? <NoticeProcessingOverlay /> : null}
+                    </aside>
+                  );
+                })}
+                {visibleMessageConflicts.map((conflict, index) => {
+                  const noticeKey = `conflict:${conflict.messageId}`;
+                  const isProcessing = processingNoticeKey === noticeKey;
+                  const depth = getNotificationDepth(
+                    corruptNoticeCount + index,
+                    activeNoticeIndex,
+                    notificationCount,
+                  );
+                  const absoluteIndex = corruptNoticeCount + index;
+                  const cycleTargetIndex =
+                    noticeCycleDirection === null
+                      ? -1
+                      : (activeNoticeIndex +
+                          noticeCycleDirection +
+                          notificationCount) %
+                        notificationCount;
+                  return (
+                    <aside
+                      aria-hidden={depth !== 0}
+                      className={`corrupt-record-notice message-conflict-notice notification-depth-${Math.min(depth, 3)}${absoluteIndex === cycleTargetIndex ? " notification-cycle-target" : ""}${isProcessing ? " notice-processing" : ""}`}
+                      inert={depth !== 0}
+                      key={noticeKey}
+                    >
+                      <button
+                        aria-label="Remind me later"
+                        className="notice-dismiss-button"
+                        onClick={() =>
+                          setDismissedNoticeKeys((current) => {
+                            const next = new Set(current);
+                            next.add(noticeKey);
+                            return next;
+                          })
+                        }
+                        title="Remind me later"
+                        type="button"
+                      >
+                        <CloseIcon />
+                      </button>
+                      <p>A message has conflicting versions:</p>
+                      <ul>
+                        {conflict.versions.map((version) => (
+                          <li key={version.itemId}>
+                            <button
+                              className="corrupt-record-link"
+                              disabled={openingRecordItemId === version.itemId}
+                              onClick={() =>
+                                void openCorruptFileLocation(version.itemId)
+                              }
+                              type="button"
+                            >
+                              {openingRecordItemId === version.itemId ? (
+                                <LoadingIcon />
+                              ) : (
+                                <span aria-hidden="true">↗</span>
+                              )}
+                              {version.name}
+                            </button>{" "}
+                            — line {version.line}
+                          </li>
+                        ))}
+                      </ul>
+                      <div className="conflict-record-actions">
+                        {conflict.versions.map((version) => (
+                          <button
+                            disabled={isWorking}
+                            key={version.itemId}
+                            onClick={() =>
+                              void resolveConflict(
+                                conflict.messageId,
+                                version.itemId,
+                              )
+                            }
+                            type="button"
+                          >
+                            Keep {version.name}
+                          </button>
+                        ))}
                         <button
                           disabled={isWorking}
                           onClick={() => void retryNotice(noticeKey)}
@@ -2260,155 +2680,118 @@ export function App() {
                         >
                           I&apos;ve fixed it — check again
                         </button>
-                        <button
-                          className="corrupt-record-delete"
-                          disabled={isWorking}
-                          onClick={() => void deleteCorruptFile(file.itemId)}
-                          type="button"
-                        >
-                          Delete
-                        </button>
                       </div>
-                    </div>
-                    {isProcessing ? <NoticeProcessingOverlay /> : null}
-                  </aside>
-                );
-              })}
-              {visibleMessageConflicts.map((conflict, index) => {
-                const noticeKey = `conflict:${conflict.messageId}`;
-                const isProcessing = processingNoticeKey === noticeKey;
-                const depth = getNotificationDepth(
-                  corruptNoticeCount + index,
-                  activeNoticeIndex,
-                  notificationCount,
-                );
-                const absoluteIndex = corruptNoticeCount + index;
-                const cycleTargetIndex =
-                  noticeCycleDirection === null
-                    ? -1
-                    : (activeNoticeIndex +
-                        noticeCycleDirection +
-                        notificationCount) %
-                      notificationCount;
-                return (
-                  <aside
-                    aria-hidden={depth !== 0}
-                    className={`corrupt-record-notice message-conflict-notice notification-depth-${Math.min(depth, 3)}${absoluteIndex === cycleTargetIndex ? " notification-cycle-target" : ""}${isProcessing ? " notice-processing" : ""}`}
-                    inert={depth !== 0}
-                    key={noticeKey}
+                      {isProcessing ? <NoticeProcessingOverlay /> : null}
+                    </aside>
+                  );
+                })}
+              </div>
+            ) : null}
+            <section
+              aria-busy={isSyncing}
+              aria-label={
+                isSettingsOpen
+                  ? "OneDrop settings"
+                  : isRecycleBinOpen
+                    ? "OneDrop recycle bin"
+                    : "OneDrop messages"
+              }
+              className="conversation"
+            >
+              {isSettingsOpen && deviceSettings ? (
+                <SettingsView
+                  account={accountSettings}
+                  device={deviceSettings}
+                  devices={knownDevices}
+                  isSaving={isSettingsSaving}
+                  onBack={() => setIsSettingsOpen(false)}
+                  onChange={(preferences) =>
+                    void saveDevicePreferences(preferences)
+                  }
+                  onCopy={(id) => void copySettingsFrom(id)}
+                  onOpenProject={() =>
+                    void sendRequest({ type: "app/open-project" })
+                  }
+                  onRecycleChange={(value) => void saveRecycleBinSetting(value)}
+                  onRename={renameCurrentDevice}
+                  onReset={() => void resetCurrentDeviceSettings()}
+                />
+              ) : isRecycleBinOpen ? (
+                <RecycleBinView
+                  setting={accountSettings.recycleBin}
+                  isCleanupRunning={isDeletedDataCleanupRunning}
+                  isLoading={isRecycleBinLoading}
+                  items={deletedMessageItems}
+                  restoringMessageIds={restoringDeletedMessageIds}
+                  onBack={() => setIsRecycleBinOpen(false)}
+                  onCleanup={() => setShowDeletedDataCleanupConfirmation(true)}
+                  onRestore={(item) => void restoreRecycleBinMessage(item)}
+                />
+              ) : monthResult ? (
+                <>
+                  <div
+                    className={`message-scroll${isTimelineScrolling || isTimelineScrollbarHovered ? " is-scrolling" : ""}`}
+                    onMouseLeave={handleTimelineMouseLeave}
+                    onMouseMove={handleTimelineMouseMove}
+                    onScroll={handleTimelineScroll}
+                    onWheel={handleTimelineScroll}
+                    ref={timelineScrollRef}
                   >
-                    <button
-                      aria-label="Remind me later"
-                      className="notice-dismiss-button"
-                      onClick={() =>
-                        setDismissedNoticeKeys((current) => {
-                          const next = new Set(current);
-                          next.add(noticeKey);
-                          return next;
-                        })
-                      }
-                      title="Remind me later"
-                      type="button"
-                    >
-                      <CloseIcon />
-                    </button>
-                    <p>A message has conflicting versions:</p>
-                    <ul>
-                      {conflict.versions.map((version) => (
-                        <li key={version.itemId}>
-                          <button
-                            className="corrupt-record-link"
-                            disabled={openingRecordItemId === version.itemId}
-                            onClick={() =>
-                              void openCorruptFileLocation(version.itemId)
-                            }
-                            type="button"
-                          >
-                            {openingRecordItemId === version.itemId ? (
-                              <LoadingIcon />
-                            ) : (
-                              <span aria-hidden="true">↗</span>
-                            )}
-                            {version.name}
-                          </button>{" "}
-                          — line {version.line}
-                        </li>
-                      ))}
-                    </ul>
-                    <div className="conflict-record-actions">
-                      {conflict.versions.map((version) => (
-                        <button
-                          disabled={isWorking}
-                          key={version.itemId}
-                          onClick={() =>
-                            void resolveConflict(
-                              conflict.messageId,
-                              version.itemId,
-                            )
-                          }
-                          type="button"
+                    <div className="message-content" ref={timelineContentRef}>
+                      {isLoadingHistory ? (
+                        <span
+                          className="history-loading"
+                          ref={historyLoadingElementRef}
                         >
-                          Keep {version.name}
-                        </button>
+                          Loading...
+                        </span>
+                      ) : null}
+                      {historicalMonthResults.map((result) => (
+                        <MonthResult
+                          attachmentCheckVersion={attachmentCheckVersion}
+                          deviceId={deviceId}
+                          key={result.month}
+                          hiddenMessageIds={optimisticallyDeletedMessageIds}
+                          pendingFiles={[]}
+                          pendingTexts={[]}
+                          result={result}
+                          refreshingUploadIds={refreshingUploadIds}
+                          sendingTextIds={sendingTextIds}
+                          showEmpty={false}
+                          compact
+                          unresponsiveUploadIds={unresponsiveUploadIds}
+                          onCancel={() => undefined}
+                          onResend={(item) => void uploadPendingFile(item)}
+                          onDelete={(messageId) =>
+                            setPendingDeleteMessage({
+                              messageId,
+                              month: result.month,
+                            })
+                          }
+                          onUploadingRefresh={(messageId) =>
+                            void refreshUploadingMessage(messageId)
+                          }
+                          onTextResend={(item) => void sendPendingText(item)}
+                        />
                       ))}
-                      <button
-                        disabled={isWorking}
-                        onClick={() => void retryNotice(noticeKey)}
-                        type="button"
-                      >
-                        I&apos;ve fixed it — check again
-                      </button>
-                    </div>
-                    {isProcessing ? <NoticeProcessingOverlay /> : null}
-                  </aside>
-                );
-              })}
-            </div>
-          ) : null}
-          <section
-            aria-busy={isSyncing}
-            aria-label="OneDrop messages"
-            className="conversation"
-          >
-            {monthResult ? (
-              <>
-                <div
-                  className={`message-scroll${isTimelineScrolling || isTimelineScrollbarHovered ? " is-scrolling" : ""}`}
-                  onMouseLeave={handleTimelineMouseLeave}
-                  onMouseMove={handleTimelineMouseMove}
-                  onScroll={handleTimelineScroll}
-                  onWheel={handleTimelineScroll}
-                  ref={timelineScrollRef}
-                >
-                  <div className="message-content" ref={timelineContentRef}>
-                    {isLoadingHistory ? (
-                      <span
-                        className="history-loading"
-                        ref={historyLoadingElementRef}
-                      >
-                        Loading...
-                      </span>
-                    ) : null}
-                    {historicalMonthResults.map((result) => (
                       <MonthResult
                         attachmentCheckVersion={attachmentCheckVersion}
                         deviceId={deviceId}
-                        key={result.month}
                         hiddenMessageIds={optimisticallyDeletedMessageIds}
-                        pendingFiles={[]}
-                        pendingTexts={[]}
-                        result={result}
+                        pendingFiles={pendingFiles}
+                        pendingTexts={pendingTexts}
+                        result={monthResult}
                         refreshingUploadIds={refreshingUploadIds}
                         sendingTextIds={sendingTextIds}
-                        showEmpty={false}
-                        compact
                         unresponsiveUploadIds={unresponsiveUploadIds}
-                        onCancel={() => undefined}
+                        onCancel={(messageId) =>
+                          void cancelFileUpload(messageId)
+                        }
                         onResend={(item) => void uploadPendingFile(item)}
                         onDelete={(messageId) =>
                           setPendingDeleteMessage({
                             messageId,
-                            month: result.month,
+                            month: monthResult.month,
                           })
                         }
                         onUploadingRefresh={(messageId) =>
@@ -2416,82 +2799,59 @@ export function App() {
                         }
                         onTextResend={(item) => void sendPendingText(item)}
                       />
-                    ))}
-                    <MonthResult
-                      attachmentCheckVersion={attachmentCheckVersion}
-                      deviceId={deviceId}
-                      hiddenMessageIds={optimisticallyDeletedMessageIds}
-                      pendingFiles={pendingFiles}
-                      pendingTexts={pendingTexts}
-                      result={monthResult}
-                      refreshingUploadIds={refreshingUploadIds}
-                      sendingTextIds={sendingTextIds}
-                      unresponsiveUploadIds={unresponsiveUploadIds}
-                      onCancel={(messageId) => void cancelFileUpload(messageId)}
-                      onResend={(item) => void uploadPendingFile(item)}
-                      onDelete={(messageId) =>
-                        setPendingDeleteMessage({
-                          messageId,
-                          month: monthResult.month,
-                        })
-                      }
-                      onUploadingRefresh={(messageId) =>
-                        void refreshUploadingMessage(messageId)
-                      }
-                      onTextResend={(item) => void sendPendingText(item)}
+                    </div>
+                  </div>
+                  <div className="composer">
+                    <div className="composer-field">
+                      <label className="sr-only" htmlFor="message-text">
+                        Message
+                      </label>
+                      <textarea
+                        id="message-text"
+                        maxLength={20_000}
+                        onChange={(event) => setDraft(event.target.value)}
+                        onKeyDown={handleComposerKeyDown}
+                        placeholder="Message"
+                        ref={composerRef}
+                        rows={1}
+                        value={draft}
+                      />
+                      {draft.trim() ? (
+                        <button
+                          aria-label="Send message"
+                          className="send-icon"
+                          disabled={isSendingText}
+                          onClick={() => void sendText()}
+                          type="button"
+                        >
+                          {isSendingText ? <LoadingIcon /> : <SendIcon />}
+                        </button>
+                      ) : null}
+                    </div>
+                    <button
+                      aria-label="Attach file"
+                      className="attach-button"
+                      onClick={() => fileInputRef.current?.click()}
+                      type="button"
+                    >
+                      <PlusIcon />
+                    </button>
+                    <input
+                      className="sr-only"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        event.target.value = "";
+                        if (file) void selectFile(file);
+                      }}
+                      ref={fileInputRef}
+                      type="file"
                     />
                   </div>
-                </div>
-                <div className="composer">
-                  <div className="composer-field">
-                    <label className="sr-only" htmlFor="message-text">
-                      Message
-                    </label>
-                    <textarea
-                      id="message-text"
-                      maxLength={20_000}
-                      onChange={(event) => setDraft(event.target.value)}
-                      onKeyDown={handleComposerKeyDown}
-                      placeholder="Message"
-                      ref={composerRef}
-                      rows={1}
-                      value={draft}
-                    />
-                    {draft.trim() ? (
-                      <button
-                        aria-label="Send message"
-                        className="send-icon"
-                        disabled={isSendingText}
-                        onClick={() => void sendText()}
-                        type="button"
-                      >
-                        {isSendingText ? <LoadingIcon /> : <SendIcon />}
-                      </button>
-                    ) : null}
-                  </div>
-                  <button
-                    aria-label="Attach file"
-                    className="attach-button"
-                    onClick={() => fileInputRef.current?.click()}
-                    type="button"
-                  >
-                    <PlusIcon />
-                  </button>
-                  <input
-                    className="sr-only"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0];
-                      event.target.value = "";
-                      if (file) void selectFile(file);
-                    }}
-                    ref={fileInputRef}
-                    type="file"
-                  />
-                </div>
-              </>
-            ) : null}
-          </section>
-        </div>
+                </>
+              ) : null}
+            </section>
+          </div>
+        </PreferencesContext.Provider>
       ) : null}
 
       {showUnifiedLoader ? <UnifiedPulseLoader /> : null}
@@ -2566,6 +2926,663 @@ export function App() {
       ) : null}
     </main>
   );
+}
+
+function detectedPlatformLabel(platform: DevicePlatform): string {
+  if (platform === "ios") return "iOS";
+  if (platform === "android-edge" || /Android/iu.test(navigator.userAgent))
+    return "Android";
+  if (/Windows/iu.test(navigator.userAgent)) return "Windows";
+  if (/Macintosh|Mac OS X/iu.test(navigator.userAgent)) return "macOS";
+  if (/Linux/iu.test(navigator.userAgent)) return "Linux";
+  return "Desktop Edge";
+}
+
+function SettingsView({
+  account,
+  device,
+  devices,
+  isSaving,
+  onBack,
+  onChange,
+  onCopy,
+  onOpenProject,
+  onRecycleChange,
+  onRename,
+  onReset,
+}: {
+  account: AccountSettings;
+  device: DeviceSettings;
+  devices: DeviceSettings[];
+  isSaving: boolean;
+  onBack: () => void;
+  onChange: (preferences: DevicePreferences) => void;
+  onCopy: (deviceId: string) => void;
+  onOpenProject: () => void;
+  onRecycleChange: (value: "disabled" | 3 | 7 | 10 | 30 | "forever") => void;
+  onRename: (name: string) => void;
+  onReset: () => void;
+}) {
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [deviceNameDraft, setDeviceNameDraft] = useState(device.displayName);
+  const [isSettingsScrolling, setIsSettingsScrolling] = useState(false);
+  const settingsScrollTimerRef = useRef<
+    ReturnType<typeof setTimeout> | undefined
+  >(undefined);
+  useEffect(() => setDeviceNameDraft(device.displayName), [device.displayName]);
+  useEffect(
+    () => () => {
+      if (settingsScrollTimerRef.current)
+        clearTimeout(settingsScrollTimerRef.current);
+    },
+    [],
+  );
+  const revealSettingsScrollbar = () => {
+    setIsSettingsScrolling(true);
+    if (settingsScrollTimerRef.current)
+      clearTimeout(settingsScrollTimerRef.current);
+    settingsScrollTimerRef.current = setTimeout(
+      () => setIsSettingsScrolling(false),
+      900,
+    );
+  };
+  const p = device.preferences;
+  const patch = (next: Partial<DevicePreferences>) =>
+    onChange({ ...p, ...next });
+  const sizes = [
+    "extra-small",
+    "small",
+    "default",
+    "large",
+    "extra-large",
+  ] as const;
+  const recycleValue =
+    account.recycleBin.mode === "disabled"
+      ? "disabled"
+      : String(account.recycleBin.retention);
+  return (
+    <div className="settings-view">
+      <header className="settings-header">
+        <button
+          aria-label="Back to messages"
+          className="recycle-bin-back"
+          onClick={onBack}
+          type="button"
+        >
+          <BackIcon />
+        </button>
+        <strong>Settings</strong>
+        <span className="settings-saving">{isSaving ? "Saving…" : ""}</span>
+      </header>
+      <div
+        className={`settings-scroll${isSettingsScrolling ? " is-scrolling" : ""}`}
+        onMouseMove={(event) => {
+          if (
+            event.currentTarget.getBoundingClientRect().right - event.clientX <=
+            14
+          )
+            revealSettingsScrollbar();
+        }}
+        onScroll={revealSettingsScrollbar}
+        onWheel={revealSettingsScrollbar}
+      >
+        <SettingsSection title="Appearance">
+          <SettingsRow label="Theme">
+            <SegmentedControl
+              options={["system", "light", "dark"]}
+              value={p.appearance.theme}
+              onChange={(theme) =>
+                patch({
+                  appearance: {
+                    ...p.appearance,
+                    theme: theme as typeof p.appearance.theme,
+                  },
+                })
+              }
+            />
+          </SettingsRow>
+          <div className="settings-text-size">
+            <span>Text size</span>
+            <input
+              aria-label="Text size"
+              max="4"
+              min="0"
+              onChange={(event) =>
+                patch({
+                  appearance: {
+                    ...p.appearance,
+                    textSize: sizes[Number(event.target.value)]!,
+                  },
+                })
+              }
+              step="1"
+              type="range"
+              value={sizes.indexOf(p.appearance.textSize)}
+            />
+            <div
+              className="settings-text-preview"
+              style={{
+                fontSize: `${[12, 13.5, 15, 16.5, 18][sizes.indexOf(p.appearance.textSize)]}px`,
+              }}
+            >
+              <small>Preview</small>
+              <span>OneDrop message preview</span>
+            </div>
+          </div>
+        </SettingsSection>
+        <SettingsSection title="Messages">
+          <SettingsToggle
+            checked={p.messages.enterToSend}
+            label="Enter to send"
+            onChange={(enterToSend) =>
+              patch({ messages: { ...p.messages, enterToSend } })
+            }
+          />
+          <SettingsToggle
+            checked={p.messages.autoScrollForNewMessages}
+            label="Scroll for new messages"
+            onChange={(autoScrollForNewMessages) =>
+              patch({ messages: { ...p.messages, autoScrollForNewMessages } })
+            }
+          />
+          <SettingsToggle
+            checked={p.messages.detectLinks}
+            label="Detect and enable links"
+            onChange={(detectLinks) =>
+              patch({ messages: { ...p.messages, detectLinks } })
+            }
+          />
+        </SettingsSection>
+        <SettingsSection title="Synchronization">
+          <SettingsRow label="Automatic sync">
+            <SegmentedControl
+              options={["normal", "reduced", "manual"]}
+              labels={["Normal", "Reduced", "Manual only"]}
+              value={p.sync.mode}
+              onChange={(mode) =>
+                patch({ sync: { mode: mode as typeof p.sync.mode } })
+              }
+            />
+          </SettingsRow>
+        </SettingsSection>
+        <SettingsSection title="Image previews">
+          <SettingsToggle
+            checked={p.previews.loadAutomatically}
+            label="Load automatically"
+            onChange={(loadAutomatically) =>
+              patch({ previews: { ...p.previews, loadAutomatically } })
+            }
+          />
+          <SettingsToggle
+            checked={p.previews.wifiOnly}
+            disabled
+            label="Wi-Fi only"
+            onChange={() => undefined}
+          />
+          <button className="settings-disabled-action" disabled type="button">
+            Clear preview cache <small>Coming later</small>
+          </button>
+        </SettingsSection>
+        {device.platform === "desktop-edge" ? (
+          <SettingsSection title="Downloads">
+            <SettingsRow label="Default path">
+              <button
+                className="settings-inline-disabled"
+                disabled
+                type="button"
+              >
+                Downloads <small>Coming later</small>
+              </button>
+            </SettingsRow>
+          </SettingsSection>
+        ) : null}
+        <SettingsSection title="Recycle bin">
+          <SettingsRow label="Keep deleted items">
+            <select
+              onChange={(event) => {
+                const value = event.target.value;
+                onRecycleChange(
+                  value === "disabled" || value === "forever"
+                    ? value
+                    : (Number(value) as 3 | 7 | 10 | 30),
+                );
+              }}
+              value={recycleValue}
+            >
+              <option value="disabled">Off</option>
+              <option value="3">3 days</option>
+              <option value="7">7 days</option>
+              <option value="10">10 days</option>
+              <option value="30">30 days</option>
+              <option value="forever">Permanent</option>
+            </select>
+          </SettingsRow>
+        </SettingsSection>
+        <SettingsSection title="Devices">
+          <div className="settings-device-row">
+            <span className="settings-device-copy">
+              {isRenaming ? (
+                <input
+                  aria-label="Device name"
+                  autoFocus
+                  maxLength={120}
+                  onChange={(event) => setDeviceNameDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && deviceNameDraft.trim()) {
+                      onRename(deviceNameDraft);
+                      setIsRenaming(false);
+                    } else if (event.key === "Escape") {
+                      setDeviceNameDraft(device.displayName);
+                      setIsRenaming(false);
+                    }
+                  }}
+                  value={deviceNameDraft}
+                />
+              ) : (
+                <span className="settings-device-name">
+                  <strong>{device.displayName}</strong>
+                  <button
+                    aria-label="Rename this device"
+                    className="settings-device-edit"
+                    onClick={() => setIsRenaming(true)}
+                    type="button"
+                  >
+                    <EditIcon />
+                  </button>
+                </span>
+              )}
+              <small>Current device</small>
+            </span>
+            <span className="settings-device-actions">
+              {isRenaming ? (
+                <button
+                  disabled={!deviceNameDraft.trim()}
+                  onClick={() => {
+                    onRename(deviceNameDraft);
+                    setIsRenaming(false);
+                  }}
+                  type="button"
+                >
+                  Save
+                </button>
+              ) : null}
+              <button onClick={onReset} type="button">
+                Reset to defaults
+              </button>
+            </span>
+          </div>
+          {devices
+            .filter((item) => item.deviceId !== device.deviceId)
+            .map((item) => (
+              <div className="settings-device-row" key={item.deviceId}>
+                <span>
+                  <strong>{item.displayName}</strong>
+                  <small>
+                    {new Date(item.lastSeenAt).toLocaleDateString()}
+                  </small>
+                </span>
+                <button onClick={() => onCopy(item.deviceId)} type="button">
+                  Copy settings
+                </button>
+              </div>
+            ))}
+        </SettingsSection>
+        <SettingsSection title="About">
+          <button
+            className="settings-about settings-about-link"
+            onClick={onOpenProject}
+            type="button"
+          >
+            <strong>{appMetadata.name}</strong>
+            <span>
+              GitHub <ExternalLinkIcon />
+            </span>
+          </button>
+          <div className="settings-about">
+            <span>Version</span>
+            <strong>{getPlatformBridge().appVersion()}</strong>
+          </div>
+          <div className="settings-about">
+            <span>Platform</span>
+            <strong>{detectedPlatformLabel(device.platform)}</strong>
+          </div>
+        </SettingsSection>
+      </div>
+    </div>
+  );
+}
+
+function SettingsSection({
+  children,
+  title,
+}: {
+  children: ReactNode;
+  title: string;
+}) {
+  return (
+    <section className="settings-section">
+      <h3>{title}</h3>
+      <div>{children}</div>
+    </section>
+  );
+}
+function SettingsRow({
+  children,
+  label,
+}: {
+  children: ReactNode;
+  label: string;
+}) {
+  return (
+    <label className="settings-row">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+function SettingsToggle({
+  checked,
+  disabled,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className={`settings-toggle${disabled ? " is-disabled" : ""}`}>
+      <span>{label}</span>
+      <input
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        type="checkbox"
+      />
+      <i />
+    </label>
+  );
+}
+function SegmentedControl({
+  labels,
+  onChange,
+  options,
+  value,
+}: {
+  labels?: string[];
+  onChange: (value: string) => void;
+  options: string[];
+  value: string;
+}) {
+  return (
+    <span className="settings-segments">
+      {options.map((option, index) => (
+        <button
+          className={value === option ? "is-active" : ""}
+          key={option}
+          onClick={() => onChange(option)}
+          type="button"
+        >
+          {labels?.[index] ?? `${option[0]!.toUpperCase()}${option.slice(1)}`}
+        </button>
+      ))}
+    </span>
+  );
+}
+
+function RecycleBinView({
+  isCleanupRunning,
+  isLoading,
+  items,
+  restoringMessageIds,
+  onBack,
+  onCleanup,
+  onRestore,
+  setting,
+}: {
+  isCleanupRunning: boolean;
+  isLoading: boolean;
+  items: DeletedMessageItem[];
+  restoringMessageIds: Set<string>;
+  onBack: () => void;
+  onCleanup: () => void;
+  onRestore: (item: DeletedMessageItem) => void;
+  setting: AccountSettings["recycleBin"];
+}) {
+  const groups = new Map<string, DeletedMessageItem[]>();
+  for (const item of items) {
+    const key = getLocalDateKey(new Date(item.deletedAt));
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+
+  return (
+    <div className="recycle-bin-view">
+      <header className="recycle-bin-header">
+        <button
+          aria-label="Back to messages"
+          className="recycle-bin-back"
+          onClick={onBack}
+          type="button"
+        >
+          <BackIcon />
+        </button>
+        <span className="recycle-bin-title">
+          <strong>Recycle bin</strong>
+          <small>
+            {items.length} deleted {items.length === 1 ? "item" : "items"}
+          </small>
+        </span>
+        <button
+          className="recycle-bin-cleanup"
+          disabled={isCleanupRunning || items.length === 0}
+          onClick={onCleanup}
+          type="button"
+        >
+          <CleanupBroomIcon animated={isCleanupRunning} />
+          <span>{isCleanupRunning ? "Cleaning…" : "Clean up now"}</span>
+        </button>
+      </header>
+      <div className="recycle-bin-guidance">
+        <ClockIcon />
+        <span>
+          {setting.mode === "retention" && setting.retention === "forever"
+            ? "Deleted items remain here until you clean them up."
+            : `Items are permanently deleted ${setting.mode === "retention" ? setting.retention : 10} days after deletion.`}{" "}
+          Restoring keeps the original message date.
+        </span>
+      </div>
+      {isLoading && items.length === 0 ? (
+        <div className="recycle-bin-loading" role="status">
+          <LoadingIcon />
+          <span>Loading deleted items…</span>
+        </div>
+      ) : items.length === 0 ? (
+        <div className="recycle-bin-empty">
+          <RecycleBinIcon />
+          <strong>Recycle bin is empty</strong>
+          <span>
+            {setting.mode === "retention" && setting.retention === "forever"
+              ? "Deleted messages will stay here until you clean them up."
+              : `Deleted messages will stay here for up to ${setting.mode === "retention" ? setting.retention : 10} days before automatic cleanup.`}
+          </span>
+        </div>
+      ) : (
+        <div className="recycle-bin-list">
+          {[...groups.entries()].map(([deletedDate, groupItems]) => (
+            <section className="recycle-bin-group" key={deletedDate}>
+              <header>
+                <strong>{formatDeletedGroupDate(deletedDate)}</strong>
+                <span>{formatRecoveryCountdown(groupItems[0]!)}</span>
+              </header>
+              {groupItems.map((item) => (
+                <RecycleBinItem
+                  isRestoring={restoringMessageIds.has(item.message.id)}
+                  item={item}
+                  key={item.message.id}
+                  onRestore={() => onRestore(item)}
+                />
+              ))}
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RecycleBinItem({
+  isRestoring,
+  item,
+  onRestore,
+}: {
+  isRestoring: boolean;
+  item: DeletedMessageItem;
+  onRestore: () => void;
+}) {
+  const { message } = item;
+  const attachment =
+    message.type === "file"
+      ? message.attachment
+      : message.type === "file-uploading"
+        ? message.pendingAttachment
+        : undefined;
+  const title = message.type === "text" ? message.text : attachment!.name;
+  return (
+    <article className={`recycle-bin-item recycle-bin-item-${item.kind}`}>
+      {item.kind === "image" ? (
+        <RecycleBinImageIcon attachment={attachment!} />
+      ) : (
+        <span className="recycle-bin-item-icon">
+          {item.kind === "text" ? (
+            <MessageIcon />
+          ) : (
+            <FileTypeIcon name={attachment!.name} />
+          )}
+        </span>
+      )}
+      <span className="recycle-bin-item-copy">
+        <small>{formatDeletedMessageKind(item.kind)}</small>
+        <strong>{title}</strong>
+        <span>
+          {attachment ? `${formatBytes(attachment.size)} · ` : ""}
+          Sent {formatOriginalMessageDate(message.createdAt)}
+        </span>
+      </span>
+      <button disabled={isRestoring} onClick={onRestore} type="button">
+        {isRestoring ? <LoadingIcon /> : "Restore"}
+      </button>
+    </article>
+  );
+}
+
+function RecycleBinImageIcon({
+  attachment,
+}: {
+  attachment: Attachment | UploadingFileMessage["pendingAttachment"];
+}) {
+  const preferences = useContext(PreferencesContext);
+  const elementRef = useRef<HTMLSpanElement>(null);
+  const [previewUrl, setPreviewUrl] = useState<string>();
+  const thumbHashUrl = decodeThumbHash(attachment.thumbHash);
+
+  useEffect(() => {
+    if (
+      !("driveItemId" in attachment) ||
+      !preferences.previews.loadAutomatically
+    )
+      return;
+    let cancelled = false;
+    let observer: IntersectionObserver | undefined;
+    const load = async () => {
+      try {
+        const response = await sendRequest({
+          type: "files/read-preview",
+          driveItemId: attachment.driveItemId,
+          mimeType: attachment.mimeType,
+        });
+        if (!cancelled && response.ok && response.type === "files/preview") {
+          setPreviewUrl(response.dataUrl);
+        }
+      } catch {
+        // Keep the immediate ThumbHash or generic image placeholder.
+      }
+    };
+    if (typeof IntersectionObserver === "undefined") void load();
+    else {
+      observer = new IntersectionObserver((entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        observer?.disconnect();
+        void load();
+      });
+      if (elementRef.current) observer.observe(elementRef.current);
+    }
+    return () => {
+      cancelled = true;
+      observer?.disconnect();
+    };
+  }, [attachment, preferences.previews.loadAutomatically]);
+
+  return (
+    <span
+      className="recycle-bin-item-icon recycle-bin-image-icon"
+      ref={elementRef}
+      style={
+        thumbHashUrl ? { backgroundImage: `url(${thumbHashUrl})` } : undefined
+      }
+    >
+      {previewUrl ? (
+        <img alt="" src={previewUrl} />
+      ) : thumbHashUrl ? null : (
+        <ImagePlaceholderIcon />
+      )}
+    </span>
+  );
+}
+
+function formatDeletedMessageKind(kind: DeletedMessageItem["kind"]): string {
+  if (kind === "text") return "Text message";
+  if (kind === "image") return "Image";
+  return "File";
+}
+
+function formatDeletedGroupDate(value: string): string {
+  const date = new Date(`${value}T00:00:00`);
+  const today = new Date();
+  const todayKey = getLocalDateKey(today);
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (value === todayKey) return "Deleted today";
+  if (value === getLocalDateKey(yesterday)) return "Deleted yesterday";
+  return `Deleted ${new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: date.getFullYear() === today.getFullYear() ? undefined : "numeric",
+  }).format(date)}`;
+}
+
+function getLocalDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatRecoveryCountdown(item: DeletedMessageItem): string {
+  if (item.recovery === "forever") return "Permanent";
+  const remaining = item.recovery
+    ? Date.parse(item.recovery) - Date.now()
+    : Date.parse(item.deletedAt) + 10 * 24 * 60 * 60 * 1_000 - Date.now();
+  const days = Math.max(0, Math.ceil(remaining / (24 * 60 * 60 * 1_000)));
+  if (days === 0) return "Cleanup due";
+  return `${days} ${days === 1 ? "day" : "days"} left`;
+}
+
+function formatOriginalMessageDate(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(value));
 }
 
 function UnifiedPulseLoader() {
@@ -2763,8 +3780,7 @@ function PendingFileItem({
             )}
           </span>
           {item.status === "uploading" &&
-          (item.file?.size ?? item.attachment?.size ?? 0) >
-            MAX_DIRECT_FILE_BYTES ? (
+          (item.file?.size ?? item.attachment?.size ?? 0) > 0 ? (
             <button
               aria-label="Cancel upload"
               className="pending-cancel-button"
@@ -3345,6 +4361,10 @@ export function CommittedMessageItem({
   const [localDownloadId, setLocalDownloadId] = useState<number | null>();
   const [downloadProgress, setDownloadProgress] = useState<number>();
   const [imagePreviewDataUrl, setImagePreviewDataUrl] = useState<string>();
+  const [imagePreviewStatus, setImagePreviewStatus] = useState<
+    "loading" | "available" | "failed"
+  >("loading");
+  const [imagePreviewRetryVersion, setImagePreviewRetryVersion] = useState(0);
   const [isImagePreviewOpen, setIsImagePreviewOpen] = useState(false);
   const [cloudAvailability, setCloudAvailability] = useState<
     "checking" | "available" | "missing" | "unknown"
@@ -3354,10 +4374,12 @@ export function CommittedMessageItem({
   const mobileDownloadControllerRef = useRef<AbortController | undefined>(
     undefined,
   );
+  const downloadCancelledByUserRef = useRef(false);
   const isAttachment = message.type === "file";
   const isImage =
     isAttachment && message.attachment.mimeType.startsWith("image/");
   const isMobileSurface = document.body.classList.contains("mobile-surface");
+  const platformCapabilities = getPlatformBridge().capabilities;
   const isCloudChecking = cloudAvailability === "checking";
   const isCloudMissing = cloudAvailability === "missing";
   const attachmentDriveItemId =
@@ -3370,8 +4392,25 @@ export function CommittedMessageItem({
       .then(async (record) => {
         if (!record) {
           if (active) {
+            const platformDownload =
+              await getPlatformBridge().findAttachmentDownload(
+                message.attachment.driveItemId,
+              );
+            if (platformDownload) {
+              await putDownloadRecord({
+                driveItemId: message.attachment.driveItemId,
+                downloadId: platformDownload.id,
+                cloudName: message.attachment.name,
+                ...(platformDownload.filename
+                  ? { localFilename: platformDownload.filename }
+                  : {}),
+                createdAt: new Date().toISOString(),
+              });
+              setLocalDownloadId(platformDownload.id);
+              return;
+            }
             setLocalDownloadId(null);
-            if (isMobileSurface) {
+            if (isMobileSurface && platformCapabilities.navigationDownload) {
               void resumeMobileDownloadIfPresent();
             }
           }
@@ -3392,7 +4431,29 @@ export function CommittedMessageItem({
     return () => {
       active = false;
     };
-  }, [attachmentDriveItemId, isAttachment, isMobileSurface]);
+  }, [
+    attachmentDriveItemId,
+    isAttachment,
+    isMobileSurface,
+    platformCapabilities.navigationDownload,
+  ]);
+
+  useEffect(() => {
+    if (!attachmentDriveItemId) return;
+    return getPlatformBridge().subscribe((event) => {
+      if (
+        event.type !== "files/download-progress" ||
+        event.driveItemId !== attachmentDriveItemId
+      ) {
+        return;
+      }
+      setDownloadProgress(
+        event.totalBytes > 0
+          ? Math.min(99, (event.receivedBytes / event.totalBytes) * 100)
+          : 0,
+      );
+    });
+  }, [attachmentDriveItemId]);
 
   useEffect(() => {
     if (attachmentDriveItemId) setCloudAvailability("checking");
@@ -3400,7 +4461,7 @@ export function CommittedMessageItem({
 
   async function copyText() {
     if (message.type !== "text") return;
-    await navigator.clipboard.writeText(message.text);
+    await getPlatformBridge().copyText(message.text);
     setIsMenuOpen(false);
   }
 
@@ -3418,8 +4479,9 @@ export function CommittedMessageItem({
     forceDownload = false,
   ) {
     if (message.type !== "file") return;
+    downloadCancelledByUserRef.current = false;
     try {
-      if (isMobileSurface) {
+      if (isMobileSurface && platformCapabilities.navigationDownload) {
         const controller = new AbortController();
         mobileDownloadControllerRef.current = controller;
         const response = await sendRequest({
@@ -3445,7 +4507,7 @@ export function CommittedMessageItem({
           throw new Error("Edge did not provide a completed download record.");
         }
         setDownloadProgress(100);
-        const [download] = await browser.downloads.search({ id: downloadId });
+        const download = await getPlatformBridge().findDownload(downloadId);
         await putDownloadRecord({
           driveItemId: message.attachment.driveItemId,
           downloadId,
@@ -3471,15 +4533,22 @@ export function CommittedMessageItem({
         throw new Error("Unexpected local file response.");
       }
     } catch (cause) {
+      if (downloadCancelledByUserRef.current) {
+        setAttachmentOperationError("Download canceled.");
+        return;
+      }
       if (cause instanceof DOMException && cause.name === "AbortError") return;
       setAttachmentOperationError(
-        isMobileSurface && cause instanceof Error
+        isMobileSurface &&
+          platformCapabilities.navigationDownload &&
+          cause instanceof Error
           ? cause.message
           : saveAs
             ? "Couldn’t save this file."
             : "Download failed. Please try again.",
       );
     } finally {
+      downloadCancelledByUserRef.current = false;
       mobileDownloadControllerRef.current = undefined;
       setDownloadProgress(undefined);
       setIsAttachmentWorking(false);
@@ -3487,6 +4556,7 @@ export function CommittedMessageItem({
   }
 
   function cancelMobileDownload() {
+    downloadCancelledByUserRef.current = true;
     mobileDownloadControllerRef.current?.abort(
       new DOMException("Download canceled", "AbortError"),
     );
@@ -3546,9 +4616,9 @@ export function CommittedMessageItem({
               setDownloadProgress,
             );
       if (completed.downloadId === undefined) return;
-      const [download] = await browser.downloads.search({
-        id: completed.downloadId,
-      });
+      const download = await getPlatformBridge().findDownload(
+        completed.downloadId,
+      );
       await putDownloadRecord({
         driveItemId: message.attachment.driveItemId,
         downloadId: completed.downloadId,
@@ -3602,7 +4672,7 @@ export function CommittedMessageItem({
             return;
           }
 
-          await browser.downloads.open(downloadId);
+          await getPlatformBridge().openDownload(downloadId);
           await markDownloadOpened(message.attachment.driveItemId, undefined);
         } catch {
           await markLocalAttachmentMissing();
@@ -3674,9 +4744,7 @@ export function CommittedMessageItem({
     setIsMenuOpen(false);
     try {
       const pngBlob = await imageDataUrlToPngBlob(imagePreviewDataUrl);
-      await navigator.clipboard.write([
-        new ClipboardItem({ "image/png": pngBlob }),
-      ]);
+      await getPlatformBridge().copyImage(await blobToDataUrl(pngBlob));
     } catch {
       setAttachmentOperationError("Couldn’t copy this image.");
     }
@@ -3687,6 +4755,12 @@ export function CommittedMessageItem({
     event.preventDefault();
     if (isImage && imagePreviewDataUrl) setIsImagePreviewOpen(true);
     else runAttachmentAction(false, "bubble");
+  }
+
+  function retryImagePreview() {
+    if (!isImage || imagePreviewStatus !== "failed") return;
+    setImagePreviewStatus("loading");
+    setImagePreviewRetryVersion((version) => version + 1);
   }
 
   return (
@@ -3732,6 +4806,8 @@ export function CommittedMessageItem({
             checkVersion={checkVersion}
             onAvailabilityChange={setCloudAvailability}
             onPreviewChange={setImagePreviewDataUrl}
+            onPreviewStatusChange={setImagePreviewStatus}
+            retryVersion={imagePreviewRetryVersion}
           />
         ) : (
           <FileAttachment
@@ -3742,6 +4818,22 @@ export function CommittedMessageItem({
         )}
       </div>
       <span className="message-primary-actions message-primary-actions-ready">
+        {isImage &&
+        !isCloudMissing &&
+        (imagePreviewStatus === "failed" ||
+          (imagePreviewRetryVersion > 0 &&
+            imagePreviewStatus === "loading")) ? (
+          <button
+            aria-label="Retry image preview"
+            className="message-local-button image-preview-retry-button"
+            disabled={imagePreviewStatus === "loading"}
+            onClick={retryImagePreview}
+            type="button"
+          >
+            {imagePreviewStatus === "loading" ? <LoadingIcon /> : <RetryIcon />}
+            <span>Retry</span>
+          </button>
+        ) : null}
         {isMobileSurface && downloadProgress !== undefined ? (
           <button
             aria-label="Cancel download"
@@ -3825,7 +4917,7 @@ export function CommittedMessageItem({
                 Open in OneDrive
               </button>
             ) : null}
-            {!isMobileSurface ? (
+            {platformCapabilities.saveAs ? (
               <button
                 onClick={() => runAttachmentAction(true)}
                 role="menuitem"
@@ -3854,6 +4946,12 @@ export function CommittedMessageItem({
             ) : null}
             {typeof localDownloadId === "number" ? (
               <button
+                disabled={!platformCapabilities.showInFolder}
+                title={
+                  platformCapabilities.showInFolder
+                    ? undefined
+                    : "Show in folder is unavailable on this platform."
+                }
                 onClick={() => void showAttachmentInFolder()}
                 role="menuitem"
                 type="button"
@@ -4046,34 +5144,17 @@ function CenteredDeletedDataCleanupNotice({
   onRetry,
 }: {
   notice: {
-    phase: "failed" | "succeeded";
-    messages?: number;
-    attachments?: number;
+    phase: "failed";
     error?: string;
   };
   onClose: () => void;
   onRetry: () => void;
 }) {
-  const message =
-    notice.phase === "failed" ? (
-      (notice.error ?? "Cleanup failed. Try again later.")
-    ) : notice.messages === 0 ? (
-      "There was no remaining deleted OneDrop data to clean up."
-    ) : (
-      <>
-        <span>Deleted data cleanup has completed successfully.</span>
-        <span className="deleted-data-cleanup-summary">
-          {notice.messages ?? 0} deleted item
-          {notice.messages === 1 ? " was" : "s were"} permanently cleaned up,
-          including {notice.attachments ?? 0} attachment
-          {notice.attachments === 1 ? "" : "s"}.
-        </span>
-      </>
-    );
+  const message = notice.error ?? "Cleanup failed. Try again later.";
   return createPortal(
     <div className="centered-notice-layer">
       <aside
-        aria-live={notice.phase === "failed" ? "assertive" : "polite"}
+        aria-live="assertive"
         className={`centered-notice centered-deleted-data-notice centered-deleted-data-notice-${notice.phase}`}
       >
         <button
@@ -4085,15 +5166,13 @@ function CenteredDeletedDataCleanupNotice({
           <CloseIcon />
         </button>
         <p>{message}</p>
-        {notice.phase === "failed" ? (
-          <button
-            className="centered-notice-action"
-            onClick={onRetry}
-            type="button"
-          >
-            Retry
-          </button>
-        ) : null}
+        <button
+          className="centered-notice-action"
+          onClick={onRetry}
+          type="button"
+        >
+          Retry
+        </button>
       </aside>
     </div>,
     document.body,
@@ -4149,6 +5228,8 @@ export function ImageAttachment({
   checkVersion = 0,
   onAvailabilityChange,
   onPreviewChange,
+  onPreviewStatusChange,
+  retryVersion = 0,
 }: {
   attachment: Attachment;
   checkVersion?: number;
@@ -4156,7 +5237,10 @@ export function ImageAttachment({
     availability: "checking" | "available" | "missing" | "unknown",
   ) => void;
   onPreviewChange?: (dataUrl: string | undefined) => void;
+  onPreviewStatusChange?: (status: "loading" | "available" | "failed") => void;
+  retryVersion?: number;
 }) {
+  const preferences = useContext(PreferencesContext);
   const [dataUrl, setDataUrl] = useState<string>();
   const [isMissing, setIsMissing] = useState(false);
   const [previewFailed, setPreviewFailed] = useState(false);
@@ -4164,6 +5248,10 @@ export function ImageAttachment({
 
   useEffect(() => {
     let active = true;
+    setPreviewFailed(false);
+    setDataUrl(undefined);
+    onPreviewChange?.(undefined);
+    onPreviewStatusChange?.("loading");
     onAvailabilityChange?.("checking");
     void (async () => {
       const exists = await checkAttachmentAvailability(attachment.driveItemId);
@@ -4171,12 +5259,18 @@ export function ImageAttachment({
       if (exists === false) {
         onAvailabilityChange?.("missing");
         onPreviewChange?.(undefined);
+        onPreviewStatusChange?.("failed");
         setDataUrl(undefined);
         setIsMissing(true);
         return;
       }
       onAvailabilityChange?.(exists ? "available" : "unknown");
       setIsMissing(false);
+      if (!preferences.previews.loadAutomatically) {
+        onPreviewStatusChange?.("failed");
+        setPreviewFailed(true);
+        return;
+      }
       try {
         const response = await sendRequest({
           type: "files/read-preview",
@@ -4188,13 +5282,16 @@ export function ImageAttachment({
           if (!active) return;
           setDataUrl(response.dataUrl);
           onPreviewChange?.(response.dataUrl);
+          onPreviewStatusChange?.("available");
         } else if (active) {
           onPreviewChange?.(undefined);
+          onPreviewStatusChange?.("failed");
           setPreviewFailed(true);
         }
       } catch {
         if (active) {
           onPreviewChange?.(undefined);
+          onPreviewStatusChange?.("failed");
           setPreviewFailed(true);
         }
       }
@@ -4208,6 +5305,9 @@ export function ImageAttachment({
     checkVersion,
     onAvailabilityChange,
     onPreviewChange,
+    onPreviewStatusChange,
+    retryVersion,
+    preferences.previews.loadAutomatically,
   ]);
 
   return (
@@ -4448,10 +5548,15 @@ function FloatingErrorTooltip({
         aria-label={ariaLabel}
         className={className}
         onBlur={hideTooltip}
+        onClick={() => {
+          if (isRendered) hideTooltip();
+          else showTooltip();
+        }}
         onFocus={showTooltip}
         onMouseEnter={showTooltip}
         onMouseLeave={hideTooltip}
         ref={triggerRef}
+        tabIndex={0}
       >
         {children}
       </span>
@@ -4697,33 +5802,68 @@ async function readLocalImageMetadata(
 ): Promise<
   { imageWidth: number; imageHeight: number; thumbHash: string } | undefined
 > {
-  if (typeof createImageBitmap !== "function") return undefined;
+  let bitmap: ImageBitmap | undefined;
+  let objectUrl: string | undefined;
   try {
-    const bitmap = await createImageBitmap(file);
-    const scale = Math.min(1, 100 / Math.max(bitmap.width, bitmap.height));
-    const width = Math.max(1, Math.round(bitmap.width * scale));
-    const height = Math.max(1, Math.round(bitmap.height * scale));
+    let source: CanvasImageSource;
+    let sourceWidth: number;
+    let sourceHeight: number;
+    if (typeof createImageBitmap === "function") {
+      try {
+        bitmap = await createImageBitmap(file);
+      } catch {
+        bitmap = undefined;
+      }
+    }
+    if (bitmap) {
+      source = bitmap;
+      sourceWidth = bitmap.width;
+      sourceHeight = bitmap.height;
+    } else {
+      objectUrl = URL.createObjectURL(file);
+      const image = await loadLocalImage(objectUrl);
+      source = image;
+      sourceWidth = image.naturalWidth;
+      sourceHeight = image.naturalHeight;
+    }
+    if (sourceWidth < 1 || sourceHeight < 1) return undefined;
+    const scale = Math.min(1, 100 / Math.max(sourceWidth, sourceHeight));
+    const width = Math.max(1, Math.round(sourceWidth * scale));
+    const height = Math.max(1, Math.round(sourceHeight * scale));
     const canvas = document.createElement("canvas");
     canvas.width = width;
     canvas.height = height;
     const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) {
-      bitmap.close();
-      return undefined;
-    }
-    context.drawImage(bitmap, 0, 0, width, height);
+    if (!context) return undefined;
+    context.drawImage(source, 0, 0, width, height);
     const rgba = context.getImageData(0, 0, width, height).data;
     const thumbHash = encodeBytesBase64(rgbaToThumbHash(width, height, rgba));
     const metadata = {
-      imageWidth: bitmap.width,
-      imageHeight: bitmap.height,
+      imageWidth: sourceWidth,
+      imageHeight: sourceHeight,
       thumbHash,
     };
-    bitmap.close();
     return metadata;
   } catch {
     return undefined;
+  } finally {
+    bitmap?.close();
+    if (objectUrl) URL.revokeObjectURL(objectUrl);
   }
+}
+
+async function loadLocalImage(url: string): Promise<HTMLImageElement> {
+  const image = new Image();
+  image.src = url;
+  if (typeof image.decode === "function") {
+    await image.decode();
+    return image;
+  }
+  await new Promise<void>((resolve, reject) => {
+    image.onload = () => resolve();
+    image.onerror = () => reject(new Error("The image could not be decoded."));
+  });
+  return image;
 }
 
 function decodeThumbHash(value: string | undefined): string | undefined {
@@ -4791,6 +5931,16 @@ async function imageDataUrlToPngBlob(dataUrl: string): Promise<Blob> {
   );
   if (!blob) throw new Error("Image conversion failed.");
   return blob;
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () =>
+      reject(reader.error ?? new Error("Image read failed."));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function delay(milliseconds: number): Promise<void> {
@@ -4906,12 +6056,12 @@ async function checkAttachmentAvailability(
 
 async function verifyLocalDownload(
   downloadId: number,
-): Promise<Browser.downloads.DownloadItem | undefined> {
+): Promise<PlatformDownload | undefined> {
   // The first query asks Edge to refresh DownloadItem.exists asynchronously.
   // Read the item again after that refresh window before opening the local file.
-  await browser.downloads.search({ id: downloadId });
+  await getPlatformBridge().findDownload(downloadId);
   await delay(400);
-  const [download] = await browser.downloads.search({ id: downloadId });
+  const download = await getPlatformBridge().findDownload(downloadId);
   if (!download || download.state !== "complete" || download.exists === false) {
     return undefined;
   }
@@ -5008,6 +6158,32 @@ function SwitchAccountIcon() {
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <circle cx="10" cy="10" r="2.4" />
+      <path d="M10 3.2v1.3m0 11v1.3M3.2 10h1.3m11 0h1.3M5.2 5.2l.9.9m7.8 7.8.9.9m0-9.6-.9.9m-7.8 7.8-.9.9" />
+      <circle cx="10" cy="10" r="5.5" />
+    </svg>
+  );
+}
+
+function EditIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="m12.8 4.2 3 3M4.5 15.5l.7-3.4 7.9-7.9a1.4 1.4 0 0 1 2 0l.7.7a1.4 1.4 0 0 1 0 2l-7.9 7.9-3.4.7Z" />
+    </svg>
+  );
+}
+
+function ExternalLinkIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M11 4h5v5m0-5-7 7M8 6H5.5A1.5 1.5 0 0 0 4 7.5v7A1.5 1.5 0 0 0 5.5 16h7a1.5 1.5 0 0 0 1.5-1.5V12" />
+    </svg>
+  );
+}
+
 function AddAccountIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
@@ -5030,6 +6206,32 @@ function RecycleBinIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
       <path d="M4.7 6.2h10.6l-.7 10H5.4l-.7-10ZM3.5 6.2h13M7.4 6.2V3.8h5.2v2.4M8 9v4.5m4-4.5v4.5" />
+    </svg>
+  );
+}
+
+function BackIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="m12.8 4.5-5.5 5.5 5.5 5.5" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <circle cx="10" cy="10" r="7" />
+      <path d="M10 6v4l2.7 1.7" />
+    </svg>
+  );
+}
+
+function MessageIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20">
+      <path d="M3.5 4.5h13v9.2H8l-4.5 2.8v-12Z" />
+      <path d="M6.5 8h7M6.5 10.8h4.5" />
     </svg>
   );
 }
@@ -5064,6 +6266,8 @@ function LinkifiedMessageText({
   forcedBreakAt?: number | undefined;
   text: string;
 }) {
+  const preferences = useContext(PreferencesContext);
+  if (!preferences.messages.detectLinks) return <>{text}</>;
   const nodes: ReactNode[] = [];
   let cursor = 0;
   let key = 0;
@@ -5137,9 +6341,13 @@ function LinkifiedMessageText({
   return <>{nodes.length > 0 ? nodes : renderContent(text, 0)}</>;
 }
 
-function CleanupBroomIcon() {
+function CleanupBroomIcon({ animated = false }: { animated?: boolean }) {
   return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
+    <svg
+      aria-hidden="true"
+      className={`cleanup-broom-icon${animated ? " is-animated" : ""}`}
+      viewBox="0 0 24 24"
+    >
       <g className="cleanup-broom-position">
         <g className="cleanup-broom-sweep">
           <path strokeWidth="1.85" d="M16.1 2.7 11.55 13.15" />

@@ -27,6 +27,29 @@ body.mobile-surface {
   padding-left: calc(14px + var(--mobile-safe-left));
 }
 
+/* Touch has no persistent hover target, so message actions must remain
+   discoverable on both Android and iOS. */
+.mobile-surface .message-more-button,
+.mobile-surface .message-local-button,
+.mobile-surface .message-more-button.message-more-button-checking:disabled,
+.mobile-surface .pending-retry-button,
+.mobile-surface .pending-more-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (hover: none), (pointer: coarse) {
+  .mobile-surface .message-more-button:active,
+  .mobile-surface .message-local-button:active,
+  .mobile-surface .pending-retry-button:active,
+  .mobile-surface .pending-more-button:active,
+  .mobile-surface .account-switch-toggle:active,
+  .mobile-surface .account-menu-action:active:not(:disabled) {
+    color: #d4dae2;
+    background: rgb(142 152 167 / 14%);
+  }
+}
+
 .mobile-image-preview {
   position: fixed;
   z-index: 10000;

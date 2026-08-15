@@ -161,6 +161,48 @@ const defaultSendMessage = async (
         messages: 2,
         attachments: 1,
       };
+    case "deleted-data/read":
+      return {
+        ok: true,
+        type: "deleted-data/items",
+        items: [
+          {
+            deletedAt: "2026-08-14T10:00:00.000Z",
+            originalMonth: "2026-08",
+            kind: "text",
+            message: {
+              schemaVersion: 1,
+              id: "01989f5e-7700-7000-8000-000000000881",
+              type: "text",
+              text: "deleted text message",
+              createdAt: "2026-08-10T08:30:00.000Z",
+            },
+          },
+        ],
+      };
+    case "deleted-data/restore":
+      return {
+        ok: true,
+        type: "deleted-data/restored",
+        item: {
+          deletedAt: "2026-08-14T10:00:00.000Z",
+          originalMonth: "2026-08",
+          kind: "text",
+          message: {
+            schemaVersion: 1,
+            id: request.messageId,
+            type: "text",
+            text: "deleted text message",
+            createdAt: "2026-08-10T08:30:00.000Z",
+          },
+        },
+        result: {
+          state: "loaded",
+          month: request.month,
+          eTag: "restored-etag",
+          messages: [],
+        },
+      };
     default:
       throw new Error("Unexpected request");
   }
@@ -289,15 +331,16 @@ describe("side panel message composer", () => {
     expect(currentMonthReads).toBe(1);
   });
 
-  it("warns before manual cleanup and shows its final success result", async () => {
+  it("warns before manual cleanup and finishes without a success dialog", async () => {
     await screenForComposer();
     fireEvent.click(
       screen.getByRole("button", {
         name: /one@example.com|sycamore|microsoft account/iu,
       }),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Recycle bin" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "Clean up deleted data" }),
+      await screen.findByRole("button", { name: "Clean up now" }),
     );
 
     expect(
@@ -307,18 +350,129 @@ describe("side panel message composer", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
 
+    await waitFor(() =>
+      expect(sendMessage).toHaveBeenCalledWith({
+        type: "deleted-data/clean-now",
+      }),
+    );
     expect(
-      await screen.findByText(
-        "Deleted data cleanup has completed successfully.",
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "2 deleted items were permanently cleaned up, including 1 attachment.",
-      ),
-    ).toBeInTheDocument();
+      screen.queryByText("Deleted data cleanup has completed successfully."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the recycle bin and restores a deleted message", async () => {
+    await screenForComposer();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Recycle bin" }));
+
+    expect(await screen.findByText("deleted text message")).toBeInTheDocument();
+    expect(screen.getByText("Text message")).toBeInTheDocument();
+    expect(screen.getByText(/Sent Aug 10, 2026/iu)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+
+    await waitFor(() =>
+      expect(
+        screen.queryByText("deleted text message"),
+      ).not.toBeInTheDocument(),
+    );
     expect(sendMessage).toHaveBeenCalledWith({
-      type: "deleted-data/clean-now",
+      type: "deleted-data/restore",
+      messageId: "01989f5e-7700-7000-8000-000000000881",
+      month: "2026-08",
+    });
+  });
+
+  it("returns from the recycle bin to the previous timeline position", async () => {
+    await screenForComposer();
+    const timeline = document.querySelector<HTMLDivElement>(".message-scroll")!;
+    Object.defineProperty(timeline, "scrollHeight", {
+      configurable: true,
+      value: 1_000,
+    });
+    Object.defineProperty(timeline, "clientHeight", {
+      configurable: true,
+      value: 400,
+    });
+    timeline.scrollTop = 137;
+    fireEvent.scroll(timeline);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Recycle bin" }));
+    await screen.findByText("deleted text message");
+    fireEvent.click(screen.getByRole("button", { name: "Back to messages" }));
+
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLDivElement>(".message-scroll")?.scrollTop,
+      ).toBe(137),
+    );
+  });
+
+  it("loads a real image preview for a visible deleted image", async () => {
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type === "deleted-data/read") {
+        return {
+          ok: true,
+          type: "deleted-data/items",
+          items: [
+            {
+              deletedAt: "2026-08-14T10:00:00.000Z",
+              originalMonth: "2026-08",
+              kind: "image",
+              message: {
+                schemaVersion: 1,
+                id: "01989f5e-7700-7000-8000-000000000882",
+                type: "file",
+                createdAt: "2026-08-10T08:30:00.000Z",
+                attachment: {
+                  driveItemId: "deleted-image-item",
+                  name: "deleted-image.png",
+                  size: 1200,
+                  mimeType: "image/png",
+                },
+              },
+            },
+          ],
+        };
+      }
+      if (request.type === "files/read-preview") {
+        return {
+          ok: true,
+          type: "files/preview",
+          dataUrl: "data:image/png;base64,cHJldmlldw==",
+        };
+      }
+      return originalImplementation(request);
+    });
+
+    await screenForComposer();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Recycle bin" }));
+
+    expect(await screen.findByText("deleted-image.png")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        document.querySelector<HTMLImageElement>(".recycle-bin-image-icon img")
+          ?.src,
+      ).toContain("data:image/png"),
+    );
+    expect(sendMessage).toHaveBeenCalledWith({
+      type: "files/read-preview",
+      driveItemId: "deleted-image-item",
+      mimeType: "image/png",
     });
   });
 
@@ -346,9 +500,15 @@ describe("side panel message composer", () => {
           name: /one@example.com|sycamore|microsoft account/iu,
         }),
       );
+      fireEvent.click(screen.getByRole("button", { name: "Recycle bin" }));
       fireEvent.click(
-        screen.getByRole("button", { name: "Clean up deleted data" }),
+        await screen.findByRole("button", { name: "Clean up now" }),
       );
+      expect(
+        screen
+          .getByRole("button", { name: "Clean up now" })
+          .querySelector(".cleanup-broom-icon"),
+      ).not.toHaveClass("is-animated");
       fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
 
       expect(
@@ -356,17 +516,13 @@ describe("side panel message composer", () => {
       ).toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 
+      await waitFor(() => expect(attempts).toBe(2));
       expect(
-        await screen.findByText(
-          "Deleted data cleanup has completed successfully.",
-        ),
-      ).toBeInTheDocument();
+        screen.queryByText("Temporary cleanup failure."),
+      ).not.toBeInTheDocument();
       expect(
-        screen.getByText(
-          "1 deleted item was permanently cleaned up, including 0 attachments.",
-        ),
-      ).toBeInTheDocument();
-      expect(attempts).toBe(2);
+        screen.queryByText("Deleted data cleanup has completed successfully."),
+      ).not.toBeInTheDocument();
     } finally {
       sendMessage.mockImplementation(originalImplementation);
     }
@@ -395,37 +551,44 @@ describe("side panel message composer", () => {
         name: /one@example.com|sycamore|microsoft account/iu,
       });
       fireEvent.click(accountButton);
+      fireEvent.click(screen.getByRole("button", { name: "Recycle bin" }));
       fireEvent.click(
-        screen.getByRole("button", { name: "Clean up deleted data" }),
+        await screen.findByRole("button", { name: "Clean up now" }),
       );
       fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
 
-      const cleanupStatus = await screen.findByRole("status", {
-        name: "Cleaning up deleted data",
-      });
-      expect(cleanupStatus).toBeInTheDocument();
-      fireEvent.mouseEnter(cleanupStatus.parentElement!);
       expect(
-        await screen.findByText("Cleaning up deleted data…"),
-      ).toBeInTheDocument();
+        screen.queryByRole("status", { name: "Cleaning up deleted data" }),
+      ).not.toBeInTheDocument();
       expect(composer).not.toBeDisabled();
       expect(
         screen.getByRole("button", { name: "Refresh messages and files" }),
       ).not.toBeDisabled();
 
-      fireEvent.click(accountButton);
+      expect(screen.getByRole("button", { name: "Cleaning…" })).toBeDisabled();
       expect(
-        screen.getByRole("button", { name: "Cleaning up…" }),
-      ).toBeDisabled();
+        screen
+          .getByRole("button", { name: "Cleaning…" })
+          .querySelector(".cleanup-broom-icon"),
+      ).toHaveClass("is-animated");
+
+      fireEvent.click(screen.getByRole("button", { name: "Back to messages" }));
+      const cleanupStatus = await screen.findByRole("status", {
+        name: "Cleaning up deleted data",
+      });
+      fireEvent.mouseEnter(cleanupStatus.parentElement!);
+      expect(
+        await screen.findByText("Cleaning up deleted data…"),
+      ).toBeInTheDocument();
 
       finishCleanup();
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("status", { name: "Cleaning up deleted data" }),
+        ).not.toBeInTheDocument(),
+      );
       expect(
-        await screen.findByText(
-          "Deleted data cleanup has completed successfully.",
-        ),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole("status", { name: "Cleaning up deleted data" }),
+        screen.queryByText("Deleted data cleanup has completed successfully."),
       ).not.toBeInTheDocument();
     } finally {
       sendMessage.mockImplementation(originalImplementation);
@@ -560,7 +723,7 @@ describe("side panel message composer", () => {
     expect(
       screen.getByRole("button", { name: "Open OneDrive folder" }),
     ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Recycle bin/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /Recycle bin/ })).toBeEnabled();
     expect(
       screen.getByRole("button", { name: "Sign out…" }),
     ).toBeInTheDocument();

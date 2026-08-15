@@ -1,6 +1,6 @@
 {
   "name": "onedrop",
-  "version": "0.1.0",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "description": "A serverless Microsoft Edge extension for sharing through a user's OneDrive.",

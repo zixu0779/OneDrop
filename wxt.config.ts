@@ -7,7 +7,7 @@ export default defineConfig({
     name: "OneDrop",
     description:
       "Share text and files across Edge devices through your OneDrive.",
-    version: "0.1.0",
+    version: "0.9.0",
     minimum_chrome_version: "114",
     permissions: [
       "alarms",

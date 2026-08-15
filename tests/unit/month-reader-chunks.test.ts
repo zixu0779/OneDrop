@@ -173,6 +173,53 @@ describe("chunked month reader", () => {
     }
   });
 
+  it("downloads no more than three changed chunks concurrently", async () => {
+    const messages = Array.from({ length: 5 }, (_, index) =>
+      createTextMessage(
+        `chunk-${index + 1}`,
+        new Date(`2026-08-0${index + 1}T00:00:00.000Z`),
+        `01989f5e-7700-7000-8000-00000000010${index + 1}`,
+      ),
+    );
+    let activeDownloads = 0;
+    let peakDownloads = 0;
+    const releases: (() => void)[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((input: string | URL | Request) => {
+        if (String(input).includes("/children?")) {
+          return Promise.resolve(
+            Response.json({
+              value: messages.map((_, index) => ({
+                id: `chunk-${index + 1}`,
+                name: `${String(index + 1).padStart(4, "0")}.json`,
+                eTag: `tag-${index + 1}`,
+              })),
+            }),
+          );
+        }
+        const chunkIndex = Number(String(input).match(/chunk-(\d+)/u)?.[1]);
+        activeDownloads += 1;
+        peakDownloads = Math.max(peakDownloads, activeDownloads);
+        return new Promise<Response>((resolve) => {
+          releases.push(() => {
+            activeDownloads -= 1;
+            resolve(Response.json(document([messages[chunkIndex - 1]!])));
+          });
+        });
+      }),
+    );
+
+    const snapshotPromise = readMonthSnapshot("2026-08", "access-token");
+    await vi.waitFor(() => expect(releases).toHaveLength(3));
+    releases.splice(0, 3).forEach((release) => release());
+    await vi.waitFor(() => expect(releases).toHaveLength(2));
+    releases.splice(0, 2).forEach((release) => release());
+    await snapshotPromise;
+
+    expect(peakDownloads).toBe(3);
+  });
+
   it("treats a missing chunk directory as an empty month", async () => {
     vi.stubGlobal(
       "fetch",

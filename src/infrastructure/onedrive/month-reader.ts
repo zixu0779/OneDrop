@@ -26,6 +26,7 @@ import { readTombstoneIds } from "./tombstones";
 const monthPattern = /^\d{4}-\d{2}$/u;
 const chunkNamePattern = /^(\d{4})\.json$/u;
 const ARCHIVE_OPTIMIZATION_TIMEOUT_MS = 8_000;
+const MONTH_CHUNK_DOWNLOAD_CONCURRENCY = 3;
 
 const driveItemSchema = z.object({
   id: z.string().min(1),
@@ -281,28 +282,46 @@ async function readChunks(
   const chunks: CachedChunk[] = [];
   const corruptFiles: CorruptMonthFile[] = [];
 
-  for (const item of items) {
+  const chunkItems = items.flatMap((item) => {
     const match = item.name?.match(chunkNamePattern);
-    if (!match) continue;
-    const index = Number(match[1]);
-    const cached = cachedById.get(item.id);
-    try {
-      const downloaded =
-        cached?.eTag === item.eTag && cached.messageLines
-          ? { document: cached.document, messageLines: cached.messageLines }
-          : await downloadDocument(item.id, month, accessToken);
-      chunks.push({
-        index,
-        itemId: item.id,
-        eTag: item.eTag,
-        document: downloaded.document,
-        messageLines: downloaded.messageLines,
-      });
-    } catch (error) {
-      if (!(error instanceof DamagedMonthDocumentError)) throw error;
-      corruptFiles.push({ itemId: item.id, name: item.name ?? "Unknown file" });
+    return match ? [{ item, index: Number(match[1]) }] : [];
+  });
+
+  let nextChunkIndex = 0;
+  async function downloadNextChunk(): Promise<void> {
+    while (nextChunkIndex < chunkItems.length) {
+      const chunkItem = chunkItems[nextChunkIndex++];
+      if (!chunkItem) return;
+      const { item, index } = chunkItem;
+      const cached = cachedById.get(item.id);
+      try {
+        const downloaded =
+          cached?.eTag === item.eTag && cached.messageLines
+            ? { document: cached.document, messageLines: cached.messageLines }
+            : await downloadDocument(item.id, month, accessToken);
+        chunks.push({
+          index,
+          itemId: item.id,
+          eTag: item.eTag,
+          document: downloaded.document,
+          messageLines: downloaded.messageLines,
+        });
+      } catch (error) {
+        if (!(error instanceof DamagedMonthDocumentError)) throw error;
+        corruptFiles.push({
+          itemId: item.id,
+          name: item.name ?? "Unknown file",
+        });
+      }
     }
   }
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(MONTH_CHUNK_DOWNLOAD_CONCURRENCY, chunkItems.length) },
+      () => downloadNextChunk(),
+    ),
+  );
 
   return {
     chunks: chunks.sort((left, right) => left.index - right.index),

@@ -1,8 +1,18 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
+import { browserPlatformBridge } from "../../src/platform/browser-platform-bridge";
+import { setPlatformBridge } from "../../src/platform/platform-bridge";
 import { App } from "./App";
+import {
+  applyAppearance,
+  cachedPreferences,
+} from "../../src/features/settings/settings-cache";
 import "./styles.css";
+
+setPlatformBridge(browserPlatformBridge);
+const cached = cachedPreferences();
+applyAppearance(cached.appearance.theme, cached.appearance.textSize);
 
 const root = document.getElementById("root");
 

@@ -1,5 +1,9 @@
 .output
 .wxt
 coverage
+dist
 node_modules
 package-lock.json
+ios/App/App/capacitor.config.json
+ios/App/App/public
+ios/App/Pods

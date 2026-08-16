@@ -114,7 +114,7 @@ export const iosPlatformBridge: PlatformBridge = {
   },
 
   appVersion() {
-    return "1.0";
+    return appMetadata.version;
   },
 
   async request(request) {

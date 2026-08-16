@@ -1,4 +1,5 @@
 import { defineConfig } from "wxt";
+import { appMetadata } from "./src/config/app";
 
 export default defineConfig({
   modules: ["@wxt-dev/module-react"],
@@ -7,7 +8,7 @@ export default defineConfig({
     name: "OneDrop",
     description:
       "Share text and files across Edge devices through your OneDrive.",
-    version: "0.9.0",
+    version: appMetadata.version,
     minimum_chrome_version: "114",
     permissions: [
       "alarms",

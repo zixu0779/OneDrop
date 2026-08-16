@@ -1,6 +1,7 @@
 import {
   type CSSProperties,
   type DragEvent as ReactDragEvent,
+  type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -63,6 +64,10 @@ import {
 } from "../../src/infrastructure/indexed-db/downloads";
 import { getMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
 import { getUtcMonth } from "../../src/features/messages/month";
+import {
+  createMessageBatches,
+  getVisibleMessages,
+} from "../../src/features/messages/message-batches";
 import {
   deletePendingText,
   listPendingTexts,
@@ -146,6 +151,8 @@ export type MonthReadToken = {
 
 const FOREGROUND_SYNC_STALE_MS = 30_000;
 const RECYCLE_BIN_CACHE_MS = 30_000;
+const HISTORY_LOADING_MIN_MS = 800;
+const HISTORY_BLOCKED_NOTICE_MS = 800;
 const PreferencesContext = createContext<DevicePreferences>(
   defaultDevicePreferences(),
 );
@@ -172,6 +179,108 @@ function withoutMessage(
     ...result,
     messages: result.messages.filter(
       (message) => message.id !== removedMessageId,
+    ),
+  };
+}
+
+function withVisibleMessageBatches(
+  result: MonthReadResult,
+  visibleBatchCount: number,
+): MonthReadResult {
+  return result.state === "loaded"
+    ? {
+        ...result,
+        messages: getVisibleMessages(result.messages, visibleBatchCount),
+      }
+    : result;
+}
+
+type CurrentTimelineBatchItem = {
+  id: string;
+  createdAt: string;
+  type: string;
+};
+
+function isFailedPendingFile(item: PendingFile): boolean {
+  return item.status === "upload-failed" || item.status === "cancelled";
+}
+
+function isFailedPendingText(item: PendingText): boolean {
+  return item.status === "send-failed";
+}
+
+export function getCurrentTimelineBatchItems(
+  result: MonthReadResult,
+  pendingFiles: PendingFile[],
+  pendingTexts: PendingText[],
+): CurrentTimelineBatchItem[] {
+  const localPendingIds = new Set([
+    ...pendingFiles.map((item) => item.id),
+    ...pendingTexts.map((item) => item.id),
+  ]);
+  const committedIds = new Set(
+    result.state === "loaded"
+      ? result.messages
+          .filter((message) => message.type !== "file-uploading")
+          .map((message) => message.id)
+      : [],
+  );
+  const cloudItems: CurrentTimelineBatchItem[] =
+    result.state === "loaded"
+      ? result.messages
+          .filter(
+            (message) =>
+              message.type !== "file-uploading" ||
+              !localPendingIds.has(message.id),
+          )
+          .map(({ id, createdAt, type }) => ({ id, createdAt, type }))
+      : [];
+  const localFailedItems: CurrentTimelineBatchItem[] = [
+    ...pendingFiles
+      .filter((item) => isFailedPendingFile(item) && !committedIds.has(item.id))
+      .map(({ id, createdAt }) => ({ id, createdAt, type: "text" })),
+    ...pendingTexts
+      .filter((item) => isFailedPendingText(item) && !committedIds.has(item.id))
+      .map(({ id, createdAt }) => ({ id, createdAt, type: "text" })),
+  ];
+  return [...cloudItems, ...localFailedItems].sort(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.id.localeCompare(right.id),
+  );
+}
+
+export function getVisibleCurrentTimeline(
+  result: MonthReadResult,
+  pendingFiles: PendingFile[],
+  pendingTexts: PendingText[],
+  visibleBatchCount: number,
+): {
+  result: MonthReadResult;
+  pendingFiles: PendingFile[];
+  pendingTexts: PendingText[];
+} {
+  const visibleIds = new Set(
+    getVisibleMessages(
+      getCurrentTimelineBatchItems(result, pendingFiles, pendingTexts),
+      visibleBatchCount,
+    ).map((item) => item.id),
+  );
+  return {
+    result:
+      result.state === "loaded"
+        ? {
+            ...result,
+            messages: result.messages.filter((message) =>
+              visibleIds.has(message.id),
+            ),
+          }
+        : result,
+    pendingFiles: pendingFiles.filter(
+      (item) => !isFailedPendingFile(item) || visibleIds.has(item.id),
+    ),
+    pendingTexts: pendingTexts.filter(
+      (item) => !isFailedPendingText(item) || visibleIds.has(item.id),
     ),
   };
 }
@@ -209,11 +318,17 @@ export function App() {
   const [error, setError] = useState<string>();
   const [isWorking, setIsWorking] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isMobileKeyboardVisible, setIsMobileKeyboardVisible] = useState(false);
+
   const [monthResult, setMonthResult] = useState<MonthReadResult>();
   const [historicalMonthResults, setHistoricalMonthResults] = useState<
     MonthReadResult[]
   >([]);
+  const [visibleMessageBatchCounts, setVisibleMessageBatchCounts] = useState<
+    Record<string, number>
+  >({});
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [isHistoryLoadBlocked, setIsHistoryLoadBlocked] = useState(false);
   const [deviceId, setDeviceId] = useState<string>();
   const [draft, setDraft] = useState("");
   const [isAccountOpen, setIsAccountOpen] = useState(false);
@@ -258,7 +373,9 @@ export function App() {
   >(() => readCachedDeviceSettings());
   const [knownDevices, setKnownDevices] = useState<DeviceSettings[]>([]);
   const [isSettingsSaving, setIsSettingsSaving] = useState(false);
-  const [isRecycleBinLoading, setIsRecycleBinLoading] = useState(false);
+  const [recycleBinLoadPhase, setRecycleBinLoadPhase] = useState<
+    "initial" | "refresh" | undefined
+  >();
   const [deletedMessageItems, setDeletedMessageItems] = useState<
     DeletedMessageItem[]
   >([]);
@@ -303,6 +420,9 @@ export function App() {
   const restoreInFlightRef = useRef(false);
   const lastSuccessfulSyncAtRef = useRef(0);
   const lastRecycleBinLoadAtRef = useRef(0);
+  const recycleBinLoadInFlightRef = useRef<Promise<void> | undefined>(
+    undefined,
+  );
   const localOperationVersionsRef = useRef<Map<string, number>>(new Map());
   const activeLocalWritesRef = useRef<Map<string, number>>(new Map());
   const readRequestVersionsRef = useRef<Map<string, number>>(new Map());
@@ -312,14 +432,18 @@ export function App() {
   const settingsWriteRevisionRef = useRef(0);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileDragDepthRef = useRef(0);
-  const historyScrollHeightRef = useRef<number | undefined>(undefined);
-  const historyLoadingHeightRef = useRef(0);
-  const historyLoadingElementRef = useRef<HTMLSpanElement>(null);
+  const historyViewportAnchorRef = useRef<
+    { messageId: string; top: number } | undefined
+  >(undefined);
   const historyLoadingRef = useRef(false);
+  const historyBlockedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const historyCursorRef = useRef<string | undefined>(undefined);
   const reselectPendingIdRef = useRef<string | null>(null);
   const noticeDragStartYRef = useRef<number | null>(null);
   const noticeWheelLockedRef = useRef(false);
+  const androidHistoryPullStartYRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const preservedTimelineViewportRef = useRef<
     { scrollTop: number; scrollHeight: number } | undefined
@@ -329,6 +453,8 @@ export function App() {
   >(undefined);
   const forceScrollToBottomRef = useRef(false);
   const initialBottomFrameRef = useRef<number | undefined>(undefined);
+  const historyAnchorReleaseFrameRef = useRef<number | undefined>(undefined);
+  const isApplyingHistoryScrollRef = useRef(false);
   const isApplyingBottomScrollRef = useRef(false);
   const cancelledUploadIdsRef = useRef<Set<string>>(new Set());
   const noticeCycleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -345,6 +471,14 @@ export function App() {
   const conflictNoticeCount = visibleMessageConflicts.length;
   const notificationCount = corruptNoticeCount + conflictNoticeCount;
   const isSendingText = isCreatingPendingText;
+  const visibleCurrentTimeline = monthResult
+    ? getVisibleCurrentTimeline(
+        monthResult,
+        pendingFiles,
+        pendingTexts,
+        visibleMessageBatchCounts[monthResult.month] ?? 1,
+      )
+    : undefined;
 
   function enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
     const queued = writeQueueRef.current.catch(() => undefined).then(operation);
@@ -361,12 +495,28 @@ export function App() {
   ) {
     const authoritativeResult = withoutMessage(result, removedMessageId);
     if (result.month === getUtcMonth()) {
-      setMonthResult(authoritativeResult);
+      setMonthResult((current) =>
+        removedMessageId
+          ? mergeCurrentMonthSnapshots(
+              current,
+              authoritativeResult,
+              new Set([removedMessageId]),
+            )
+          : authoritativeResult,
+      );
       return;
     }
     setHistoricalMonthResults((results) => {
       return results.map((item) =>
-        item.month === result.month ? authoritativeResult : item,
+        item.month === result.month
+          ? removedMessageId
+            ? mergeCurrentMonthSnapshots(
+                item,
+                authoritativeResult,
+                new Set([removedMessageId]),
+              )
+            : authoritativeResult
+          : item,
       );
     });
   }
@@ -414,16 +564,23 @@ export function App() {
     result: MonthReadResult,
     token: MonthReadToken,
   ): boolean {
-    if (
-      deviceSettings?.preferences.messages.autoScrollForNewMessages === false &&
+    const hasNewCurrentMonthMessages =
+      result.month === getUtcMonth() &&
       monthResult?.state === "loaded" &&
       result.state === "loaded" &&
       result.messages.some(
         (message) =>
           !monthResult.messages.some((current) => current.id === message.id),
-      )
-    ) {
-      shouldStickToBottomRef.current = false;
+      );
+    if (hasNewCurrentMonthMessages) {
+      if (
+        deviceSettings?.preferences.messages.autoScrollForNewMessages === false
+      ) {
+        shouldStickToBottomRef.current = false;
+      } else {
+        shouldStickToBottomRef.current = true;
+        forceScrollToBottomRef.current = true;
+      }
     }
     const canApplyDirectly = shouldApplyMonthRead(
       token,
@@ -582,6 +739,48 @@ export function App() {
     resizeComposer(composerRef.current);
   }, [draft]);
 
+  useEffect(() => {
+    if (!document.body.classList.contains("mobile-surface")) return;
+    const viewport = window.visualViewport;
+    let baselineHeight = viewport?.height ?? window.innerHeight;
+
+    const updateKeyboardVisibility = () => {
+      const currentHeight = viewport?.height ?? window.innerHeight;
+      if (document.activeElement !== composerRef.current) {
+        baselineHeight = Math.max(baselineHeight, currentHeight);
+        setIsMobileKeyboardVisible(false);
+        return;
+      }
+      setIsMobileKeyboardVisible(baselineHeight - currentHeight > 100);
+    };
+
+    viewport?.addEventListener("resize", updateKeyboardVisibility);
+    window.addEventListener("resize", updateKeyboardVisibility);
+    return () => {
+      viewport?.removeEventListener("resize", updateKeyboardVisibility);
+      window.removeEventListener("resize", updateKeyboardVisibility);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!document.body.classList.contains("ios-surface")) return;
+    const preventComposerViewportDrag = (event: TouchEvent) => {
+      const target = event.target;
+      if (
+        isMobileKeyboardVisible &&
+        target instanceof Node &&
+        composerRef.current?.closest(".composer")?.contains(target)
+      ) {
+        event.preventDefault();
+      }
+    };
+    document.addEventListener("touchmove", preventComposerViewportDrag, {
+      passive: false,
+    });
+    return () =>
+      document.removeEventListener("touchmove", preventComposerViewportDrag);
+  }, [isMobileKeyboardVisible]);
+
   const timelineIdentity = [
     ...historicalMonthResults.flatMap((result) =>
       result.state === "loaded"
@@ -653,20 +852,34 @@ export function App() {
   }, [monthResult, isRecycleBinOpen, isSettingsOpen]);
 
   useLayoutEffect(() => {
-    if (!isLoadingHistory) return;
-    historyLoadingHeightRef.current =
-      historyLoadingElementRef.current?.getBoundingClientRect().height ?? 0;
+    const timeline = timelineScrollRef.current;
+    if (isLoadingHistory) return;
+    if (timeline?.style.getPropertyValue("overflow-anchor") === "none") {
+      historyAnchorReleaseFrameRef.current = requestAnimationFrame(() => {
+        timeline.style.removeProperty("overflow-anchor");
+        isApplyingHistoryScrollRef.current = false;
+        historyAnchorReleaseFrameRef.current = undefined;
+      });
+    }
   }, [isLoadingHistory]);
 
   useLayoutEffect(() => {
+    if (isLoadingHistory) return;
     const timeline = timelineScrollRef.current;
-    const previousHeight = historyScrollHeightRef.current;
-    if (!timeline || previousHeight === undefined) return;
+    const anchor = historyViewportAnchorRef.current;
+    if (!timeline || !anchor) return;
+    const anchorElement = Array.from(
+      timeline.querySelectorAll<HTMLElement>("[data-timeline-item-id]"),
+    ).find((element) => element.dataset.timelineItemId === anchor.messageId);
+    if (!anchorElement) {
+      historyViewportAnchorRef.current = undefined;
+      return;
+    }
+    isApplyingHistoryScrollRef.current = true;
     timeline.scrollTop +=
-      timeline.scrollHeight - previousHeight - historyLoadingHeightRef.current;
-    historyScrollHeightRef.current = undefined;
-    historyLoadingHeightRef.current = 0;
-  }, [historicalMonthResults]);
+      anchorElement.getBoundingClientRect().top - anchor.top;
+    historyViewportAnchorRef.current = undefined;
+  }, [historicalMonthResults, visibleMessageBatchCounts, isLoadingHistory]);
 
   useEffect(() => {
     if (!isAccountOpen) return;
@@ -699,6 +912,9 @@ export function App() {
   useEffect(
     () => () => {
       if (scrollTimerRef.current) clearTimeout(scrollTimerRef.current);
+      if (historyBlockedTimerRef.current) {
+        clearTimeout(historyBlockedTimerRef.current);
+      }
     },
     [],
   );
@@ -1416,7 +1632,12 @@ export function App() {
     }
   }
 
-  async function loadRecycleBin(force = false) {
+  async function loadRecycleBin(
+    force = false,
+    phase: "initial" | "refresh" = force ? "refresh" : "initial",
+  ) {
+    if (recycleBinLoadInFlightRef.current)
+      return recycleBinLoadInFlightRef.current;
     if (
       !force &&
       lastRecycleBinLoadAtRef.current > 0 &&
@@ -1424,20 +1645,27 @@ export function App() {
     ) {
       return;
     }
-    setIsRecycleBinLoading(true);
-    setError(undefined);
-    try {
-      const response = await sendRequest({ type: "deleted-data/read" });
-      if (!response.ok || response.type !== "deleted-data/items") {
-        throw new Error("OneDrop received an unexpected recycle-bin response.");
+    const load = (async () => {
+      setRecycleBinLoadPhase(phase);
+      setError(undefined);
+      try {
+        const response = await sendRequest({ type: "deleted-data/read" });
+        if (!response.ok || response.type !== "deleted-data/items") {
+          throw new Error(
+            "OneDrop received an unexpected recycle-bin response.",
+          );
+        }
+        setDeletedMessageItems(response.items);
+        lastRecycleBinLoadAtRef.current = Date.now();
+      } catch (cause) {
+        setError(getClientError(cause));
+      } finally {
+        setRecycleBinLoadPhase(undefined);
+        recycleBinLoadInFlightRef.current = undefined;
       }
-      setDeletedMessageItems(response.items);
-      lastRecycleBinLoadAtRef.current = Date.now();
-    } catch (cause) {
-      setError(getClientError(cause));
-    } finally {
-      setIsRecycleBinLoading(false);
-    }
+    })();
+    recycleBinLoadInFlightRef.current = load;
+    return load;
   }
 
   async function openRecycleBin() {
@@ -1620,6 +1848,12 @@ export function App() {
     };
     try {
       await putPendingText(pending);
+      if (
+        deviceSettings?.preferences.messages.autoScrollForNewMessages !== false
+      ) {
+        shouldStickToBottomRef.current = true;
+        forceScrollToBottomRef.current = true;
+      }
       setPendingTexts((items) => [...items, pending]);
       setDraft("");
     } finally {
@@ -1637,12 +1871,15 @@ export function App() {
     setError(undefined);
     const sentAt = new Date().toISOString();
     try {
-      await updatePendingText(pending.id, { status: "sending" });
       setPendingTexts((items) =>
-        items.map((item) =>
-          item.id === pending.id ? { ...item, status: "sending" } : item,
-        ),
+        items.map((item) => {
+          if (item.id !== pending.id) return item;
+          const sendingItem: PendingText = { ...item, status: "sending" };
+          delete sendingItem.error;
+          return sendingItem;
+        }),
       );
+      await updatePendingText(pending.id, { status: "sending" });
       const response = await enqueueWrite(() =>
         sendRequest({
           type: "messages/send-text",
@@ -1780,13 +2017,11 @@ export function App() {
     setError(undefined);
     const finishLocalWrite = beginLocalWrite(month);
     try {
-      const response = await enqueueWrite(() =>
-        sendRequest({
-          type: "messages/delete",
-          messageId,
-          month,
-        }),
-      );
+      const response = await sendRequest({
+        type: "messages/delete",
+        messageId,
+        month,
+      });
       if (!response.ok || response.type !== "messages/deleted") {
         throw new Error("OneDrop received an unexpected delete response.");
       }
@@ -1850,23 +2085,130 @@ export function App() {
     }
     setIsTimelineScrolling(true);
     scheduleScrollbarHide();
-    if (!isSyncing && (timelineScrollRef.current?.scrollTop ?? 1) <= 24) {
+    if (
+      !isSyncing &&
+      !isApplyingHistoryScrollRef.current &&
+      (timelineScrollRef.current?.scrollTop ?? 1) <= 24
+    ) {
       void loadPreviousMonth();
     }
   }
 
+  function showHistoryLoadBlockedNotice() {
+    if (!isSyncing || historyLoadingRef.current) return;
+    setIsHistoryLoadBlocked(true);
+    if (historyBlockedTimerRef.current) {
+      clearTimeout(historyBlockedTimerRef.current);
+    }
+    historyBlockedTimerRef.current = setTimeout(() => {
+      historyBlockedTimerRef.current = null;
+      setIsHistoryLoadBlocked(false);
+    }, HISTORY_BLOCKED_NOTICE_MS);
+  }
+
+  function handleTimelineWheel(event: React.WheelEvent<HTMLDivElement>) {
+    handleTimelineScroll();
+    if (
+      isSyncing &&
+      event.deltaY < 0 &&
+      (timelineScrollRef.current?.scrollTop ?? 25) <= 24
+    ) {
+      showHistoryLoadBlockedNotice();
+    }
+  }
+
+  function handleTimelineTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    if (
+      !document.body.classList.contains("mobile-surface") ||
+      (document.body.classList.contains("ios-surface") && !isSyncing) ||
+      (timelineScrollRef.current?.scrollTop ?? 25) > 24
+    ) {
+      androidHistoryPullStartYRef.current = null;
+      return;
+    }
+    androidHistoryPullStartYRef.current = event.touches[0]?.clientY ?? null;
+  }
+
+  function handleTimelineTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    const startY = androidHistoryPullStartYRef.current;
+    if (startY === null || (timelineScrollRef.current?.scrollTop ?? 25) > 24) {
+      return;
+    }
+    const currentY = event.touches[0]?.clientY;
+    if (currentY === undefined || currentY - startY < 8) return;
+    androidHistoryPullStartYRef.current = null;
+    if (isSyncing) showHistoryLoadBlockedNotice();
+    else void loadPreviousMonth();
+  }
+
+  function captureHistoryViewportAnchor() {
+    const timeline = timelineScrollRef.current;
+    if (!timeline) return;
+    const timelineBounds = timeline.getBoundingClientRect();
+    const anchorElement = Array.from(
+      timeline.querySelectorAll<HTMLElement>("[data-timeline-item-id]"),
+    ).find((element) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.bottom > timelineBounds.top;
+    });
+    historyViewportAnchorRef.current = anchorElement
+      ? {
+          messageId: anchorElement.dataset.timelineItemId!,
+          top: anchorElement.getBoundingClientRect().top,
+        }
+      : undefined;
+  }
+
   async function loadPreviousMonth() {
     if (historyLoadingRef.current || !monthResult) return;
-    const oldestMonth =
-      historyCursorRef.current ??
-      historicalMonthResults[0]?.month ??
-      monthResult.month;
-    const month = getPreviousMonth(oldestMonth);
+    if (historyBlockedTimerRef.current) {
+      clearTimeout(historyBlockedTimerRef.current);
+      historyBlockedTimerRef.current = null;
+    }
+    setIsHistoryLoadBlocked(false);
     historyLoadingRef.current = true;
+    shouldStickToBottomRef.current = false;
+    const loadingStartedAt = Date.now();
+    const timeline = timelineScrollRef.current;
+    if (historyAnchorReleaseFrameRef.current !== undefined) {
+      cancelAnimationFrame(historyAnchorReleaseFrameRef.current);
+      historyAnchorReleaseFrameRef.current = undefined;
+    }
+    timeline?.style.setProperty("overflow-anchor", "none");
     setIsLoadingHistory(true);
     setError(undefined);
-    historyScrollHeightRef.current = timelineScrollRef.current?.scrollHeight;
+    const oldestLoadedResult = historicalMonthResults[0] ?? monthResult;
     try {
+      const visibleBatchCount =
+        visibleMessageBatchCounts[oldestLoadedResult.month] ?? 1;
+      const batchItems =
+        oldestLoadedResult.month === getUtcMonth()
+          ? getCurrentTimelineBatchItems(
+              oldestLoadedResult,
+              pendingFiles,
+              pendingTexts,
+            )
+          : oldestLoadedResult.state === "loaded"
+            ? oldestLoadedResult.messages
+            : [];
+      const totalBatchCount = createMessageBatches(batchItems).length;
+      if (visibleBatchCount < totalBatchCount) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, HISTORY_LOADING_MIN_MS),
+        );
+        captureHistoryViewportAnchor();
+        setVisibleMessageBatchCounts((counts) => ({
+          ...counts,
+          [oldestLoadedResult.month]:
+            (counts[oldestLoadedResult.month] ?? 1) + 1,
+        }));
+        return;
+      }
+      const oldestMonth =
+        historyCursorRef.current ??
+        historicalMonthResults[0]?.month ??
+        monthResult.month;
+      const month = getPreviousMonth(oldestMonth);
       const readToken = beginMonthRead(month);
       const response = await sendRequest({
         type: "messages/read-month",
@@ -1874,6 +2216,13 @@ export function App() {
       });
       if (!response.ok || response.type !== "messages/month") {
         throw new Error("OneDrop received an unexpected history response.");
+      }
+      const remainingLoadingTime =
+        HISTORY_LOADING_MIN_MS - (Date.now() - loadingStartedAt);
+      if (remainingLoadingTime > 0) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, remainingLoadingTime),
+        );
       }
       if (
         !shouldApplyMonthRead(
@@ -1883,20 +2232,18 @@ export function App() {
           activeLocalWritesRef.current.get(month) ?? 0,
         )
       ) {
-        historyScrollHeightRef.current = undefined;
-        historyLoadingHeightRef.current = 0;
+        historyViewportAnchorRef.current = undefined;
         return;
       }
       historyCursorRef.current = month;
       if (response.result.state !== "missing") {
+        captureHistoryViewportAnchor();
         setHistoricalMonthResults((results) => [response.result, ...results]);
       } else {
-        historyScrollHeightRef.current = undefined;
-        historyLoadingHeightRef.current = 0;
+        historyViewportAnchorRef.current = undefined;
       }
     } catch (cause) {
-      historyScrollHeightRef.current = undefined;
-      historyLoadingHeightRef.current = 0;
+      historyViewportAnchorRef.current = undefined;
       setError(getClientError(cause));
     } finally {
       historyLoadingRef.current = false;
@@ -2299,13 +2646,38 @@ export function App() {
     if (draft.trim()) void sendText();
   }
 
+  function handleComposerBeforeInput(
+    event: ReactFormEvent<HTMLTextAreaElement>,
+  ) {
+    const inputEvent = event.nativeEvent as InputEvent;
+    if (
+      (inputEvent.inputType !== "insertLineBreak" &&
+        inputEvent.inputType !== "insertParagraph") ||
+      deviceSettings?.preferences.messages.enterToSend === false ||
+      inputEvent.isComposing
+    ) {
+      return;
+    }
+    event.preventDefault();
+    if (draft.trim()) void sendText();
+  }
+
+  function handleComposerFocus() {
+    if (
+      document.body.classList.contains("mobile-surface") &&
+      !window.visualViewport
+    ) {
+      setIsMobileKeyboardVisible(true);
+    }
+  }
+
   const showUnifiedLoader =
     !error &&
     (!status || (status.state === "signed-in" && monthResult === undefined));
 
   return (
     <main
-      className="shell"
+      className={`shell${isMobileKeyboardVisible ? " mobile-keyboard-visible" : ""}`}
       onDragEnter={handleFileDragEnter}
       onDragLeave={handleFileDragLeave}
       onDragOver={handleFileDragOver}
@@ -2492,7 +2864,7 @@ export function App() {
                 </div>
               ) : null}
             </section>
-            {notificationCount > 0 ? (
+            {notificationCount > 0 && !isSettingsOpen && !isRecycleBinOpen ? (
               <div
                 aria-label={`Notifications, ${activeNoticeIndex + 1} of ${notificationCount}`}
                 className={`notification-stack notification-count-${Math.min(notificationCount, 4)}${isNoticeDragging ? " is-dragging" : ""}${noticeCycleDirection !== null ? ` is-cycling is-cycling-${noticeCycleDirection > 0 ? "forward" : "backward"} is-cycle-motion-${noticeCycleMotion} is-cycle-${noticeCycleGesture}` : ""}`}
@@ -2720,12 +3092,13 @@ export function App() {
                 <RecycleBinView
                   setting={accountSettings.recycleBin}
                   isCleanupRunning={isDeletedDataCleanupRunning}
-                  isLoading={isRecycleBinLoading}
+                  loadPhase={recycleBinLoadPhase}
                   items={deletedMessageItems}
                   restoringMessageIds={restoringDeletedMessageIds}
                   onBack={() => setIsRecycleBinOpen(false)}
                   onCleanup={() => setShowDeletedDataCleanupConfirmation(true)}
                   onRestore={(item) => void restoreRecycleBinMessage(item)}
+                  onRefresh={() => loadRecycleBin(true, "refresh")}
                 />
               ) : monthResult ? (
                 <>
@@ -2734,16 +3107,17 @@ export function App() {
                     onMouseLeave={handleTimelineMouseLeave}
                     onMouseMove={handleTimelineMouseMove}
                     onScroll={handleTimelineScroll}
-                    onWheel={handleTimelineScroll}
+                    onTouchMove={handleTimelineTouchMove}
+                    onTouchStart={handleTimelineTouchStart}
+                    onWheel={handleTimelineWheel}
                     ref={timelineScrollRef}
                   >
                     <div className="message-content" ref={timelineContentRef}>
-                      {isLoadingHistory ? (
-                        <span
-                          className="history-loading"
-                          ref={historyLoadingElementRef}
-                        >
-                          Loading...
+                      {isLoadingHistory || isHistoryLoadBlocked ? (
+                        <span className="history-loading" role="status">
+                          {isHistoryLoadBlocked
+                            ? "Can't load history while syncing."
+                            : "Loading..."}
                         </span>
                       ) : null}
                       {historicalMonthResults.map((result) => (
@@ -2754,7 +3128,10 @@ export function App() {
                           hiddenMessageIds={optimisticallyDeletedMessageIds}
                           pendingFiles={[]}
                           pendingTexts={[]}
-                          result={result}
+                          result={withVisibleMessageBatches(
+                            result,
+                            visibleMessageBatchCounts[result.month] ?? 1,
+                          )}
                           refreshingUploadIds={refreshingUploadIds}
                           sendingTextIds={sendingTextIds}
                           showEmpty={false}
@@ -2778,9 +3155,13 @@ export function App() {
                         attachmentCheckVersion={attachmentCheckVersion}
                         deviceId={deviceId}
                         hiddenMessageIds={optimisticallyDeletedMessageIds}
-                        pendingFiles={pendingFiles}
-                        pendingTexts={pendingTexts}
-                        result={monthResult}
+                        pendingFiles={
+                          visibleCurrentTimeline?.pendingFiles ?? pendingFiles
+                        }
+                        pendingTexts={
+                          visibleCurrentTimeline?.pendingTexts ?? pendingTexts
+                        }
+                        result={visibleCurrentTimeline?.result ?? monthResult}
                         refreshingUploadIds={refreshingUploadIds}
                         sendingTextIds={sendingTextIds}
                         unresponsiveUploadIds={unresponsiveUploadIds}
@@ -2807,9 +3188,18 @@ export function App() {
                         Message
                       </label>
                       <textarea
+                        enterKeyHint={
+                          deviceSettings?.preferences.messages.enterToSend ===
+                          false
+                            ? "enter"
+                            : "go"
+                        }
                         id="message-text"
                         maxLength={20_000}
+                        onBeforeInput={handleComposerBeforeInput}
+                        onBlur={() => setIsMobileKeyboardVisible(false)}
                         onChange={(event) => setDraft(event.target.value)}
+                        onFocus={handleComposerFocus}
                         onKeyDown={handleComposerKeyDown}
                         placeholder="Message"
                         ref={composerRef}
@@ -3333,23 +3723,145 @@ function SegmentedControl({
 
 function RecycleBinView({
   isCleanupRunning,
-  isLoading,
+  loadPhase,
   items,
   restoringMessageIds,
   onBack,
   onCleanup,
   onRestore,
+  onRefresh,
   setting,
 }: {
   isCleanupRunning: boolean;
-  isLoading: boolean;
+  loadPhase: "initial" | "refresh" | undefined;
   items: DeletedMessageItem[];
   restoringMessageIds: Set<string>;
   onBack: () => void;
   onCleanup: () => void;
   onRestore: (item: DeletedMessageItem) => void;
+  onRefresh: () => Promise<void>;
   setting: AccountSettings["recycleBin"];
 }) {
+  const isLoading = loadPhase !== undefined;
+  const listRef = useRef<HTMLDivElement>(null);
+  const pullStartYRef = useRef<number | null>(null);
+  const pullOffsetRef = useRef(0);
+  const pullRefreshInFlightRef = useRef(false);
+  const wheelFinishTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(
+    undefined,
+  );
+  const scrollbarHideTimerRef = useRef<
+    ReturnType<typeof setTimeout> | undefined
+  >(undefined);
+  const [pullOffset, setPullOffset] = useState(0);
+  const [isPullRefreshing, setIsPullRefreshing] = useState(false);
+  const [isScrollbarVisible, setIsScrollbarVisible] = useState(false);
+  const updatePullOffset = (value: number) => {
+    pullOffsetRef.current = value;
+    setPullOffset(value);
+  };
+  const triggerPullRefresh = async () => {
+    if (pullRefreshInFlightRef.current || isLoading) return;
+    pullRefreshInFlightRef.current = true;
+    setIsPullRefreshing(true);
+    updatePullOffset(36);
+    try {
+      await onRefresh();
+    } finally {
+      pullRefreshInFlightRef.current = false;
+      setIsPullRefreshing(false);
+      updatePullOffset(0);
+    }
+  };
+  const handlePullStart = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (listRef.current?.scrollTop !== 0 || isPullRefreshing) return;
+    pullStartYRef.current = event.touches[0]?.clientY ?? null;
+  };
+  const handlePullMove = (event: React.TouchEvent<HTMLDivElement>) => {
+    if (pullStartYRef.current === null) return;
+    const distance = (event.touches[0]?.clientY ?? 0) - pullStartYRef.current;
+    if (distance <= 0) {
+      updatePullOffset(0);
+      return;
+    }
+    event.preventDefault();
+    updatePullOffset(Math.min(50, distance * 0.55));
+  };
+  const finishPull = () => {
+    const shouldRefresh = pullOffsetRef.current >= 36;
+    pullStartYRef.current = null;
+    if (shouldRefresh) void triggerPullRefresh();
+    else updatePullOffset(0);
+  };
+  const finishPullRef = useRef(finishPull);
+  finishPullRef.current = finishPull;
+  useEffect(() => {
+    const finishDocumentPull = () => finishPullRef.current();
+    document.addEventListener("touchend", finishDocumentPull);
+    document.addEventListener("touchcancel", finishDocumentPull);
+    window.addEventListener("blur", finishDocumentPull);
+    return () => {
+      document.removeEventListener("touchend", finishDocumentPull);
+      document.removeEventListener("touchcancel", finishDocumentPull);
+      window.removeEventListener("blur", finishDocumentPull);
+      if (wheelFinishTimerRef.current)
+        clearTimeout(wheelFinishTimerRef.current);
+      if (scrollbarHideTimerRef.current)
+        clearTimeout(scrollbarHideTimerRef.current);
+    };
+  }, []);
+  const scheduleScrollbarHide = () => {
+    if (scrollbarHideTimerRef.current)
+      clearTimeout(scrollbarHideTimerRef.current);
+    scrollbarHideTimerRef.current = setTimeout(() => {
+      scrollbarHideTimerRef.current = undefined;
+      setIsScrollbarVisible(false);
+    }, 1_800);
+  };
+  const handleListScroll = () => {
+    setIsScrollbarVisible(true);
+    scheduleScrollbarHide();
+  };
+  const handleListMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const isNearScrollbar = event.clientX >= bounds.right - 16;
+    setIsScrollbarVisible(isNearScrollbar);
+    if (isNearScrollbar) {
+      if (scrollbarHideTimerRef.current)
+        clearTimeout(scrollbarHideTimerRef.current);
+      scrollbarHideTimerRef.current = undefined;
+    }
+  };
+  const handleListMouseLeave = () => {
+    if (scrollbarHideTimerRef.current)
+      clearTimeout(scrollbarHideTimerRef.current);
+    scrollbarHideTimerRef.current = undefined;
+    setIsScrollbarVisible(false);
+  };
+  const finishWheelPull = () => {
+    wheelFinishTimerRef.current = undefined;
+    if (pullOffsetRef.current >= 36) void triggerPullRefresh();
+    else updatePullOffset(0);
+  };
+  const handlePullWheel = (event: React.WheelEvent<HTMLDivElement>) => {
+    if (
+      event.deltaY >= 0 ||
+      listRef.current?.scrollTop !== 0 ||
+      isPullRefreshing ||
+      isLoading
+    )
+      return;
+    event.preventDefault();
+    const wheelStep = Math.min(14, Math.max(6, -event.deltaY * 0.16));
+    const next = Math.min(44, pullOffsetRef.current + wheelStep);
+    updatePullOffset(next);
+    if (wheelFinishTimerRef.current) clearTimeout(wheelFinishTimerRef.current);
+    wheelFinishTimerRef.current = setTimeout(finishWheelPull, 220);
+  };
+  const isRefreshActive = isPullRefreshing || loadPhase === "refresh";
+  const isInitialRecycleBinLoading = loadPhase === "initial";
+  const displayedPullOffset =
+    isRefreshActive || isInitialRecycleBinLoading ? 36 : pullOffset;
   const groups = new Map<string, DeletedMessageItem[]>();
   for (const item of items) {
     const key = getLocalDateKey(new Date(item.deletedAt));
@@ -3373,15 +3885,17 @@ function RecycleBinView({
             {items.length} deleted {items.length === 1 ? "item" : "items"}
           </small>
         </span>
-        <button
-          className="recycle-bin-cleanup"
-          disabled={isCleanupRunning || items.length === 0}
-          onClick={onCleanup}
-          type="button"
-        >
-          <CleanupBroomIcon animated={isCleanupRunning} />
-          <span>{isCleanupRunning ? "Cleaning…" : "Clean up now"}</span>
-        </button>
+        <span className="recycle-bin-header-actions">
+          <button
+            className="recycle-bin-cleanup"
+            disabled={isCleanupRunning || items.length === 0}
+            onClick={onCleanup}
+            type="button"
+          >
+            <CleanupBroomIcon animated={isCleanupRunning} />
+            <span>{isCleanupRunning ? "Cleaning…" : "Clean up now"}</span>
+          </button>
+        </span>
       </header>
       <div className="recycle-bin-guidance">
         <ClockIcon />
@@ -3392,24 +3906,51 @@ function RecycleBinView({
           Restoring keeps the original message date.
         </span>
       </div>
-      {isLoading && items.length === 0 ? (
-        <div className="recycle-bin-loading" role="status">
-          <LoadingIcon />
-          <span>Loading deleted items…</span>
-        </div>
-      ) : items.length === 0 ? (
-        <div className="recycle-bin-empty">
-          <RecycleBinIcon />
-          <strong>Recycle bin is empty</strong>
+      <div
+        className={`recycle-bin-list${displayedPullOffset > 0 ? " is-pulling" : ""}${isScrollbarVisible ? " is-scrolling" : ""}`}
+        onMouseLeave={handleListMouseLeave}
+        onMouseMove={handleListMouseMove}
+        onScroll={handleListScroll}
+        onTouchCancel={finishPull}
+        onTouchEnd={finishPull}
+        onTouchMove={handlePullMove}
+        onTouchStart={handlePullStart}
+        onWheel={handlePullWheel}
+        ref={listRef}
+        style={
+          {
+            "--recycle-pull-offset": `${displayedPullOffset}px`,
+          } as CSSProperties
+        }
+      >
+        <div className="recycle-bin-refresh" aria-live="polite" role="status">
+          {isRefreshActive || isInitialRecycleBinLoading ? (
+            <LoadingIcon />
+          ) : (
+            <RefreshIcon />
+          )}
           <span>
-            {setting.mode === "retention" && setting.retention === "forever"
-              ? "Deleted messages will stay here until you clean them up."
-              : `Deleted messages will stay here for up to ${setting.mode === "retention" ? setting.retention : 10} days before automatic cleanup.`}
+            {isRefreshActive
+              ? "Refreshing…"
+              : isInitialRecycleBinLoading
+                ? "Loading deleted messages…"
+                : pullOffset >= 36
+                  ? "Release to refresh"
+                  : "Pull to refresh"}
           </span>
         </div>
-      ) : (
-        <div className="recycle-bin-list">
-          {[...groups.entries()].map(([deletedDate, groupItems]) => (
+        {items.length === 0 && !isLoading ? (
+          <div className="recycle-bin-empty">
+            <RecycleBinIcon />
+            <strong>Recycle bin is empty</strong>
+            <span>
+              {setting.mode === "retention" && setting.retention === "forever"
+                ? "Deleted messages will stay here until you clean them up."
+                : `Deleted messages will stay here for up to ${setting.mode === "retention" ? setting.retention : 10} days before automatic cleanup.`}
+            </span>
+          </div>
+        ) : (
+          [...groups.entries()].map(([deletedDate, groupItems]) => (
             <section className="recycle-bin-group" key={deletedDate}>
               <header>
                 <strong>{formatDeletedGroupDate(deletedDate)}</strong>
@@ -3424,9 +3965,9 @@ function RecycleBinView({
                 />
               ))}
             </section>
-          ))}
-        </div>
-      )}
+          ))
+        )}
+      </div>
     </div>
   );
 }
@@ -3716,7 +4257,7 @@ function PendingFileItem({
   }
 
   return (
-    <div className="pending-transfer-row">
+    <div className="pending-transfer-row" data-timeline-item-id={item.id}>
       {!isActive ? (
         <span className="pending-primary-actions">
           <button
@@ -3735,7 +4276,7 @@ function PendingFileItem({
             ref={menuButtonRef}
             type="button"
           >
-            <span aria-hidden="true">•••</span>
+            <MoreIcon />
           </button>
         </span>
       ) : null}
@@ -3960,6 +4501,7 @@ function MonthResult({
   showEmpty?: boolean;
   compact?: boolean;
 }) {
+  const groupIdentityByItemRef = useRef<Map<string, string>>(new Map());
   const timelineGroups = groupTimelineItems(
     result.state === "loaded"
       ? result.messages.filter((message) => !hiddenMessageIds.has(message.id))
@@ -3968,6 +4510,17 @@ function MonthResult({
     deviceId,
     pendingTexts,
   );
+  const nextGroupIdentityByItem = new Map<string, string>();
+  const stableGroupKeys = timelineGroups.map((group) => {
+    const itemIds = group.items.map(getTimelineItemId);
+    const existingKey = itemIds
+      .map((id) => groupIdentityByItemRef.current.get(id))
+      .find((key) => key !== undefined);
+    const groupKey = existingKey ?? `timeline-group:${itemIds[0]}`;
+    for (const id of itemIds) nextGroupIdentityByItem.set(id, groupKey);
+    return groupKey;
+  });
+  groupIdentityByItemRef.current = nextGroupIdentityByItem;
 
   return (
     <div
@@ -3979,10 +4532,10 @@ function MonthResult({
         <span className="empty-timeline">No messages yet</span>
       ) : timelineGroups.length > 0 ? (
         <ol className="message-list">
-          {timelineGroups.map((group) => (
+          {timelineGroups.map((group, groupIndex) => (
             <li
               className={group.isOwn ? "message-own" : undefined}
-              key={getTimelineItemId(group.items[0]!)}
+              key={stableGroupKeys[groupIndex]}
             >
               <time dateTime={getTimelineItemCreatedAt(group.items[0]!)}>
                 {formatGroupTime(getTimelineItemCreatedAt(group.items[0]!))}
@@ -4161,7 +4714,11 @@ function PendingTextItem({
   }, [item.text]);
 
   return (
-    <div className={`pending-text-row pending-text-${lineLayout}`} ref={rowRef}>
+    <div
+      className={`pending-text-row pending-text-${lineLayout}`}
+      data-timeline-item-id={item.id}
+      ref={rowRef}
+    >
       <div className="message-bubble pending-text-bubble" ref={bubbleRef}>
         <p ref={textRef}>
           <LinkifiedMessageText
@@ -4170,63 +4727,71 @@ function PendingTextItem({
           />
         </p>
       </div>
-      <span className="pending-text-primary-actions">
-        <button
-          className="pending-retry-button"
-          disabled={isSending}
-          onClick={() => onResend(item)}
-          type="button"
+      {isSending ? (
+        <span
+          aria-label="Sending message"
+          className="pending-text-sending"
+          role="status"
         >
-          {isSending ? <LoadingIcon /> : <RetryIcon />}
-          Resend
-        </button>
-        <button
-          aria-expanded={isMenuOpen}
-          aria-label="More message actions"
-          className="pending-more-button"
-          onClick={() => setIsMenuOpen((open) => !open)}
-          ref={menuButtonRef}
-          type="button"
-        >
-          <span aria-hidden="true">•••</span>
-        </button>
-      </span>
-      {item.status === "send-failed" ? (
+          <LoadingIcon />
+        </span>
+      ) : (
+        <span className="pending-text-primary-actions">
+          <>
+            <button
+              className="pending-retry-button"
+              onClick={() => onResend(item)}
+              type="button"
+            >
+              <RetryIcon />
+              Resend
+            </button>
+            <button
+              aria-expanded={isMenuOpen}
+              aria-label="More message actions"
+              className="pending-more-button"
+              onClick={() => setIsMenuOpen((open) => !open)}
+              ref={menuButtonRef}
+              type="button"
+            >
+              <MoreIcon />
+            </button>
+          </>
+        </span>
+      )}
+      {!isSending && item.status === "send-failed" ? (
         <span className="pending-text-error">
           <AttachmentError message="Upload failed" />
         </span>
       ) : null}
-      <FloatingActionsMenu
-        anchorRef={menuButtonRef}
-        className="pending-actions-menu"
-        isOpen={isMenuOpen}
-        onDismiss={() => setIsMenuOpen(false)}
-        preferredPlacement="above"
-        preferredSide="left"
-      >
-        <button
-          disabled={isSending}
-          onClick={() => onResend(item)}
-          role="menuitem"
-          type="button"
+      {!isSending ? (
+        <FloatingActionsMenu
+          anchorRef={menuButtonRef}
+          className="pending-actions-menu"
+          isOpen={isMenuOpen}
+          onDismiss={() => setIsMenuOpen(false)}
+          preferredPlacement="above"
+          preferredSide="left"
         >
-          <RetryIcon />
-          Resend
-        </button>
-        <button onClick={() => void copyText()} role="menuitem" type="button">
-          Copy
-        </button>
-        <button
-          onClick={() => {
-            setIsMenuOpen(false);
-            onDelete(item.id);
-          }}
-          role="menuitem"
-          type="button"
-        >
-          Delete
-        </button>
-      </FloatingActionsMenu>
+          <button onClick={() => onResend(item)} role="menuitem" type="button">
+            <RetryIcon />
+            Resend
+          </button>
+          <button onClick={() => void copyText()} role="menuitem" type="button">
+            Copy
+          </button>
+          <button
+            onClick={() => {
+              setIsMenuOpen(false);
+              onDelete(item.id);
+            }}
+            role="menuitem"
+            type="button"
+          >
+            Delete
+          </button>
+        </FloatingActionsMenu>
+      ) : null}
     </div>
   );
 }
@@ -4253,6 +4818,7 @@ export function UploadingFileMessageItem({
   return (
     <div
       className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}`}
+      data-timeline-item-id={message.id}
     >
       <div
         className={`message-bubble message-attachment-bubble uploading-message-bubble${isImage ? " message-image-bubble" : ""}${unresponsive ? " unresponsive-message-bubble" : ""}`}
@@ -4316,7 +4882,7 @@ export function UploadingFileMessageItem({
             ref={menuButtonRef}
             type="button"
           >
-            <span aria-hidden="true">•••</span>
+            <MoreIcon />
           </button>
         </span>
       ) : null}
@@ -4766,6 +5332,7 @@ export function CommittedMessageItem({
   return (
     <div
       className={`message-item-shell ${isOwn ? "message-item-own" : "message-item-peer"}${message.type === "text" ? " message-text-shell" : ""}`}
+      data-timeline-item-id={message.id}
       ref={shellRef}
     >
       <div
@@ -4888,7 +5455,7 @@ export function CommittedMessageItem({
           ref={menuButtonRef}
           type="button"
         >
-          <span aria-hidden="true">•••</span>
+          <MoreIcon />
         </button>
       </span>
       <FloatingActionsMenu
@@ -6248,6 +6815,16 @@ function CloseIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
       <path d="m5.5 5.5 9 9m0-9-9 9" />
+    </svg>
+  );
+}
+
+function MoreIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 18 18">
+      <circle cx="5" cy="9" r="1.15" />
+      <circle cx="9" cy="9" r="1.15" />
+      <circle cx="13" cy="9" r="1.15" />
     </svg>
   );
 }

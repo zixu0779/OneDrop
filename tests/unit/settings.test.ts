@@ -44,7 +44,7 @@ describe("settings documents", () => {
     expect(defaultDevicePreferences()).toMatchObject({
       appearance: { theme: "system", textSize: "default" },
       messages: {
-        autoScrollForNewMessages: false,
+        autoScrollForNewMessages: true,
         detectLinks: true,
         enterToSend: true,
       },

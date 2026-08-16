@@ -23,6 +23,7 @@ import {
   replaceMessageWithAccessToken,
 } from "../src/infrastructure/onedrive/month-writer";
 import { writeMessageTombstoneWithAccessToken } from "../src/infrastructure/onedrive/tombstones";
+import { enqueueTombstoneWrite } from "../src/infrastructure/onedrive/tombstone-write-coordinator";
 import { readAccountSettingsWithAccessToken } from "../src/infrastructure/onedrive/settings";
 import { nativeAuth } from "./native-auth";
 import { iosImageMetadata } from "./platform-values";
@@ -253,11 +254,13 @@ export async function deleteIosMessage(
   const { accessToken } = await nativeAuth.getAccessToken();
   const recycle = (await readAccountSettingsWithAccessToken(accessToken))
     .recycleBin;
-  await writeMessageTombstoneWithAccessToken(
-    month,
-    messageId,
-    accessToken,
-    recycle,
+  await enqueueTombstoneWrite(() =>
+    writeMessageTombstoneWithAccessToken(
+      month,
+      messageId,
+      accessToken,
+      recycle,
+    ),
   );
 }
 

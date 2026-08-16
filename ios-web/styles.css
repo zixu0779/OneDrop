@@ -12,6 +12,50 @@
   touch-action: manipulation;
 }
 
+.ios-surface .composer textarea {
+  display: block;
+  height: 40px;
+  min-height: 40px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  line-height: 24px;
+  vertical-align: top;
+  caret-color: rgb(10 132 255);
+  -webkit-appearance: none;
+}
+
+.ios-surface
+  .composer-field:focus-within:has(textarea:placeholder-shown)::after {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 13px;
+  width: 1.5px;
+  height: 20px;
+  border-radius: 1px;
+  background: rgb(10 132 255);
+  content: "";
+  pointer-events: none;
+  transform: translateY(-50%);
+  animation: ios-empty-caret-blink 1s steps(1, end) infinite;
+}
+
+.ios-surface .composer textarea:focus:placeholder-shown {
+  caret-color: transparent;
+}
+
+@keyframes ios-empty-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
 /* Keep the established message scale, but make the two information-dense
    surfaces easier to read at a normal iPhone viewing distance. */
 .ios-surface .corrupt-record-notice {

@@ -88,7 +88,7 @@ export function defaultDevicePreferences(): DevicePreferences {
     appearance: { theme: "system", textSize: "default" },
     messages: {
       enterToSend: true,
-      autoScrollForNewMessages: false,
+      autoScrollForNewMessages: true,
       detectLinks: true,
     },
     sync: { mode: "normal" },

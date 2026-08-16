@@ -34,8 +34,10 @@ vi.mock(
 import {
   App,
   getFloatingMenuPosition,
+  getVisibleCurrentTimeline,
   groupMessages,
   shouldApplyMonthRead,
+  type PendingFile,
 } from "../../entrypoints/sidepanel/App";
 import type {
   RuntimeRequest,
@@ -233,6 +235,56 @@ describe("side panel message composer", () => {
     });
   });
 
+  it("batches restored local file failures as text while keeping active transfers visible", () => {
+    const cloudMessages = Array.from({ length: 40 }, (_, index) =>
+      createTextMessage(
+        `cloud ${index}`,
+        new Date(Date.UTC(2026, 7, 14, 20, 0, index)),
+        `30000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      ),
+    );
+    const failedFiles: PendingFile[] = Array.from(
+      { length: 45 },
+      (_, index) => ({
+        id: `40000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+        createdAt: new Date(Date.UTC(2026, 7, 14, 12, 0, index)).toISOString(),
+        isImage: false,
+        status: "upload-failed",
+      }),
+    );
+    const activeFile: PendingFile = {
+      id: "50000000-0000-4000-8000-000000000000",
+      createdAt: new Date(Date.UTC(2026, 7, 14, 11)).toISOString(),
+      isImage: false,
+      status: "uploading",
+    };
+    const result = {
+      state: "loaded" as const,
+      month: "2026-08",
+      eTag: "batch-etag",
+      messages: cloudMessages,
+    };
+
+    const first = getVisibleCurrentTimeline(
+      result,
+      [...failedFiles, activeFile],
+      [],
+      1,
+    );
+    expect(first.result.state === "loaded" && first.result.messages).toEqual(
+      cloudMessages,
+    );
+    expect(first.pendingFiles).toEqual([activeFile]);
+
+    const second = getVisibleCurrentTimeline(
+      result,
+      [...failedFiles, activeFile],
+      [],
+      2,
+    );
+    expect(second.pendingFiles).toEqual([...failedFiles, activeFile]);
+  });
+
   it("loads OneDrive in the background without showing validation controls", async () => {
     await screenForComposer();
 
@@ -384,6 +436,24 @@ describe("side panel message composer", () => {
       messageId: "01989f5e-7700-7000-8000-000000000881",
       month: "2026-08",
     });
+  });
+
+  it("shows the recycle-bin scrollbar while scrolling and hides it on leave", async () => {
+    await screenForComposer();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Recycle bin" }));
+    await screen.findByText("deleted text message");
+    const list = document.querySelector<HTMLElement>(".recycle-bin-list")!;
+
+    expect(list).not.toHaveClass("is-scrolling");
+    fireEvent.scroll(list);
+    expect(list).toHaveClass("is-scrolling");
+    fireEvent.mouseLeave(list);
+    expect(list).not.toHaveClass("is-scrolling");
   });
 
   it("returns from the recycle bin to the previous timeline position", async () => {
@@ -755,6 +825,97 @@ describe("side panel message composer", () => {
     await waitFor(() => expect(timeline!.scrollTop).toBe(500));
   });
 
+  it("shows only a spinner while a text message is sending", async () => {
+    const composer = await screenForComposer();
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    let finishSend!: () => void;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type !== "messages/send-text") {
+        return originalImplementation(request);
+      }
+      return new Promise((resolve) => {
+        finishSend = () =>
+          resolve({
+            ok: true,
+            type: "messages/month",
+            result: {
+              state: "loaded",
+              month: "2026-08",
+              eTag: "sent-etag",
+              messages: [],
+            },
+          });
+      });
+    });
+
+    fireEvent.change(composer, { target: { value: "still sending" } });
+    fireEvent.keyDown(composer, { key: "Enter" });
+
+    expect(await screen.findByText("still sending")).toBeInTheDocument();
+    const sendingStatus = screen.getByRole("status", {
+      name: "Sending message",
+    });
+    expect(sendingStatus).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resend" })).toBeNull();
+    const pendingRow = sendingStatus.closest(".pending-text-row");
+    expect(pendingRow?.querySelector("button")).toBeNull();
+    expect(pendingRow).not.toHaveTextContent("Upload failed");
+    finishSend();
+  });
+
+  it("scrolls to a newly synchronized message even after leaving the bottom", async () => {
+    const composer = await screenForComposer();
+    const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
+    Object.defineProperties(timeline, {
+      clientHeight: { configurable: true, value: 300 },
+      scrollHeight: { configurable: true, value: 700 },
+    });
+    timeline.scrollTop = 100;
+    fireEvent.scroll(timeline);
+
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const current = await originalImplementation({
+      type: "messages/read-current-month",
+    });
+    if (
+      !current.ok ||
+      current.type !== "messages/month" ||
+      current.result.state !== "loaded"
+    ) {
+      throw new Error("Expected a loaded current-month fixture.");
+    }
+    const loadedCurrentResult = current.result;
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type !== "messages/read-current-month") {
+        return originalImplementation(request);
+      }
+      return {
+        ...current,
+        result: {
+          ...loadedCurrentResult,
+          messages: [
+            ...loadedCurrentResult.messages,
+            createTextMessage(
+              "new synchronized message",
+              new Date("2026-08-03T00:02:00.000Z"),
+              "01989f5e-7700-7000-8000-000000000777",
+            ),
+          ],
+        },
+      };
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh messages and files" }),
+    );
+
+    expect(
+      await screen.findByText("new synchronized message"),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(timeline.scrollTop).toBe(700));
+    expect(composer).toBeInTheDocument();
+  });
+
   it("preserves the timeline position when a message is deleted", async () => {
     await screenForComposer();
     const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
@@ -819,6 +980,131 @@ describe("side panel message composer", () => {
       month: "2026-07",
     });
     expect(timeline!.scrollTop).toBe(0);
+  });
+
+  it("shows loading feedback before revealing the next local message batch", async () => {
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const messages = Array.from({ length: 60 }, (_, index) =>
+      createTextMessage(
+        `batch message ${index}`,
+        new Date(Date.UTC(2026, 7, 3, 0, index)),
+        `20000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+      ),
+    );
+    sendMessage.mockImplementation(async (request: RuntimeRequest) =>
+      request.type === "messages/read-current-month"
+        ? {
+            ok: true,
+            type: "messages/month",
+            result: {
+              state: "loaded",
+              month: "2026-08",
+              eTag: "batched-etag",
+              messages,
+            },
+          }
+        : originalImplementation(request),
+    );
+    await screenForComposer();
+    expect(screen.queryByText("batch message 0")).not.toBeInTheDocument();
+    const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
+    timeline.scrollTop = 0;
+
+    fireEvent.scroll(timeline);
+
+    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(timeline.style.getPropertyValue("overflow-anchor")).toBe("none");
+    expect(screen.queryByText("batch message 0")).not.toBeInTheDocument();
+    expect(await screen.findByText("batch message 0")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Loading...")).not.toBeInTheDocument(),
+    );
+    await waitFor(() =>
+      expect(timeline.style.getPropertyValue("overflow-anchor")).toBe(""),
+    );
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "messages/read-month",
+      ),
+    ).toHaveLength(0);
+    expect(timeline.scrollTop).toBe(0);
+  });
+
+  it("does not remount an attachment when an older message joins its group", async () => {
+    const originalImplementation = sendMessage.getMockImplementation()!;
+    const senderDeviceId = "01989f5e-7700-7000-8000-000000000099";
+    const messages = Array.from({ length: 60 }, (_, index) =>
+      index === 20
+        ? {
+            schemaVersion: 1 as const,
+            id: `30000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+            type: "file" as const,
+            createdAt: new Date(
+              Date.UTC(2026, 7, 3, 0, 0, index),
+            ).toISOString(),
+            senderDeviceId,
+            attachment: {
+              driveItemId: "stable-history-file",
+              name: "stable-history.pdf",
+              size: 1_024,
+              mimeType: "application/pdf",
+            },
+          }
+        : createTextMessage(
+            `stable group message ${index}`,
+            new Date(Date.UTC(2026, 7, 3, 0, 0, index)),
+            `30000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
+            senderDeviceId,
+          ),
+    );
+    sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+      if (request.type === "messages/read-current-month") {
+        return {
+          ok: true,
+          type: "messages/month",
+          result: {
+            state: "loaded",
+            month: "2026-08",
+            eTag: "stable-group-etag",
+            messages,
+          },
+        };
+      }
+      if (request.type === "files/check-attachment") {
+        return {
+          ok: true,
+          type: "files/availability",
+          exists: true,
+        };
+      }
+      return originalImplementation(request);
+    });
+
+    await screenForComposer();
+    expect(await screen.findByText("stable-history.pdf")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(
+        sendMessage.mock.calls.filter(
+          ([request]) =>
+            request.type === "files/check-attachment" &&
+            request.driveItemId === "stable-history-file",
+        ),
+      ).toHaveLength(1),
+    );
+
+    const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
+    timeline.scrollTop = 0;
+    fireEvent.scroll(timeline);
+    expect(
+      await screen.findByText("stable group message 0"),
+    ).toBeInTheDocument();
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) =>
+          request.type === "files/check-attachment" &&
+          request.driveItemId === "stable-history-file",
+      ),
+    ).toHaveLength(1);
   });
 
   it("keeps loaded historical months visible after synchronization", async () => {
@@ -929,7 +1215,9 @@ describe("side panel message composer", () => {
         month: "2026-07",
       }),
     );
-    expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText("Loading...")).not.toBeInTheDocument(),
+    );
     expect(timeline.scrollTop).toBe(0);
   });
 
@@ -979,7 +1267,10 @@ describe("side panel message composer", () => {
 
     const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
     timeline.scrollTop = 0;
-    fireEvent.scroll(timeline);
+    fireEvent.wheel(timeline, { deltaY: -80 });
+    expect(
+      screen.getByText("Can't load history while syncing."),
+    ).toBeInTheDocument();
     expect(sendMessage).not.toHaveBeenCalledWith({
       type: "messages/read-month",
       month: "2026-07",

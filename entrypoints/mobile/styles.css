@@ -3,6 +3,13 @@
   --mobile-safe-right: env(safe-area-inset-right, 0px);
   --mobile-safe-bottom: env(safe-area-inset-bottom, 0px);
   --mobile-safe-left: env(safe-area-inset-left, 0px);
+  --mobile-keyboard-canvas: #f6f8fb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --mobile-keyboard-canvas: #11161e;
+  }
 }
 
 html,
@@ -18,6 +25,21 @@ body.mobile-surface {
   min-width: 0;
 }
 
+/* Edge extends the root canvas into the browser-owned strip above the IME.
+   Match that canvas to the focused composer, and keep the field's glow inside
+   the drawable viewport instead of letting Edge clip it at the lower edge. */
+html:has(body.mobile-surface:not(.ios-surface)) {
+  background: var(--mobile-keyboard-canvas);
+}
+
+.mobile-surface button,
+.mobile-surface input,
+.mobile-surface select,
+.mobile-surface textarea,
+.mobile-surface [role="button"] {
+  -webkit-tap-highlight-color: transparent;
+}
+
 .mobile-surface .shell {
   width: 100%;
   height: 100dvh;
@@ -25,6 +47,50 @@ body.mobile-surface {
   padding-right: calc(14px + var(--mobile-safe-right));
   padding-bottom: calc(14px + var(--mobile-safe-bottom));
   padding-left: calc(14px + var(--mobile-safe-left));
+}
+
+.ios-surface .shell.mobile-keyboard-visible {
+  padding-bottom: 6px;
+}
+
+.ios-surface .shell.mobile-keyboard-visible .composer {
+  margin-bottom: -6px;
+  padding-bottom: 8px;
+}
+
+.mobile-surface:not(.ios-surface) .shell.mobile-keyboard-visible,
+.mobile-surface:not(.ios-surface) .shell:has(.composer textarea:focus) {
+  height: 100%;
+  padding-bottom: 14px;
+}
+
+.mobile-surface:not(.ios-surface) .shell.mobile-keyboard-visible .composer {
+  margin-bottom: -4px;
+  padding-bottom: 2px;
+  background: var(--mobile-keyboard-canvas);
+  backdrop-filter: none;
+}
+
+.mobile-surface:not(.ios-surface)
+  .shell:has(.composer textarea:focus)
+  .composer {
+  background: var(--mobile-keyboard-canvas);
+  backdrop-filter: none;
+}
+
+/* Keep the gradient focus border, but do not let Android's browser-owned
+   keyboard strip clip an outward glow below the composer field. */
+.mobile-surface:not(.ios-surface) .composer-field:focus-within {
+  box-shadow: none;
+}
+
+.mobile-surface .recycle-bin-list {
+  margin-right: calc(-14px - var(--mobile-safe-right));
+  padding-right: calc(14px + var(--mobile-safe-right));
+}
+
+.mobile-surface .message-scroll {
+  padding-right: 8px;
 }
 
 /* Touch has no persistent hover target, so message actions must remain
@@ -47,6 +113,11 @@ body.mobile-surface {
   .mobile-surface .account-menu-action:active:not(:disabled) {
     color: #d4dae2;
     background: rgb(142 152 167 / 14%);
+  }
+
+  .mobile-surface button:focus,
+  .mobile-surface button:focus-visible {
+    outline: none;
   }
 }
 

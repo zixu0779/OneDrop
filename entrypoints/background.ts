@@ -69,6 +69,7 @@ import {
   restoreDeletedMessage,
 } from "../src/infrastructure/onedrive/recycle-bin";
 import { enqueueMonthWrite } from "../src/infrastructure/onedrive/month-write-coordinator";
+import { enqueueTombstoneWrite } from "../src/infrastructure/onedrive/tombstone-write-coordinator";
 import {
   cancelMobileNavigationDownload,
   claimMobileNavigationDownload,
@@ -239,29 +240,30 @@ export default defineBackground(() => {
           case "archives/dismiss":
             await dismissArchiveNotice(request.month);
             return { ok: true, type: "archives/dismissed" };
-          case "messages/delete":
-            return enqueueMonthWrite(async () => {
-              const token = await getCurrentAccessToken();
-              const recycle = (await readAccountSettingsWithAccessToken(token))
-                .recycleBin;
-              await writeMessageTombstoneWithAccessToken(
+          case "messages/delete": {
+            const token = await getCurrentAccessToken();
+            const recycle = (await readAccountSettingsWithAccessToken(token))
+              .recycleBin;
+            await enqueueTombstoneWrite(() =>
+              writeMessageTombstoneWithAccessToken(
                 request.month,
                 request.messageId,
                 token,
                 recycle,
-              );
-              void checkAttachmentCleanup(new Date(), true).catch(
-                () => undefined,
-              );
-              return {
-                ok: true,
-                type: "messages/deleted",
-                result:
-                  request.month === getUtcMonth()
-                    ? await readMonthDocument(request.month)
-                    : await readHistoricalMonthDocument(request.month),
-              };
-            });
+              ),
+            );
+            void checkAttachmentCleanup(new Date(), true).catch(
+              () => undefined,
+            );
+            return {
+              ok: true,
+              type: "messages/deleted",
+              result:
+                request.month === getUtcMonth()
+                  ? await readMonthDocument(request.month)
+                  : await readHistoricalMonthDocument(request.month),
+            };
+          }
           case "messages/delete-corrupt-file":
             await deleteCorruptMonthFile(request.itemId);
             await deleteMonthCache(getUtcMonth());

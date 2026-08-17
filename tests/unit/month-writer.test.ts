@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
-import { mergeTextMessage } from "../../src/infrastructure/onedrive/month-writer";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
+import { mergeTextMessage } from "@onedrop/onedrive/infrastructure/onedrive/month-writer";
 
 const message = createTextMessage(
   "idempotent",

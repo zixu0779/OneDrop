@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/features/auth/auth-service", () => ({
+vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));
 
-vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
+vi.mock("@onedrop/web-storage/infrastructure/indexed-db/sync-cache", () => ({
   deleteMessagesFolderId: vi.fn().mockResolvedValue(undefined),
   deleteMonthCache: vi.fn().mockResolvedValue(undefined),
   getMessagesFolderId: vi.fn().mockResolvedValue("messages-folder-id"),
@@ -12,30 +12,30 @@ vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
   putMonthCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../../src/infrastructure/onedrive/month-reader", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-reader", () => ({
   getCachedMonthSnapshot: vi.fn(),
   readMonthDocument: vi.fn(),
   readMonthSnapshot: vi.fn(),
 }));
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
-import type { Message } from "../../src/domain/message";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
+import type { Message } from "@onedrop/core/domain/message";
 import {
   createFileMessage,
   createUploadingFileMessage,
-} from "../../src/features/messages/create-file-message";
-import { deleteMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
+} from "@onedrop/core/features/messages/create-file-message";
+import { deleteMonthCache } from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
   readMonthDocument,
   readMonthSnapshot,
-} from "../../src/infrastructure/onedrive/month-reader";
+} from "@onedrop/onedrive/infrastructure/onedrive/month-reader";
 import {
   appendTextMessage,
   removeMessage,
   resolveMessageConflict,
   replaceMessage,
-} from "../../src/infrastructure/onedrive/month-writer";
+} from "@onedrop/onedrive/infrastructure/onedrive/month-writer";
 
 const first = createTextMessage(
   "first",

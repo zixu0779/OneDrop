@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   getUploadChunkBytes,
   shouldUseUploadSession,
-} from "../../src/config/files";
+} from "@onedrop/core/config/files";
 
 describe("file upload thresholds", () => {
   it("keeps files below 320 KiB on direct upload", () => {

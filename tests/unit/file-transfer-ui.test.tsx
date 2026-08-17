@@ -8,7 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/infrastructure/indexed-db/downloads", () => ({
+vi.mock("@onedrop/web-storage/infrastructure/indexed-db/downloads", () => ({
   deleteDownloadRecord: vi.fn().mockResolvedValue(undefined),
   getDownloadRecord: vi.fn().mockResolvedValue(undefined),
   markDownloadOpened: vi.fn().mockResolvedValue(1),
@@ -22,11 +22,11 @@ import {
   UploadingFileMessageItem,
   groupTimelineItems,
   type PendingFile,
-} from "../../entrypoints/sidepanel/App";
+} from "../../packages/ui/src/OneDropApp";
 import {
   deleteDownloadRecord,
   getDownloadRecord,
-} from "../../src/infrastructure/indexed-db/downloads";
+} from "@onedrop/web-storage/infrastructure/indexed-db/downloads";
 
 const file = new File(["hello"], "hello.txt", { type: "text/plain" });
 

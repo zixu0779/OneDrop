@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { readGraphError } from "../../src/infrastructure/graph/graph-error";
+import { readGraphError } from "@onedrop/onedrive/infrastructure/graph/graph-error";
 
 describe("readGraphError", () => {
   it("extracts the Microsoft Graph error message", async () => {

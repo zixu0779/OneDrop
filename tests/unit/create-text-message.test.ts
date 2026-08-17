@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 
 describe("createTextMessage", () => {
   it("creates a versioned UTF-8 text message", () => {

@@ -5,6 +5,7 @@ const config: CapacitorConfig = {
   appName: "OneDrop",
   webDir: "dist/ios",
   ios: {
+    path: "apps/ios/native",
     contentInset: "never",
   },
 };

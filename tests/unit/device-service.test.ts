@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { getOrCreateDeviceId } from "../../src/features/device/device-service";
+import { getOrCreateDeviceId } from "@onedrop/app-runtime/features/device/device-service";
 
 describe("device identity", () => {
   const state: Record<string, unknown> = {};

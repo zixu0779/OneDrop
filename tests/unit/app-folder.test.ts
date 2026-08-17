@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseAppFolder } from "../../src/infrastructure/onedrive/app-folder";
+import { parseAppFolder } from "@onedrop/onedrive/infrastructure/onedrive/app-folder";
 
 describe("parseAppFolder", () => {
   it("accepts a valid App Folder response without a specialFolder facet", () => {

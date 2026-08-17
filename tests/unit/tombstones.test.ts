@@ -1,18 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/features/auth/auth-service", () => ({
+vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));
 
-vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
+vi.mock("@onedrop/web-storage/infrastructure/indexed-db/sync-cache", () => ({
   deleteMonthCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-import { deleteMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
+import { deleteMonthCache } from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
 import {
   removeMessageTombstoneWithAccessToken,
   writeMessageTombstone,
-} from "../../src/infrastructure/onedrive/tombstones";
+} from "@onedrop/onedrive/infrastructure/onedrive/tombstones";
 
 const messageId = "01989f5e-7700-7000-8000-000000000001";
 

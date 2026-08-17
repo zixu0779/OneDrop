@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createFileMessage,
   createUploadingFileMessage,
-} from "../../src/features/messages/create-file-message";
+} from "@onedrop/core/features/messages/create-file-message";
 
 describe("createFileMessage", () => {
   it("creates validated attachment metadata with device ownership", () => {

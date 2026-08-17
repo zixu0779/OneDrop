@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { enqueueMonthWrite } from "../../src/infrastructure/onedrive/month-write-coordinator";
+import { enqueueMonthWrite } from "@onedrop/onedrive/infrastructure/onedrive/month-write-coordinator";
 
 describe("month write coordinator", () => {
   it("runs month metadata writes in request order", async () => {

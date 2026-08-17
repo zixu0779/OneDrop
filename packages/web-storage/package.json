@@ -1,0 +1,5 @@
+{
+  "name": "@onedrop/web-storage",
+  "private": true,
+  "type": "module"
+}

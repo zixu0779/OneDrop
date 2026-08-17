@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getAttachmentDownloadUrl = vi.hoisted(() => vi.fn());
-vi.mock("../../src/infrastructure/onedrive/file-uploader", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/file-uploader", () => ({
   getAttachmentDownloadUrl,
 }));
 
@@ -10,7 +10,7 @@ import {
   claimMobileNavigationDownload,
   prepareMobileNavigationDownload,
   readMobileNavigationDownloadStatus,
-} from "../../src/features/downloads/mobile-navigation-download";
+} from "@onedrop/app-runtime/features/downloads/mobile-navigation-download";
 
 const attachment = {
   driveItemId: "drive-item",

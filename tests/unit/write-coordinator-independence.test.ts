@@ -4,9 +4,9 @@ describe("OneDrive write coordinators", () => {
   it("does not make a message write wait for an active tombstone write", async () => {
     vi.resetModules();
     const { enqueueMonthWrite } =
-      await import("../../src/infrastructure/onedrive/month-write-coordinator");
+      await import("@onedrop/onedrive/infrastructure/onedrive/month-write-coordinator");
     const { enqueueTombstoneWrite } =
-      await import("../../src/infrastructure/onedrive/tombstone-write-coordinator");
+      await import("@onedrop/onedrive/infrastructure/onedrive/tombstone-write-coordinator");
     let finishDelete!: () => void;
     const deleteGate = new Promise<void>((resolve) => {
       finishDelete = resolve;
@@ -32,7 +32,7 @@ describe("OneDrive write coordinators", () => {
   it("still serializes two tombstone writes", async () => {
     vi.resetModules();
     const { enqueueTombstoneWrite } =
-      await import("../../src/infrastructure/onedrive/tombstone-write-coordinator");
+      await import("@onedrop/onedrive/infrastructure/onedrive/tombstone-write-coordinator");
     let finishFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => {
       finishFirst = resolve;

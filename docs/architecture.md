@@ -197,21 +197,32 @@ The project does not request `tabs`, `activeTab`, `scripting`, content-script ac
 ## 10. Module boundaries
 
 ```text
-entrypoints/       WXT browser entrypoints only
-src/app/           React composition and providers
-src/components/    reusable presentation components
-src/features/      product use cases grouped by capability
-src/background/    worker commands, events, and scheduling
-src/domain/        browser-independent business models
-src/contracts/     runtime and cloud boundary contracts
-src/infrastructure Graph, OneDrive, IndexedDB, cache, browser adapters
-src/config/        non-secret application constants
-src/shared/        genuinely cross-cutting utilities
-tests/             unit and integration tests
-e2e/               packaged-extension browser tests
+apps/
+  desktop-edge/    desktop WXT entrypoints and desktop-only adapters
+  android-edge/    Android Edge WXT entrypoints and Android-only adapters
+  ios/
+    web/            Capacitor web entrypoint and iOS web/native adapters
+    native/         Xcode project, CocoaPods files, and Swift plugins
+
+packages/
+  core/             browser-independent config, domain types, and contracts
+  onedrive/         Microsoft Graph and OneDrive persistence
+  web-storage/      IndexedDB and browser-owned persistent caches
+  platform/         platform bridge contracts and shared browser adapter
+  app-runtime/      shared auth, device, download, and settings services
+  extension-runtime/ shared MV3 service-worker implementation
+  ui/               shared React application and presentation styles
+
+tests/              unit and integration tests
+e2e/                packaged-extension browser tests
 ```
 
-Domain and contract code must not depend on React, WXT, or Microsoft Graph response classes. Infrastructure maps external data into validated domain types.
+Each app is a composition root and must not import another app or another
+platform's entrypoint. Code used by more than one app belongs in a package.
+`core` must not depend on React, DOM APIs, WXT, Capacitor, IndexedDB, or Microsoft
+Graph response classes. Infrastructure packages map external data into validated
+core types. These rules are enforced by path aliases and ESLint import
+restrictions.
 
 ## 11. Delivery sequence
 

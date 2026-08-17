@@ -23,11 +23,11 @@ const pendingTransferStore = vi.hoisted(() => ({
 }));
 
 vi.mock(
-  "../../src/infrastructure/indexed-db/pending-texts",
+  "@onedrop/web-storage/infrastructure/indexed-db/pending-texts",
   () => pendingTextStore,
 );
 vi.mock(
-  "../../src/infrastructure/indexed-db/pending-transfers",
+  "@onedrop/web-storage/infrastructure/indexed-db/pending-transfers",
   () => pendingTransferStore,
 );
 
@@ -38,12 +38,12 @@ import {
   groupMessages,
   shouldApplyMonthRead,
   type PendingFile,
-} from "../../entrypoints/sidepanel/App";
+} from "../../packages/ui/src/OneDropApp";
 import type {
   RuntimeRequest,
   RuntimeResponse,
-} from "../../src/contracts/runtime-messages";
-import { createTextMessage } from "../../src/features/messages/create-text-message";
+} from "@onedrop/core/contracts/runtime-messages";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 
 let archiveCheckNotices: Array<{
   month: string;

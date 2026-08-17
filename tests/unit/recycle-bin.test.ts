@@ -1,35 +1,35 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/platform/onedrive-runtime", () => ({
+vi.mock("@onedrop/platform/platform/onedrive-runtime", () => ({
   getOneDriveRuntime: () => ({
     getAccessToken: vi.fn().mockResolvedValue("access-token"),
   }),
 }));
-vi.mock("../../src/infrastructure/onedrive/month-archive", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-archive", () => ({
   readRawMonthArchive: vi.fn(),
 }));
-vi.mock("../../src/infrastructure/onedrive/month-reader", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-reader", () => ({
   readMonthSnapshot: vi.fn(),
 }));
-vi.mock("../../src/infrastructure/onedrive/tombstones", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/tombstones", () => ({
   listMessageTombstonesWithAccessToken: vi.fn(),
   removeMessageTombstoneWithAccessToken: vi.fn(),
 }));
-vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
+vi.mock("@onedrop/web-storage/infrastructure/indexed-db/sync-cache", () => ({
   deleteMonthCache: vi.fn(),
 }));
 
-import { deleteMonthCache } from "../../src/infrastructure/indexed-db/sync-cache";
-import { readRawMonthArchive } from "../../src/infrastructure/onedrive/month-archive";
-import { readMonthSnapshot } from "../../src/infrastructure/onedrive/month-reader";
+import { deleteMonthCache } from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
+import { readRawMonthArchive } from "@onedrop/onedrive/infrastructure/onedrive/month-archive";
+import { readMonthSnapshot } from "@onedrop/onedrive/infrastructure/onedrive/month-reader";
 import {
   readDeletedMessages,
   restoreDeletedMessage,
-} from "../../src/infrastructure/onedrive/recycle-bin";
+} from "@onedrop/onedrive/infrastructure/onedrive/recycle-bin";
 import {
   listMessageTombstonesWithAccessToken,
   removeMessageTombstoneWithAccessToken,
-} from "../../src/infrastructure/onedrive/tombstones";
+} from "@onedrop/onedrive/infrastructure/onedrive/tombstones";
 
 const textId = "01989f5e-7700-7000-8000-000000000901";
 const fileId = "01989f5e-7700-7000-8000-000000000902";

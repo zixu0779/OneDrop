@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 import {
   getMessageLines,
   serializeMonthDocument,
-} from "../../src/infrastructure/onedrive/month-serialization";
+} from "@onedrop/onedrive/infrastructure/onedrive/month-serialization";
 
 describe("month document serialization", () => {
   it("writes stable multiline JSON and records real message lines", () => {

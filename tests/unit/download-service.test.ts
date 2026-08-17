@@ -19,15 +19,18 @@ const searchDownloads = vi.fn<
 >(async () => []);
 const downloadChangedListeners = new Set<(delta: { id: number }) => void>();
 
-vi.mock("../../src/infrastructure/indexed-db/downloads", () => downloadStore);
-vi.mock("../../src/infrastructure/onedrive/file-uploader", () => ({
+vi.mock(
+  "@onedrop/web-storage/infrastructure/indexed-db/downloads",
+  () => downloadStore,
+);
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/file-uploader", () => ({
   getAttachmentDownloadUrl,
 }));
 
 import {
   openOrDownloadAttachment,
   sanitizeDownloadFilename,
-} from "../../src/features/downloads/download-service";
+} from "@onedrop/app-runtime/features/downloads/download-service";
 
 const attachment = {
   driveItemId: "drive-item",

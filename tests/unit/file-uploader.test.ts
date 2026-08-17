@@ -5,10 +5,10 @@ const throughput = vi.hoisted(() => ({
   recordUploadThroughput: vi.fn(),
 }));
 
-vi.mock("../../src/features/auth/auth-service", () => ({
+vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));
-vi.mock("../../src/infrastructure/onedrive/app-folder", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/app-folder", () => ({
   verifyAppFolder: vi
     .fn()
     .mockResolvedValue({ id: "app-root", name: "OneDrop" }),
@@ -17,7 +17,7 @@ vi.mock("../../src/infrastructure/onedrive/app-folder", () => ({
     .mockResolvedValue({ id: "app-root", name: "OneDrop" }),
 }));
 vi.mock(
-  "../../src/infrastructure/indexed-db/upload-throughput",
+  "@onedrop/web-storage/infrastructure/indexed-db/upload-throughput",
   () => throughput,
 );
 
@@ -27,7 +27,7 @@ import {
   getAttachmentWebUrl,
   uploadLargeFile,
   uploadSmallFile,
-} from "../../src/infrastructure/onedrive/file-uploader";
+} from "@onedrop/onedrive/infrastructure/onedrive/file-uploader";
 
 describe("uploadSmallFile", () => {
   beforeEach(() => vi.clearAllMocks());

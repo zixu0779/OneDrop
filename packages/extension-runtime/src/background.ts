@@ -1,0 +1,657 @@
+import type {
+  RuntimeRequest,
+  RuntimeResponse,
+} from "@onedrop/core/contracts/runtime-messages";
+import {
+  getCurrentAccessToken,
+  getAuthStatus,
+  signIn,
+  signOut,
+} from "@onedrop/app-runtime/features/auth/auth-service";
+import {
+  copyDevicePreferencesWithAccessToken,
+  readAccountSettingsWithAccessToken,
+  readSettingsWithAccessToken,
+  resetDevicePreferences,
+  saveAccountSettingsWithAccessToken,
+  saveDeviceSettingsWithAccessToken,
+} from "@onedrop/onedrive/infrastructure/onedrive/settings";
+import { verifyAppFolder } from "@onedrop/onedrive/infrastructure/onedrive/app-folder";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
+import { getUtcMonth } from "@onedrop/core/features/messages/month";
+import {
+  readHistoricalMonthDocument,
+  readMonthDocument,
+} from "@onedrop/onedrive/infrastructure/onedrive/month-reader";
+import { appendTextMessage } from "@onedrop/onedrive/infrastructure/onedrive/month-writer";
+import { getOrCreateDeviceId } from "@onedrop/app-runtime/features/device/device-service";
+import { appMetadata } from "@onedrop/core/config/app";
+import {
+  createFileMessage,
+  createUploadingFileMessage,
+} from "@onedrop/core/features/messages/create-file-message";
+import {
+  checkAttachmentExists,
+  getAttachmentDownloadUrl,
+  getAttachmentWebUrl,
+  readImagePreview,
+  uploadLargeFile,
+  uploadSmallFile,
+} from "@onedrop/onedrive/infrastructure/onedrive/file-uploader";
+import { shouldUseUploadSession } from "@onedrop/core/config/files";
+import { getPendingTransfer } from "@onedrop/web-storage/infrastructure/indexed-db/pending-transfers";
+import {
+  appendMessage,
+  removeMessage,
+  resolveMessageConflict,
+  replaceMessage,
+} from "@onedrop/onedrive/infrastructure/onedrive/month-writer";
+import { openOrDownloadAttachment } from "@onedrop/app-runtime/features/downloads/download-service";
+import {
+  deleteCorruptMonthFile,
+  getCorruptMonthFileFolderUrl,
+} from "@onedrop/onedrive/infrastructure/onedrive/corrupt-month-file";
+import { deleteMonthCache } from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
+import { writeMessageTombstoneWithAccessToken } from "@onedrop/onedrive/infrastructure/onedrive/tombstones";
+import {
+  checkArchiveTasks,
+  dismissArchiveNotice,
+  resumeArchiveTasksAfterSignIn,
+  retryArchiveTask,
+} from "@onedrop/onedrive/infrastructure/onedrive/archive-scheduler";
+import {
+  cleanDeletedDataNow,
+  checkAttachmentCleanup,
+  resetAttachmentCleanup,
+} from "@onedrop/onedrive/infrastructure/onedrive/attachment-cleanup";
+import {
+  readDeletedMessages,
+  restoreDeletedMessage,
+} from "@onedrop/onedrive/infrastructure/onedrive/recycle-bin";
+import { enqueueMonthWrite } from "@onedrop/onedrive/infrastructure/onedrive/month-write-coordinator";
+import { enqueueTombstoneWrite } from "@onedrop/onedrive/infrastructure/onedrive/tombstone-write-coordinator";
+import {
+  cancelMobileNavigationDownload,
+  claimMobileNavigationDownload,
+  clearMobileNavigationDownload,
+  prepareMobileNavigationDownload,
+  readMobileNavigationDownloadStatus,
+} from "@onedrop/app-runtime/features/downloads/mobile-navigation-download";
+
+const activeFileUploads = new Map<string, AbortController>();
+const cancelledFileUploads = new Set<string>();
+
+export default defineBackground(() => {
+  browser.downloads.onCreated.addListener((item) => {
+    void claimMobileNavigationDownload(item).catch(() => undefined);
+  });
+  const hasSidePanelPermission =
+    browser.runtime.getManifest().permissions?.includes("sidePanel") ?? false;
+  if (!hasSidePanelPermission) {
+    browser.action.onClicked.addListener(() => {
+      void openOrFocusMobilePage().catch(async (error: unknown) => {
+        console.error("OneDrop mobile page could not be opened.", error);
+        await browser.action.setBadgeBackgroundColor({ color: "#d93025" });
+        await browser.action.setBadgeText({ text: "!" });
+      });
+    });
+  }
+
+  browser.runtime.onInstalled.addListener(() => {
+    if (browser.sidePanel?.setPanelBehavior) {
+      void browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+    }
+  });
+
+  browser.runtime.onMessage.addListener(
+    async (request: RuntimeRequest): Promise<RuntimeResponse> => {
+      try {
+        switch (request.type) {
+          case "auth/status":
+            return {
+              ok: true,
+              type: "auth/status",
+              status: await getAuthStatus(),
+            };
+          case "auth/sign-in": {
+            const status = await signIn();
+            if (status.state === "signed-in") {
+              await resumeArchiveTasksAfterSignIn();
+            }
+            return { ok: true, type: "auth/status", status };
+          }
+          case "auth/sign-out": {
+            const status = await signOut();
+            await resetAttachmentCleanup();
+            return { ok: true, type: "auth/status", status };
+          }
+          case "device/id":
+            return {
+              ok: true,
+              type: "device/id",
+              deviceId: await getOrCreateDeviceId(),
+            };
+          case "settings/read": {
+            const accessToken = await getCurrentAccessToken();
+            const snapshot = await readSettingsWithAccessToken(
+              accessToken,
+              await getOrCreateDeviceId(),
+              request.platform,
+              request.deviceName,
+            );
+            return { ok: true, type: "settings/snapshot", snapshot };
+          }
+          case "settings/save-account":
+            return {
+              ok: true,
+              type: "settings/account",
+              account: await saveAccountSettingsWithAccessToken(
+                await getCurrentAccessToken(),
+                request.account,
+              ),
+            };
+          case "settings/save-device":
+            return {
+              ok: true,
+              type: "settings/device",
+              device: await saveDeviceSettingsWithAccessToken(
+                await getCurrentAccessToken(),
+                request.device,
+              ),
+            };
+          case "settings/copy-device": {
+            const token = await getCurrentAccessToken();
+            const snapshot = await readSettingsWithAccessToken(
+              token,
+              await getOrCreateDeviceId(),
+              request.platform,
+            );
+            return {
+              ok: true,
+              type: "settings/device",
+              device: await copyDevicePreferencesWithAccessToken(
+                token,
+                snapshot.device,
+                request.sourceDeviceId,
+              ),
+            };
+          }
+          case "settings/reset-device": {
+            const token = await getCurrentAccessToken();
+            const snapshot = await readSettingsWithAccessToken(
+              token,
+              await getOrCreateDeviceId(),
+              request.platform,
+            );
+            return {
+              ok: true,
+              type: "settings/device",
+              device: await saveDeviceSettingsWithAccessToken(
+                token,
+                resetDevicePreferences(snapshot.device),
+              ),
+            };
+          }
+          case "app/open-project":
+            await browser.tabs.create({ url: appMetadata.repositoryUrl });
+            return { ok: true, type: "app/project-opened" };
+          case "onedrive/verify-app-folder":
+            return {
+              ok: true,
+              type: "onedrive/app-folder",
+              appFolder: await verifyAppFolder(),
+            };
+          case "onedrive/open-app-folder": {
+            const appFolder = await verifyAppFolder();
+            if (!appFolder.webUrl) {
+              throw new Error(
+                "OneDrive did not provide the OneDrop folder link.",
+              );
+            }
+            await browser.tabs.create({ url: appFolder.webUrl });
+            return { ok: true, type: "onedrive/app-folder-opened" };
+          }
+          case "messages/read-current-month":
+            return {
+              ok: true,
+              type: "messages/month",
+              result: await readMonthDocument(getUtcMonth()),
+            };
+          case "messages/read-month":
+            return {
+              ok: true,
+              type: "messages/month",
+              result: await readHistoricalMonthDocument(request.month),
+            };
+          case "archives/check":
+            return {
+              ok: true,
+              type: "archives/notices",
+              notices: await checkArchiveTasks(),
+            };
+          case "archives/retry": {
+            const notice = await retryArchiveTask(request.month);
+            return {
+              ok: true,
+              type: "archives/notice",
+              ...(notice ? { notice } : {}),
+            };
+          }
+          case "archives/dismiss":
+            await dismissArchiveNotice(request.month);
+            return { ok: true, type: "archives/dismissed" };
+          case "messages/delete": {
+            const token = await getCurrentAccessToken();
+            const recycle = (await readAccountSettingsWithAccessToken(token))
+              .recycleBin;
+            await enqueueTombstoneWrite(() =>
+              writeMessageTombstoneWithAccessToken(
+                request.month,
+                request.messageId,
+                token,
+                recycle,
+              ),
+            );
+            void checkAttachmentCleanup(new Date(), true).catch(
+              () => undefined,
+            );
+            return {
+              ok: true,
+              type: "messages/deleted",
+              result:
+                request.month === getUtcMonth()
+                  ? await readMonthDocument(request.month)
+                  : await readHistoricalMonthDocument(request.month),
+            };
+          }
+          case "messages/delete-corrupt-file":
+            await deleteCorruptMonthFile(request.itemId);
+            await deleteMonthCache(getUtcMonth());
+            return { ok: true, type: "messages/corrupt-file-deleted" };
+          case "messages/open-corrupt-file-location":
+            await browser.tabs.create({
+              url: await getCorruptMonthFileFolderUrl(request.itemId),
+            });
+            return {
+              ok: true,
+              type: "messages/corrupt-file-location-opened",
+            };
+          case "messages/resolve-conflict":
+            return enqueueMonthWrite(async () => ({
+              ok: true,
+              type: "messages/conflict-resolved",
+              result: await resolveMessageConflict(
+                getUtcMonth(),
+                request.messageId,
+                request.keepItemId,
+              ),
+            }));
+          case "messages/send-text": {
+            const message = createTextMessage(
+              request.text,
+              request.createdAt ? new Date(request.createdAt) : new Date(),
+              request.messageId ?? crypto.randomUUID(),
+              await getOrCreateDeviceId(),
+            );
+            return enqueueMonthWrite(async () => ({
+              ok: true,
+              type: "messages/month",
+              result: await appendTextMessage(getUtcMonth(), message),
+            }));
+          }
+          case "files/send": {
+            cancelledFileUploads.delete(request.messageId);
+            const deviceId = await getOrCreateDeviceId();
+            const registeredAt = new Date(request.createdAt);
+            const placeholder = createUploadingFileMessage(
+              request.file,
+              deviceId,
+              registeredAt,
+              request.messageId,
+            );
+            try {
+              await enqueueMonthWrite(() =>
+                appendMessage(getUtcMonth(), placeholder),
+              );
+            } catch (error) {
+              try {
+                await enqueueMonthWrite(() =>
+                  removeMessage(getUtcMonth(), request.messageId),
+                );
+              } catch {
+                // The local pending transfer retains cleanup responsibility
+                // and will retry discarding this placeholder after reconnect.
+              }
+              return {
+                ok: true,
+                type: "files/transfer",
+                transfer: {
+                  state: "upload-failed",
+                  error: getErrorMessage(error),
+                },
+              };
+            }
+
+            let attachment;
+            try {
+              if (shouldUseUploadSession(request.file)) {
+                const pending = await getPendingTransfer(request.messageId);
+                if (!pending || pending.blob.size !== request.file.size) {
+                  throw new Error(
+                    "The original large file is no longer available. Select it again.",
+                  );
+                }
+                if (cancelledFileUploads.has(request.messageId)) {
+                  throw new DOMException("Upload cancelled", "AbortError");
+                }
+                const controller = new AbortController();
+                activeFileUploads.set(request.messageId, controller);
+                try {
+                  attachment = await uploadLargeFile({
+                    ...request.file,
+                    blob: pending.blob,
+                    messageId: request.messageId,
+                    createdAt: request.createdAt,
+                    signal: controller.signal,
+                    onProgress: (
+                      uploadedBytes,
+                      totalBytes,
+                      segmentEndBytes,
+                      averageUploadBytesPerSecond,
+                    ) => {
+                      void browser.runtime
+                        .sendMessage({
+                          type: "files/progress",
+                          messageId: request.messageId,
+                          uploadedBytes,
+                          segmentEndBytes,
+                          totalBytes,
+                          ...(averageUploadBytesPerSecond
+                            ? { averageUploadBytesPerSecond }
+                            : {}),
+                        })
+                        .catch(() => undefined);
+                    },
+                    ...(request.reuseExisting ? { reuseExisting: true } : {}),
+                  });
+                } finally {
+                  activeFileUploads.delete(request.messageId);
+                  cancelledFileUploads.delete(request.messageId);
+                }
+              } else {
+                if (!request.file.base64) {
+                  throw new Error("The selected file content is unavailable.");
+                }
+                if (cancelledFileUploads.has(request.messageId)) {
+                  throw new DOMException("Upload cancelled", "AbortError");
+                }
+                const controller = new AbortController();
+                activeFileUploads.set(request.messageId, controller);
+                try {
+                  attachment = await uploadSmallFile({
+                    ...request.file,
+                    base64: request.file.base64,
+                    messageId: request.messageId,
+                    createdAt: request.createdAt,
+                    signal: controller.signal,
+                    onProgress: (
+                      uploadedBytes,
+                      totalBytes,
+                      segmentEndBytes,
+                      averageUploadBytesPerSecond,
+                    ) => {
+                      void browser.runtime
+                        .sendMessage({
+                          type: "files/progress",
+                          messageId: request.messageId,
+                          uploadedBytes,
+                          segmentEndBytes,
+                          totalBytes,
+                          ...(averageUploadBytesPerSecond
+                            ? { averageUploadBytesPerSecond }
+                            : {}),
+                        })
+                        .catch(() => undefined);
+                    },
+                    ...(request.reuseExisting ? { reuseExisting: true } : {}),
+                  });
+                } finally {
+                  activeFileUploads.delete(request.messageId);
+                  cancelledFileUploads.delete(request.messageId);
+                }
+              }
+            } catch (error) {
+              try {
+                await enqueueMonthWrite(() =>
+                  removeMessage(getUtcMonth(), request.messageId),
+                );
+              } catch {
+                // Retry cleanup when the originating device reconnects.
+              }
+              return {
+                ok: true,
+                type: "files/transfer",
+                transfer: {
+                  state: "upload-failed",
+                  error: getErrorMessage(error),
+                },
+              };
+            }
+
+            try {
+              const message = createFileMessage(
+                attachment,
+                deviceId,
+                registeredAt,
+                request.messageId,
+              );
+              return {
+                ok: true,
+                type: "files/transfer",
+                transfer: {
+                  state: "sent",
+                  result: await enqueueMonthWrite(() =>
+                    replaceMessage(getUtcMonth(), message),
+                  ),
+                },
+              };
+            } catch (error) {
+              return {
+                ok: true,
+                type: "files/transfer",
+                transfer: {
+                  state: "reconciling",
+                  error: getErrorMessage(error),
+                  attachment,
+                  createdAt: registeredAt.toISOString(),
+                },
+              };
+            }
+          }
+          case "files/cancel":
+            cancelledFileUploads.add(request.messageId);
+            activeFileUploads.get(request.messageId)?.abort();
+            return { ok: true, type: "files/cancelled" };
+          case "files/discard-placeholder":
+            await enqueueMonthWrite(() =>
+              removeMessage(getUtcMonth(), request.messageId),
+            );
+            return { ok: true, type: "files/placeholder-discarded" };
+          case "files/retry-commit": {
+            try {
+              const message = createFileMessage(
+                request.attachment,
+                await getOrCreateDeviceId(),
+                new Date(request.createdAt),
+                request.messageId,
+              );
+              return {
+                ok: true,
+                type: "files/transfer",
+                transfer: {
+                  state: "sent",
+                  result: await enqueueMonthWrite(() =>
+                    replaceMessage(getUtcMonth(), message),
+                  ),
+                },
+              };
+            } catch (error) {
+              return {
+                ok: true,
+                type: "files/transfer",
+                transfer: {
+                  state: "reconciling",
+                  error: getErrorMessage(error),
+                  attachment: request.attachment,
+                  createdAt: request.createdAt,
+                },
+              };
+            }
+          }
+          case "files/read-preview":
+            return {
+              ok: true,
+              type: "files/preview",
+              dataUrl: await readImagePreview(
+                request.driveItemId,
+                request.mimeType,
+              ),
+            };
+          case "files/check-attachment":
+            return {
+              ok: true,
+              type: "files/availability",
+              exists: await checkAttachmentExists(request.driveItemId),
+            };
+          case "files/check-cleanup":
+            return {
+              ok: true,
+              type: "files/cleanup-checked",
+              cleaned: await checkAttachmentCleanup(),
+            };
+          case "files/get-download-url":
+            return {
+              ok: true,
+              type: "files/download-url",
+              url: await getAttachmentDownloadUrl(request.driveItemId),
+            };
+          case "files/prepare-mobile-download":
+            return {
+              ok: true,
+              type: "files/mobile-download",
+              download: await prepareMobileNavigationDownload(
+                request.attachment,
+              ),
+            };
+          case "files/mobile-download-status": {
+            const download = await readMobileNavigationDownloadStatus(
+              request.driveItemId,
+            );
+            return {
+              ok: true,
+              type: "files/mobile-download",
+              ...(download ? { download } : {}),
+            };
+          }
+          case "files/cancel-mobile-download":
+            await cancelMobileNavigationDownload(request.driveItemId);
+            return { ok: true, type: "files/mobile-download-cleared" };
+          case "files/clear-mobile-download":
+            await clearMobileNavigationDownload(request.driveItemId);
+            return { ok: true, type: "files/mobile-download-cleared" };
+          case "deleted-data/clean-now": {
+            const result = await cleanDeletedDataNow();
+            return {
+              ok: true,
+              type: "deleted-data/cleaned",
+              ...result,
+            };
+          }
+          case "deleted-data/read":
+            return {
+              ok: true,
+              type: "deleted-data/items",
+              items: await readDeletedMessages(),
+            };
+          case "deleted-data/restore":
+            return enqueueMonthWrite(async () => {
+              const item = await restoreDeletedMessage(
+                request.month,
+                request.messageId,
+              );
+              return {
+                ok: true,
+                type: "deleted-data/restored",
+                item,
+                result:
+                  request.month === getUtcMonth()
+                    ? await readMonthDocument(request.month)
+                    : await readHistoricalMonthDocument(request.month),
+              };
+            });
+          case "files/open-local":
+            return {
+              ok: true,
+              type: "files/local-action",
+              ...(await openOrDownloadAttachment(
+                request.attachment,
+                false,
+                request.forceDownload,
+              )),
+            };
+          case "files/save-as":
+            return {
+              ok: true,
+              type: "files/local-action",
+              ...(await openOrDownloadAttachment(request.attachment, true)),
+            };
+          case "files/open-in-onedrive":
+            await browser.tabs.create({
+              url: await getAttachmentWebUrl(request.driveItemId),
+            });
+            return { ok: true, type: "files/onedrive-opened" };
+          case "files/show-in-folder": {
+            await browser.downloads.show(request.downloadId);
+            const [download] = await browser.downloads.search({
+              id: request.downloadId,
+            });
+            return {
+              ok: true,
+              type: "files/folder-shown",
+              exists:
+                Boolean(download) &&
+                download?.exists !== false &&
+                download?.state !== "interrupted",
+            };
+          }
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : "Unknown auth error",
+        };
+      }
+    },
+  );
+});
+
+async function openOrFocusMobilePage() {
+  const path = "/mobile.html";
+  // The shared runtime is type-checked against the desktop entrypoint set,
+  // which intentionally does not emit mobile.html. Android does emit it.
+  const mobilePageUrl = browser.runtime.getURL(path as never);
+  const matchingTabs = await browser.tabs.query({ url: `${mobilePageUrl}*` });
+  const existingTab = matchingTabs.find(
+    (tab) => tab.id !== undefined && tab.windowId !== undefined,
+  );
+  if (existingTab?.id !== undefined && existingTab.windowId !== undefined) {
+    await browser.windows.update(existingTab.windowId, { focused: true });
+    await browser.tabs.update(existingTab.id, { active: true });
+    return;
+  }
+  await browser.tabs.create({ url: mobilePageUrl });
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown file transfer error";
+}

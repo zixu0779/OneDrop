@@ -1,40 +1,40 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
+vi.mock("@onedrop/web-storage/infrastructure/indexed-db/sync-cache", () => ({
   deleteMonthCache: vi.fn().mockResolvedValue(undefined),
   getMonthCache: vi.fn().mockResolvedValue(undefined),
   putMonthCache: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../../src/infrastructure/onedrive/tombstones", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/tombstones", () => ({
   readTombstoneIds: vi.fn().mockResolvedValue(new Set()),
 }));
 
-vi.mock("../../src/features/auth/auth-service", () => ({
+vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));
 
-vi.mock("../../src/infrastructure/onedrive/month-archive", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-archive", () => ({
   isMonthArchiveEligible: vi.fn().mockReturnValue(true),
   publishMonthArchive: vi.fn(),
   readMonthArchive: vi.fn(),
 }));
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 import {
   deleteMonthCache,
   getMonthCache,
-} from "../../src/infrastructure/indexed-db/sync-cache";
+} from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
   readHistoricalMonthDocument,
   readMonthSnapshot,
-} from "../../src/infrastructure/onedrive/month-reader";
+} from "@onedrop/onedrive/infrastructure/onedrive/month-reader";
 import {
   publishMonthArchive,
   readMonthArchive,
-} from "../../src/infrastructure/onedrive/month-archive";
-import { readTombstoneIds } from "../../src/infrastructure/onedrive/tombstones";
+} from "@onedrop/onedrive/infrastructure/onedrive/month-archive";
+import { readTombstoneIds } from "@onedrop/onedrive/infrastructure/onedrive/tombstones";
 
 const firstMessage = createTextMessage(
   "first",

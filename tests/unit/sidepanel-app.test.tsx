@@ -423,7 +423,14 @@ describe("side panel message composer", () => {
 
     expect(await screen.findByText("deleted text message")).toBeInTheDocument();
     expect(screen.getByText("Text message")).toBeInTheDocument();
-    expect(screen.getByText(/Sent Aug 10, 2026/iu)).toBeInTheDocument();
+    const originalMessageDate = new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    }).format(new Date("2026-08-10T08:30:00.000Z"));
+    expect(screen.getByText(`Sent ${originalMessageDate}`)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Restore" }));
 
     await waitFor(() =>

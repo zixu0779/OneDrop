@@ -1,45 +1,33 @@
 # OneDrop architecture
 
-## 1. Product boundary
+## Product boundary
 
-OneDrop is a Microsoft Edge-only browser extension. It shares text and files between Edge installations belonging to the same Microsoft account by storing data in that user's OneDrive.
+OneDrop sends text and files between clients owned by the same user. It has no backend server, SaaS database, server-side queue, content scripts, or access to arbitrary websites.
 
-The system has:
+OneDrive is the cloud source of truth. Local browser storage and IndexedDB hold rebuildable indexes, caches, transfer state, settings, and authentication material.
 
-- no backend server;
-- no SaaS control plane or application database;
-- no server-side message queue;
-- no content scripts or access to arbitrary websites;
-- no automatic delivery of messages created while offline.
+## Clients
 
-OneDrive is the cloud persistence layer and the source of truth. Local browser storage is an index and cache that can be rebuilt.
+- Desktop Edge: WXT, React, TypeScript, Manifest V3.
+- Android Edge: WXT, React, TypeScript, Manifest V3, with a tab-based auth fallback.
+- iOS: the shared React UI inside Capacitor with native auth and platform adapters.
 
-## 2. Runtime architecture
+The shared UI sends typed commands to the platform runtime. It does not call Microsoft Graph directly. Tokens and privileged network operations stay in the runtime layer.
 
-### Side Panel
+Manifest V3 service workers are ephemeral, so recoverable state must be persisted in IndexedDB or `browser.storage`.
 
-The Edge Side Panel is the primary product surface. It will render the timeline, compose text messages, select files, show transfer progress, and expose sign-in and cache controls.
+## Local persistence
 
-The Side Panel never calls Microsoft Graph directly. It sends typed runtime commands to the service worker and renders returned state. This keeps tokens and privileged network behavior out of presentation code.
+- IndexedDB stores the message index, month ETags, transfer state, folder IDs, and download registry.
+- Cache Storage is reserved for bounded extension-owned preview data.
+- `browser.storage.local` stores small preferences and durable authentication tokens.
+- `browser.storage.session` is still read only to migrate or clear token data written by earlier validation builds.
 
-### MV3 service worker
+The extension does not request `unlimitedStorage`; managed local data must remain bounded or rebuildable.
 
-The service worker owns authentication, Graph requests, synchronization, ETag retries, transfer orchestration, and scheduled cache maintenance.
+## OneDrive layout
 
-Manifest V3 workers are ephemeral. No operation may depend on an in-memory singleton surviving between events. Recoverable state belongs in IndexedDB or `browser.storage`; active UI state can remain in the Side Panel.
-
-### Local persistence
-
-- IndexedDB stores the local message index, known monthly document ETags, and cache metadata.
-- Cache Storage stores managed preview/download responses.
-- `browser.storage.local` stores small preferences and durable authentication material when authentication is implemented.
-- `browser.storage.session` may hold short-lived access state.
-
-The first release will not request `unlimitedStorage`. Cache behavior must operate within an explicit application limit.
-
-## 3. Cloud layout
-
-OneDrop uses the least-privilege OneDrive App Folder reached through `/me/drive/special/approot`.
+OneDrop uses the least-privilege OneDrive App Folder through `/me/drive/special/approot`.
 
 ```text
 Apps/OneDrop/
@@ -49,25 +37,21 @@ Apps/OneDrop/
 │       ├── 0001.json
 │       └── 0002.json
 ├── archive/
-│   ├── 2026-07.json
-│   └── 2026-06.json
+│   └── 2026-07.json
 ├── files/
 │   └── 2026/
 │       └── 08/
 │           └── <message-id>/
 │               └── <original-file-name>
 └── tombstones/
-    ├── 2026-08.json
-    └── 2026-07.json
+    └── 2026-08.json
 ```
 
-The physical OneDrive App Folder name is determined by the Microsoft Entra application registration.
+The physical App Folder name is determined by the Microsoft Entra app registration. The supported live message layout is `messages/YYYY-MM/NNNN.json`; old flat `messages/YYYY-MM.json` documents are not part of the current storage contract.
 
-The chunked layout above is the only supported message layout. Obsolete `messages/YYYY-MM.json` files are not probed, read, migrated, or deleted by OneDrop.
+## Message storage
 
-## 4. Monthly message documents
-
-Each UTC month maps to an ordered set of metadata chunks. The current month's active chunk is mutable; prior chunks and prior months are logically immutable.
+Each UTC month is stored as ordered JSON chunks. The current month's active chunk is mutable. Older chunks are read for history and may be archived or physically compacted after deleted-message retention expires.
 
 ```json
 {
@@ -77,161 +61,105 @@ Each UTC month maps to an ordered set of metadata chunks. The current month's ac
 }
 ```
 
-Attachments are stored as independent OneDrive files. Monthly JSON documents contain metadata and DriveItem references, never embedded file bytes.
+Attachments are stored as separate OneDrive files. Message JSON stores metadata and DriveItem references, not file bytes.
 
-### Month selection
+The successful commit time selects the month. A user retry is a new send attempt and uses the time of that successful retry.
 
-The successful commit time determines the partition. An attachment is uploaded first. Immediately before the message metadata is committed, OneDrop selects the current UTC month. A manually retried send is a new current-time attempt and is not backdated into a closed month.
+## Writes and conflicts
 
-At a month boundary, the first successful message in the new month creates `messages/<new month>/0001.json`. The preceding month's chunk directory becomes eligible for archive compaction after the grace period.
+OneDrive does not provide atomic JSON append, so OneDrop uses ETag compare-and-swap:
 
-### Concurrency protocol
+1. Read the target chunk and ETag.
+2. Merge by globally unique message ID.
+3. Write with `If-Match`.
+4. On `409` or `412`, invalidate the cache, read the newer data, merge, deduplicate, and retry with a bounded budget.
+5. Report failure when the retry budget is exhausted.
 
-OneDrive does not provide an atomic JSON append. Concurrent writers therefore use compare-and-swap semantics:
+Blind overwrite is forbidden. Writes from one installation are also serialized locally to reduce self-conflicts.
 
-1. Read the current month document and its ETag.
-2. Merge the new message by globally unique message ID.
-3. Write with `If-Match` using the observed ETag.
-4. On `412 Precondition Failed`, read the newer document, merge, deduplicate, and retry with bounded exponential backoff.
-5. Stop after the retry budget and present a failed send.
+Text messages are limited to 20,000 characters and receive a UUID before the cloud transaction. Each installation also stores an anonymous local device UUID so the UI can align the user's own messages; it is not an account identifier.
 
-Blind overwrite is forbidden. Within one extension installation, write commands are additionally serialized to reduce self-conflicts.
+## Archival
 
-### Growth and archival
+After a month is closed for 24 hours, synchronization may publish `archive/YYYY-MM.json` in the background. Publication uses conflict behavior `fail`, read-back verification, persisted retry state, and digest checks before source chunks are removed.
 
-The current schema uses deterministic active-month chunks with a 256 KiB soft target and 320 KiB hard ceiling. This keeps ordinary conditional rewrites small while avoiding a mutable shared pointer file. Chunk discovery follows Microsoft Graph pagination rather than assuming all children fit in one response.
+A month archive is a compact historical copy, not a different message model. Tombstones still apply to archived months, and later physical cleanup may conditionally rewrite the archive to remove expired deleted records.
 
-Once a month is closed for 24 hours, each unified synchronization checks persisted archive maintenance state and may schedule one eligible month independently of the foreground response. Historical reads never publish. The scheduler creates `archive/YYYY-MM.json` once with conflict behavior `fail`, verifies it by read-back, and accepts a concurrent identical publication. A successful month is never archived again. Later deletion is represented by tombstones during the 10-day grace period; after that period, maintenance may conditionally compact the archived document without rerunning publication.
+## Synchronization
 
-Transient publication failures use persisted 5-minute, 30-minute, 6-hour, and then 24-hour retry delays. Automatic checks occur on later synchronizations, while a notification Retry may bypass the delay without bypassing per-month task deduplication or validation. Damaged/conflicting sources and inconsistent existing archives are blocked rather than overwritten. On the first later synchronization after success, the raw archive is reverified against its stored digest and tombstones are checked before the source chunk directory is deleted. Cleanup failures are retried without changing archive success. Late offline sends are not supported, so normal send behavior never reopens archived months.
+Synchronization is pull-based:
 
-## 5. Send semantics
+- when the UI opens or regains focus;
+- after a successful local send;
+- on explicit refresh;
+- through low-frequency best-effort `browser.alarms`.
 
-OneDrop intentionally has no offline outbox or delayed delivery queue.
+Readers enumerate `messages/<UTC YYYY-MM>/` with Graph pagination. Missing month directories are valid empty states. Cached chunks are reused when ETags match, and all remote JSON is schema-validated before it enters application state.
 
-- A send is successful only after its attachment, if any, and monthly metadata are committed to OneDrive.
-- A connection loss or exhausted retry budget produces a visible failed state.
-- Failed sends are not automatically transmitted when connectivity returns.
-- A user-triggered retry starts a new attempt and uses the successful retry time.
-- The UI may retain failed draft data locally for user convenience, but it is not a delivery queue.
+There is no real-time delivery guarantee while Edge or the extension is inactive.
 
-OneDrive is file storage, not a message broker. It offers no FIFO consumption, acknowledgement, visibility timeout, dead-letter queue, or consumer leasing, and OneDrop will not emulate those facilities.
+## Deleted Data
 
-### Deletion scope
+User deletion removes a message from the visible timeline by writing a versioned tombstone with the message ID, original month, and deletion time. Readers apply tombstones to live chunks and archives, so the deleted message does not reappear during synchronization.
 
-The product supports deletion of individual messages only. It does not expose a delete-month operation. A cloud message deletion is first represented by a versioned tombstone containing the message ID, original month, and deletion timestamp. Readers apply tombstones to active chunks and archives consistently. After a 10-day grace period, a best-effort daily maintenance task re-reads the raw message and rejects conflicting or unsafe data. For file messages it also checks for another visible reference to the DriveItem and verifies the expected DriveItem inside the deterministic OneDrop attachment folder before deleting that folder. It then conditionally rewrites every remaining source chunk and/or the archive without the message and removes the tombstone last. Any failure leaves the tombstone in place and retries during a later synchronization, so foreground visibility does not change and deleted messages cannot reappear. The account popover opens a recycle bin that resolves each tombstone against its unfiltered source record, groups items by deletion date, retains the original message timestamp, and distinguishes text, file, and image records. Restore removes only the matching tombstone through an ETag-conditional update after rechecking that the original record still exists. Restore, recycle-bin reads, and physical cleanup share one maintenance queue, so restoration cannot race the 10-day collector. The recycle bin also exposes a separately confirmed manual cleanup that bypasses both the grace period and daily throttle; its persistent centered result can retry unfinished work, while closing a failure leaves the normal automatic retry path intact. Missing attachments, text messages, and `file-uploading` placeholders still have their metadata compacted. Purely local failed text/file records bypass tombstones and are permanently deleted from IndexedDB when confirmed. User-downloaded files are never removed.
+The recycle bin reads tombstones against the original unfiltered record. Restore removes only the matching tombstone after confirming the source message still exists.
 
-## 6. Synchronization
+Physical deletion is separate. After the retention period, or after a separately confirmed manual cleanup, OneDrop may remove the message metadata from source chunks and archives. For file messages it also verifies that no visible message still references the same DriveItem and that the file is inside the deterministic OneDrop attachment folder before deleting that folder.
 
-Without a public backend endpoint, OneDrop cannot depend on Microsoft Graph change-notification webhooks. Synchronization is pull-based:
+Cleanup is best-effort and conditional. If source data changed, is damaged, still conflicts, or cannot be verified safely, the tombstone remains and cleanup is retried later. User-downloaded files are outside extension-managed cleanup and are never removed by OneDrop.
 
-- refresh when the Side Panel opens or regains focus;
-- refresh after a successful local send;
-- refresh on explicit user action;
-- optionally perform low-frequency best-effort checks with `browser.alarms`.
+Purely local failed sends were never committed to OneDrive; confirming their removal deletes them from IndexedDB without a tombstone.
 
-Historical month documents are cached locally and fetched on demand as the user scrolls. ETags and `If-None-Match` avoid downloading unchanged documents.
+## File transfer
 
-There is no promise of real-time background delivery while Edge or the extension is inactive.
+A file send uploads the attachment first, then commits message metadata with ETag protection. If metadata commit fails, OneDrop reports failure and records the uploaded object for later orphan cleanup.
 
-### Current read implementation
+Files up to 4 MiB use direct upload through the service worker. Larger files stay as Blobs in shared IndexedDB while the service worker uploads them through a Microsoft Graph upload session. The UI shows progress and supports cancellation.
 
-OneDrop enumerates `messages/<UTC YYYY-MM>/` with Graph pagination. A missing directory is a valid empty state. It reuses locally cached chunk content when the DriveItem ETag is unchanged, downloads changed chunks, validates `schemaVersion`, the month partition, and every message, then returns the deduplicated chronological result to the Side Panel. No remote response is allowed to enter application state before schema validation.
+User-opened and user-saved downloads are treated as user-owned files. OneDrop stores only a registry that helps reopen known downloads later.
 
-### Current text write implementation
+## Authentication and permissions
 
-Text messages are limited to 20,000 characters and assigned a UUID before the cloud transaction. Each Edge installation also persists an anonymous device UUID in extension-local storage and stamps new messages with `senderDeviceId`; this is used only to align local bubbles on the right and is not an account or tracking identifier. Older messages without this optional field remain readable and render as remote. OneDrop caches validated monthly snapshots and folder IDs in IndexedDB. After the first read, the normal send path merges locally and performs one conditional upload. A missing or full active chunk creates its deterministic successor with conflict behavior `fail`; an existing active chunk is replaced with its exact ETag in `If-Match`. HTTP 409 and 412 responses invalidate the cache and cause a bounded read-merge-retry cycle of at most five attempts. HTTP 429 and network failures are reported immediately and are never queued for later delivery. An ambiguous network failure also invalidates the snapshot so the next operation must reconcile with OneDrive.
+Authentication uses Microsoft identity platform Authorization Code with PKCE. Setup details are in [authentication.md](authentication.md).
 
-## 7. File transfer
+The delegated Graph permission is `Files.ReadWrite.AppFolder`.
 
-The implemented small-file transaction is:
-
-1. Validate the selected file locally.
-2. Upload the file into `files/YYYY/MM/<message-id>/`.
-3. Obtain the resulting DriveItem metadata.
-4. Commit the message into the current monthly JSON document with ETag protection.
-5. If metadata commit fails, report failure and record the uploaded object for later orphan cleanup rather than silently claiming success.
-
-Files up to 4 MiB use direct upload through the service worker. The Side Panel sends base64 file content over the extension runtime boundary; tokens remain outside presentation code. Larger files remain as Blobs in the shared extension IndexedDB and are uploaded by the service worker through a Microsoft Graph upload session in 5 MiB chunks. Each chunk has three bounded attempts, and progress events update the local transfer bubble. The user can cancel the active upload.
-
-The UI keeps a local transfer bubble until both upload and metadata commit succeed. Upload failure or cancellation offers Resend; metadata-only failure preserves the DriveItem and offers Retry without uploading again. If the original browser File is no longer readable, Resend opens the file picker for explicit reselection. Interrupted upload sessions are not resumed automatically in a later browser session; Resend starts a new session and first checks whether the deterministic destination already contains the completed file.
-
-## 8. Local downloads and optional preview cache
-
-OneDrop distinguishes user-owned downloads from extension-managed transient data.
-
-- Clicking a file or image opens an existing, still-accessible local download when one is known; otherwise OneDrop downloads it from OneDrive.
-- The message menu offers Save as so the user can choose a location. When the downloads API exposes that saved item, OneDrop records its download ID and can recognize and open it later.
-- Downloads use the browser's `uniquify` conflict behavior so a later file with the same name does not overwrite the existing file.
-- User-downloaded files are user-owned and are never automatically deleted by OneDrop.
-- IndexedDB stores only a download registry such as DriveItem ID, cloud ETag, browser download ID, resolved filename, existence state, and last-opened time. This registry may be pruned when entries no longer exist.
-- A managed full-file byte cache is not required for the initial product because it would duplicate user downloads and require capacity, TTL, and eviction controls.
-- Cache Storage may later be used for bounded image preview data only. Preview cache entries remain extension-owned and may be evicted automatically when their cloud ETag changes or under storage pressure.
-
-## 9. Authentication and permissions
-
-The intended authentication flow is Microsoft identity platform Authorization Code with PKCE for a public client. There is no client secret in the extension package.
-
-Before product work begins, a focused technical spike must validate the production extension ID, `browser.identity.launchWebAuthFlow`, Microsoft Entra redirect URI registration, token exchange CORS behavior, personal accounts, work/school accounts, and sign-out cleanup.
-
-The desired delegated Graph permission is `Files.ReadWrite.AppFolder`.
-
-Initial extension permissions:
+Desktop permissions:
 
 ```text
-alarms
-identity
-sidePanel
-storage
+alarms, downloads, downloads.open, identity, sidePanel, storage
 ```
 
-Initial host permissions:
+Android additionally uses `tabs` and host permissions for OneDrive download URLs:
 
 ```text
 https://graph.microsoft.com/*
 https://login.microsoftonline.com/*
+https://*.files.1drv.com/*
+https://*.sharepoint.com/*
 ```
 
-The project does not request `tabs`, `activeTab`, `scripting`, content-script access, or access to arbitrary sites. A future user-initiated save-to-Downloads feature may justify adding `downloads` separately.
+The project does not use `activeTab`, `scripting`, content scripts, or arbitrary site access.
 
-## 10. Module boundaries
+## Module boundaries
 
 ```text
 apps/
-  desktop-edge/    desktop WXT entrypoints and desktop-only adapters
-  android-edge/    Android Edge WXT entrypoints and Android-only adapters
-  ios/
-    web/            Capacitor web entrypoint and iOS web/native adapters
-    native/         Xcode project, CocoaPods files, and Swift plugins
+  desktop-edge/       desktop WXT entrypoints and adapters
+  android-edge/       Android Edge entrypoints and adapters
+  ios/                Capacitor web entrypoint, Xcode project, Swift plugins
 
 packages/
-  core/             browser-independent config, domain types, and contracts
-  onedrive/         Microsoft Graph and OneDrive persistence
-  web-storage/      IndexedDB and browser-owned persistent caches
-  platform/         platform bridge contracts and shared browser adapter
-  app-runtime/      shared auth, device, download, and settings services
-  extension-runtime/ shared MV3 service-worker implementation
-  ui/               shared React application and presentation styles
+  core/               browser-independent domain types and contracts
+  onedrive/           Microsoft Graph and OneDrive persistence
+  web-storage/        IndexedDB and browser-owned persistent caches
+  platform/           platform bridge contracts and shared browser adapter
+  app-runtime/        auth, device, download, and settings services
+  extension-runtime/  shared MV3 service-worker implementation
+  ui/                 shared React application
 
-tests/              unit and integration tests
-e2e/                packaged-extension browser tests
+tests/                unit and integration tests
+e2e/                  packaged-extension browser tests
 ```
 
-Each app is a composition root and must not import another app or another
-platform's entrypoint. Code used by more than one app belongs in a package.
-`core` must not depend on React, DOM APIs, WXT, Capacitor, IndexedDB, or Microsoft
-Graph response classes. Infrastructure packages map external data into validated
-core types. These rules are enforced by path aliases and ESLint import
-restrictions.
-
-## 11. Delivery sequence
-
-1. Project foundation and architecture documentation.
-2. Authentication and App Folder compatibility spike.
-3. Read-only monthly document synchronization.
-4. Text message conditional-write transaction.
-5. File upload and attachment metadata.
-6. File download/open behavior, Save as, and the local download registry.
-7. Failure recovery, observability, accessibility, and Edge Add-ons packaging.
-
-Each stage should preserve the no-backend and least-privilege boundaries.
+Each app is a composition root. Shared behavior belongs in `packages/`. `core` must not depend on React, DOM APIs, WXT, Capacitor, IndexedDB, or Microsoft Graph response classes.

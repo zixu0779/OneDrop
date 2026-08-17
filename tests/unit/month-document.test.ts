@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { monthDocumentSchema } from "../../src/domain/month-document";
+import { monthDocumentSchema } from "@onedrop/core/domain/month-document";
 
 describe("monthDocumentSchema", () => {
   it("accepts an empty monthly document", () => {

@@ -9,8 +9,8 @@ export default tseslint.config(
       ".wxt/**",
       "coverage/**",
       "dist/**",
-      "ios/App/App/public/**",
-      "ios/App/Pods/**",
+      "apps/ios/native/App/App/public/**",
+      "apps/ios/native/App/Pods/**",
       "node_modules/**",
     ],
   },
@@ -27,6 +27,47 @@ export default tseslint.config(
         ...globals.browser,
         ...globals.serviceworker,
       },
+    },
+  },
+  {
+    files: ["apps/**/*.{ts,tsx}", "packages/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["**/apps/*", "**/apps/**"],
+              message:
+                "Apps are composition roots. Move shared code to a package instead of importing another app.",
+            },
+            {
+              group: ["**/entrypoints/*", "**/entrypoints/**"],
+              message:
+                "Entrypoints are platform-owned and must not be used as shared modules.",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    files: ["packages/core/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            "@onedrop/onedrive/**",
+            "@onedrop/web-storage/**",
+            "@onedrop/platform/**",
+            "@onedrop/app-runtime/**",
+            "@onedrop/ui/**",
+            "wxt/**",
+            "@capacitor/**",
+          ],
+        },
+      ],
     },
   },
 );

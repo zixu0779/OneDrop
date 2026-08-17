@@ -5,9 +5,9 @@ import {
   defaultAccountSettings,
   defaultDevicePreferences,
   devicePreferencesSchema,
-} from "../../src/domain/settings";
-import { messageTombstoneSchema } from "../../src/domain/tombstone";
-import { applyAppearance } from "../../src/features/settings/settings-cache";
+} from "@onedrop/core/domain/settings";
+import { messageTombstoneSchema } from "@onedrop/core/domain/tombstone";
+import { applyAppearance } from "@onedrop/app-runtime/features/settings/settings-cache";
 
 describe("settings documents", () => {
   it("can switch light, dark, and system repeatedly in one session", () => {

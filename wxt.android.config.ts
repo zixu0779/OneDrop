@@ -1,7 +1,22 @@
 import { defineConfig } from "wxt";
-import { appMetadata } from "./src/config/app";
+import { resolve } from "node:path";
+import { appMetadata } from "./packages/core/src/config/app";
 
 export default defineConfig({
+  srcDir: "apps/android-edge",
+  vite: () => ({
+    resolve: {
+      alias: {
+        "@onedrop/core": resolve("packages/core/src"),
+        "@onedrop/onedrive": resolve("packages/onedrive/src"),
+        "@onedrop/web-storage": resolve("packages/web-storage/src"),
+        "@onedrop/platform": resolve("packages/platform/src"),
+        "@onedrop/app-runtime": resolve("packages/app-runtime/src"),
+        "@onedrop/ui": resolve("packages/ui/src"),
+        "@onedrop/extension-runtime": resolve("packages/extension-runtime/src"),
+      },
+    },
+  }),
   outDir: ".output/edge-android",
   modules: ["@wxt-dev/module-react"],
   manifest: {

@@ -1,32 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/features/auth/auth-service", () => ({
+vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));
 
-vi.mock("../../src/infrastructure/onedrive/month-reader", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-reader", () => ({
   readMonthSnapshot: vi.fn(),
 }));
 
-vi.mock("../../src/infrastructure/onedrive/month-archive", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-archive", () => ({
   isMonthArchiveEligible: vi.fn().mockReturnValue(true),
   publishMonthArchive: vi.fn(),
   readMonthArchive: vi.fn(),
   readRawMonthArchive: vi.fn(),
 }));
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 import {
   checkArchiveTasks,
   resetArchiveTasks,
   retryArchiveTask,
-} from "../../src/infrastructure/onedrive/archive-scheduler";
+} from "@onedrop/onedrive/infrastructure/onedrive/archive-scheduler";
 import {
   publishMonthArchive,
   readMonthArchive,
   readRawMonthArchive,
-} from "../../src/infrastructure/onedrive/month-archive";
-import { readMonthSnapshot } from "../../src/infrastructure/onedrive/month-reader";
+} from "@onedrop/onedrive/infrastructure/onedrive/month-archive";
+import { readMonthSnapshot } from "@onedrop/onedrive/infrastructure/onedrive/month-reader";
 
 const message = createTextMessage(
   "July history",

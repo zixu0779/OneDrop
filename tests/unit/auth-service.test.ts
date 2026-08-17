@@ -75,7 +75,7 @@ describe("persistent authentication lifecycle", () => {
   it("restores a still-valid token from persistent extension storage", async () => {
     localState["onedrop.auth.token"] = token();
     const { getCurrentAccessToken } =
-      await import("../../src/features/auth/auth-service");
+      await import("@onedrop/app-runtime/features/auth/auth-service");
 
     await expect(getCurrentAccessToken()).resolves.toBe("old-access-token");
     expect(fetch).not.toHaveBeenCalled();
@@ -97,7 +97,8 @@ describe("persistent authentication lifecycle", () => {
         }),
       ),
     );
-    const { signIn } = await import("../../src/features/auth/auth-service");
+    const { signIn } =
+      await import("@onedrop/app-runtime/features/auth/auth-service");
 
     const signInPromise = signIn();
     await vi.waitFor(() => expect(browser.tabs.create).toHaveBeenCalled());
@@ -137,7 +138,7 @@ describe("persistent authentication lifecycle", () => {
       ),
     );
     const { getCurrentAccessToken } =
-      await import("../../src/features/auth/auth-service");
+      await import("@onedrop/app-runtime/features/auth/auth-service");
 
     await expect(getCurrentAccessToken()).resolves.toBe("new-access-token");
     expect(
@@ -181,7 +182,7 @@ describe("persistent authentication lifecycle", () => {
         ),
     );
     const { getCurrentAccessToken } =
-      await import("../../src/features/auth/auth-service");
+      await import("@onedrop/app-runtime/features/auth/auth-service");
 
     await expect(getCurrentAccessToken()).resolves.toBe("silent-access-token");
     expect(
@@ -210,7 +211,7 @@ describe("persistent authentication lifecycle", () => {
       ),
     );
     const { getAuthStatus } =
-      await import("../../src/features/auth/auth-service");
+      await import("@onedrop/app-runtime/features/auth/auth-service");
 
     await expect(getAuthStatus()).resolves.toMatchObject({
       state: "signed-out",
@@ -239,7 +240,7 @@ describe("persistent authentication lifecycle", () => {
       ),
     );
     const { getAuthStatus } =
-      await import("../../src/features/auth/auth-service");
+      await import("@onedrop/app-runtime/features/auth/auth-service");
 
     const statusPromise = getAuthStatus();
     await vi.waitFor(() => expect(browser.tabs.create).toHaveBeenCalled());
@@ -257,7 +258,8 @@ describe("persistent authentication lifecycle", () => {
   it("clears persistent and legacy session tokens on sign out", async () => {
     localState["onedrop.auth.token"] = token();
     sessionState["onedrop.auth.token"] = token();
-    const { signOut } = await import("../../src/features/auth/auth-service");
+    const { signOut } =
+      await import("@onedrop/app-runtime/features/auth/auth-service");
 
     const status = await signOut();
 

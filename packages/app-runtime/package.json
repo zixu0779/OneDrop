@@ -1,0 +1,5 @@
+{
+  "name": "@onedrop/app-runtime",
+  "private": true,
+  "type": "module"
+}

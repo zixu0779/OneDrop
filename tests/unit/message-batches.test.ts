@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { Message } from "../../src/domain/message";
+import type { Message } from "@onedrop/core/domain/message";
 import {
   createMessageBatches,
   getVisibleMessages,
-} from "../../src/features/messages/message-batches";
+} from "@onedrop/core/features/messages/message-batches";
 
 function text(index: number): Message {
   return {

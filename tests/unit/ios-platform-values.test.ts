@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 import {
   iosDownloadId,
   iosImageMetadata,
   iosTimelineResult,
-} from "../../ios-web/platform-values";
+} from "../../apps/ios/web/platform-values";
 
 describe("iOS platform values", () => {
   it("keeps native download identifiers stable and positive", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getUtcMonth } from "../../src/features/messages/month";
+import { getUtcMonth } from "@onedrop/core/features/messages/month";
 
 describe("getUtcMonth", () => {
   it("partitions by UTC rather than local calendar time", () => {

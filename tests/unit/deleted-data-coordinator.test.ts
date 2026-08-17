@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { enqueueDeletedDataMaintenance } from "../../src/infrastructure/onedrive/deleted-data-coordinator";
+import { enqueueDeletedDataMaintenance } from "@onedrop/onedrive/infrastructure/onedrive/deleted-data-coordinator";
 
 describe("deleted-data maintenance coordinator", () => {
   it("serializes restore and cleanup work", async () => {

@@ -5,6 +5,15 @@
     "jsx": "react-jsx",
     "noImplicitOverride": true,
     "noUncheckedIndexedAccess": true,
-    "useUnknownInCatchVariables": true
+    "useUnknownInCatchVariables": true,
+    "paths": {
+      "@onedrop/core/*": ["./packages/core/src/*"],
+      "@onedrop/onedrive/*": ["./packages/onedrive/src/*"],
+      "@onedrop/web-storage/*": ["./packages/web-storage/src/*"],
+      "@onedrop/platform/*": ["./packages/platform/src/*"],
+      "@onedrop/app-runtime/*": ["./packages/app-runtime/src/*"],
+      "@onedrop/ui/*": ["./packages/ui/src/*"],
+      "@onedrop/extension-runtime/*": ["./packages/extension-runtime/src/*"]
+    }
   }
 }

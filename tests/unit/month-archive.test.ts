@@ -1,22 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/infrastructure/onedrive/app-folder", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/app-folder", () => ({
   verifyAppFolder: vi
     .fn()
     .mockResolvedValue({ id: "app-root", name: "OneDrop" }),
 }));
 
-vi.mock("../../src/infrastructure/onedrive/tombstones", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/tombstones", () => ({
   readTombstoneIds: vi.fn().mockResolvedValue(new Set()),
 }));
 
-import { createTextMessage } from "../../src/features/messages/create-text-message";
+import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 import {
   isMonthArchiveEligible,
   publishMonthArchive,
   readMonthArchive,
-} from "../../src/infrastructure/onedrive/month-archive";
-import { readTombstoneIds } from "../../src/infrastructure/onedrive/tombstones";
+} from "@onedrop/onedrive/infrastructure/onedrive/month-archive";
+import { readTombstoneIds } from "@onedrop/onedrive/infrastructure/onedrive/tombstones";
 
 const firstMessage = createTextMessage(
   "archived",

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { readUnverifiedIdTokenClaims } from "../../src/features/auth/token";
+import { readUnverifiedIdTokenClaims } from "@onedrop/app-runtime/features/auth/token";
 
 function encode(value: object): string {
   const bytes = new TextEncoder().encode(JSON.stringify(value));

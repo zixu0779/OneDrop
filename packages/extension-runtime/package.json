@@ -1,0 +1,5 @@
+{
+  "name": "@onedrop/extension-runtime",
+  "private": true,
+  "type": "module"
+}

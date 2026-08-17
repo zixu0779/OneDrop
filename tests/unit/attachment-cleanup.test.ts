@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../../src/features/auth/auth-service", () => ({
+vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));
-vi.mock("../../src/infrastructure/onedrive/month-archive", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-archive", () => ({
   readRawMonthArchive: vi.fn(),
 }));
-vi.mock("../../src/infrastructure/onedrive/month-reader", () => ({
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/month-reader", () => ({
   readMonthSnapshot: vi.fn(),
 }));
-vi.mock("../../src/infrastructure/indexed-db/sync-cache", () => ({
+vi.mock("@onedrop/web-storage/infrastructure/indexed-db/sync-cache", () => ({
   deleteMonthCache: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -17,10 +17,10 @@ import {
   cleanDeletedDataNow,
   checkAttachmentCleanup,
   resetAttachmentCleanup,
-} from "../../src/infrastructure/onedrive/attachment-cleanup";
-import { readRawMonthArchive } from "../../src/infrastructure/onedrive/month-archive";
-import { readMonthSnapshot } from "../../src/infrastructure/onedrive/month-reader";
-import type { Message } from "../../src/domain/message";
+} from "@onedrop/onedrive/infrastructure/onedrive/attachment-cleanup";
+import { readRawMonthArchive } from "@onedrop/onedrive/infrastructure/onedrive/month-archive";
+import { readMonthSnapshot } from "@onedrop/onedrive/infrastructure/onedrive/month-reader";
+import type { Message } from "@onedrop/core/domain/message";
 
 const messageId = "01989f5e-7700-7000-8000-000000000001";
 const driveItemId = "attachment-item";

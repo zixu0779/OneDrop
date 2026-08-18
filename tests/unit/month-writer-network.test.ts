@@ -4,6 +4,12 @@ vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));
 
+vi.mock("@onedrop/onedrive/infrastructure/onedrive/app-folder", () => ({
+  verifyAppFolderWithAccessToken: vi
+    .fn()
+    .mockResolvedValue({ id: "app-root-id", name: "OneDrop" }),
+}));
+
 vi.mock("@onedrop/web-storage/infrastructure/indexed-db/sync-cache", () => ({
   deleteMessagesFolderId: vi.fn().mockResolvedValue(undefined),
   deleteMonthCache: vi.fn().mockResolvedValue(undefined),
@@ -24,7 +30,10 @@ import {
   createFileMessage,
   createUploadingFileMessage,
 } from "@onedrop/core/features/messages/create-file-message";
-import { deleteMonthCache } from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
+import {
+  deleteMonthCache,
+  getMessagesFolderId,
+} from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
 import {
   getCachedMonthSnapshot,
   readMonthDocument,
@@ -83,6 +92,40 @@ function loaded(eTag: string, messages: Message[] = [first]) {
 describe("appendTextMessage conflict recovery", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("creates the messages folder under the resolved App Folder item", async () => {
+    vi.mocked(getMessagesFolderId)
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValue("messages-folder-id");
+    vi.mocked(getCachedMonthSnapshot).mockResolvedValue(undefined);
+    vi.mocked(readMonthSnapshot).mockResolvedValue({
+      state: "missing",
+      month: "2026-08",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(
+          Response.json({ id: "messages-folder-id", folder: {} }, { status: 201 }),
+        )
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(
+          Response.json({ id: "month-folder-id", folder: {} }, { status: 201 }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({ id: "chunk-id", eTag: "etag-1" }, { status: 201 }),
+        ),
+    );
+
+    await expect(appendTextMessage("2026-08", second)).resolves.toMatchObject({
+      state: "loaded",
+    });
+    expect(vi.mocked(fetch).mock.calls[1]?.[0]).toBe(
+      "https://graph.microsoft.com/v1.0/me/drive/items/app-root-id/children",
+    );
   });
 
   it("re-reads and merges after a 412 ETag conflict", async () => {

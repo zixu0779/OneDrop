@@ -23,6 +23,7 @@ import {
   serializedDocumentBytes,
   serializeMonthDocument,
 } from "./month-serialization";
+import { verifyAppFolderWithAccessToken } from "./app-folder";
 
 const MAX_ATTEMPTS = 5;
 export const CHUNK_SOFT_LIMIT_BYTES = 256 * 1024;
@@ -529,8 +530,9 @@ async function ensureMessagesFolder(accessToken: string): Promise<void> {
     throw new Error(`Messages folder lookup failed: ${error}`);
   }
 
+  const appRoot = await verifyAppFolderWithAccessToken(accessToken);
   const response = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/children`,
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(appRoot.id)}/children`,
     {
       method: "POST",
       headers: {

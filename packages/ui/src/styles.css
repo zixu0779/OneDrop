@@ -1389,7 +1389,7 @@ html[data-theme="dark"] .settings-segments button.is-active {
 }
 
 .recycle-bin-item > button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.68;
 }
 

@@ -1701,6 +1701,7 @@ export function App() {
   }
 
   async function restoreRecycleBinMessage(item: DeletedMessageItem) {
+    if (isDeletedDataCleanupRunning) return;
     const messageId = item.message.id;
     const finishLocalWrite = beginLocalWrite(item.originalMonth);
     setRestoringDeletedMessageIds((current) => new Set(current).add(messageId));
@@ -3958,6 +3959,7 @@ function RecycleBinView({
               </header>
               {groupItems.map((item) => (
                 <RecycleBinItem
+                  isCleanupRunning={isCleanupRunning}
                   isRestoring={restoringMessageIds.has(item.message.id)}
                   item={item}
                   key={item.message.id}
@@ -3973,10 +3975,12 @@ function RecycleBinView({
 }
 
 function RecycleBinItem({
+  isCleanupRunning,
   isRestoring,
   item,
   onRestore,
 }: {
+  isCleanupRunning: boolean;
   isRestoring: boolean;
   item: DeletedMessageItem;
   onRestore: () => void;
@@ -4010,7 +4014,11 @@ function RecycleBinItem({
           Sent {formatOriginalMessageDate(message.createdAt)}
         </span>
       </span>
-      <button disabled={isRestoring} onClick={onRestore} type="button">
+      <button
+        disabled={isCleanupRunning || isRestoring}
+        onClick={onRestore}
+        type="button"
+      >
         {isRestoring ? <LoadingIcon /> : "Restore"}
       </button>
     </article>
@@ -4537,9 +4545,11 @@ function MonthResult({
               className={group.isOwn ? "message-own" : undefined}
               key={stableGroupKeys[groupIndex]}
             >
-              <time dateTime={getTimelineItemCreatedAt(group.items[0]!)}>
-                {formatGroupTime(getTimelineItemCreatedAt(group.items[0]!))}
-              </time>
+              {group.showTime ? (
+                <time dateTime={getTimelineItemCreatedAt(group.items[0]!)}>
+                  {formatGroupTime(getTimelineItemCreatedAt(group.items[0]!))}
+                </time>
+              ) : null}
               <div className="message-group-bubbles">
                 {group.items.map((item) =>
                   item.kind === "pending-file" ? (
@@ -4761,7 +4771,7 @@ function PendingTextItem({
       )}
       {!isSending && item.status === "send-failed" ? (
         <span className="pending-text-error">
-          <AttachmentError message="Upload failed" />
+          <AttachmentError message="Send failed" />
         </span>
       ) : null}
       {!isSending ? (
@@ -6522,6 +6532,7 @@ type TimelineItem =
 type TimelineGroup = {
   isOwn: boolean;
   senderKey: string;
+  showTime: boolean;
   items: TimelineItem[];
 };
 
@@ -6585,7 +6596,12 @@ export function groupTimelineItems(
     ) {
       previous.items.push(item);
     } else {
-      groups.push({ isOwn, senderKey, items: [item] });
+      groups.push({
+        isOwn,
+        senderKey,
+        showTime: !previous || !isNearPrevious,
+        items: [item],
+      });
     }
   }
   return groups;

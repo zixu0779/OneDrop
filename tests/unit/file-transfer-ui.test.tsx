@@ -174,6 +174,34 @@ describe("file transfer failure UI", () => {
     ]);
   });
 
+  it("omits the time marker for a nearby message from another device", () => {
+    const groups = groupTimelineItems(
+      [
+        {
+          schemaVersion: 1,
+          id: "01989f5e-7700-7000-8000-000000000010",
+          type: "text",
+          text: "from this device",
+          createdAt: "2026-08-03T00:00:00.000Z",
+          senderDeviceId: "device-a",
+        },
+        {
+          schemaVersion: 1,
+          id: "01989f5e-7700-7000-8000-000000000011",
+          type: "text",
+          text: "from another device",
+          createdAt: "2026-08-03T00:01:00.000Z",
+          senderDeviceId: "device-b",
+        },
+      ],
+      [],
+      "device-a",
+    );
+
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.showTime)).toEqual([true, false]);
+  });
+
   it("marks a committed regular file unavailable when its DriveItem is missing", async () => {
     vi.stubGlobal("browser", {
       runtime: {

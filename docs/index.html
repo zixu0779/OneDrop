@@ -155,14 +155,84 @@
         background: #e7efff;
       }
       .panel {
-        position: relative;
+        position: absolute;
+        inset: 0;
         width: min(100%, 350px);
-        padding: 20px;
+        margin: auto;
+        padding: 0;
+        overflow: hidden;
         border: 1px solid #dfe6f2;
         border-radius: 22px;
-        background: rgba(255, 255, 255, 0.9);
+        background: #11161d;
         box-shadow: 0 24px 65px rgba(36, 64, 110, 0.16);
-        transform: rotate(3deg);
+        cursor: pointer;
+        transition:
+          transform 500ms cubic-bezier(0.22, 0.8, 0.26, 1),
+          opacity 100ms ease,
+          box-shadow 300ms ease;
+        touch-action: pan-y;
+      }
+      .panel img {
+        display: block;
+        width: 100%;
+        height: auto;
+        pointer-events: none;
+        user-select: none;
+      }
+      .panel-showcase {
+        position: relative;
+        width: min(100%, 390px);
+        height: 350px;
+        perspective: 1000px;
+      }
+      .panel.is-active {
+        z-index: 3;
+        cursor: grab;
+        transform: translate(var(--drag-x, 0px), 8px) rotate(0) scale(1);
+        box-shadow: 0 28px 70px rgba(36, 64, 110, 0.22);
+      }
+      .panel.is-active:active {
+        cursor: grabbing;
+      }
+      .panel.is-before {
+        z-index: 1;
+        opacity: 0.78;
+        transform: translate(-34px, -15px) rotate(-6deg) scale(0.91);
+      }
+      .panel.is-after {
+        z-index: 2;
+        opacity: 0.88;
+        transform: translate(34px, -15px) rotate(6deg) scale(0.94);
+      }
+      .panel.is-after-2 {
+        z-index: 1;
+        opacity: 0.72;
+        transform: translate(60px, -24px) rotate(11deg) scale(0.88);
+      }
+      .panel.is-after-3 {
+        z-index: 0;
+        opacity: 0.56;
+        transform: translate(82px, -30px) rotate(15deg) scale(0.82);
+      }
+      .panel.is-leaving {
+        z-index: 4;
+        transform: translate(-150px, 18px) rotate(-13deg) scale(0.96);
+      }
+      .panel.is-drag-leaving {
+        z-index: 4;
+        transform: translate(-150px, 8px) rotate(0deg) scale(1);
+      }
+      .panel:focus-visible {
+        outline: 3px solid rgba(40, 121, 223, 0.7);
+        outline-offset: 4px;
+      }
+      .panel.is-dragging {
+        transition: none;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .panel {
+          transition: none;
+        }
       }
       .panel-top {
         display: flex;
@@ -269,6 +339,9 @@
         gap: 16px;
       }
       .platform {
+        display: flex;
+        min-height: 190px;
+        flex-direction: column;
         padding: 21px;
         border-top: 3px solid var(--blue);
         border-radius: 14px;
@@ -276,6 +349,61 @@
       }
       .platform small {
         color: var(--muted);
+      }
+      .platform-action {
+        display: flex;
+        width: max-content;
+        margin-top: auto;
+        padding: 8px 12px;
+        align-items: center;
+        gap: 8px;
+        border-radius: 9px;
+        color: var(--blue);
+        background: var(--soft);
+        font-size: 14px;
+        font-weight: 700;
+      }
+      .platform-action:hover {
+        background: #dfeaff;
+      }
+      .platform-action-icon {
+        display: inline-grid;
+        width: 20px;
+        height: 20px;
+        place-items: center;
+        border: 1px solid currentColor;
+        border-radius: 5px;
+        font-size: 12px;
+        line-height: 1;
+      }
+      .github-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--blue);
+        font-weight: 650;
+      }
+      .github-nav {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        flex: 0 0 auto;
+        overflow: visible;
+      }
+      .github-mark {
+        display: inline-flex;
+        width: 24px;
+        height: 24px;
+        min-width: 24px;
+        flex: 0 0 24px;
+        overflow: visible;
+      }
+      .github-mark svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        fill: currentColor;
+        overflow: visible;
       }
       footer {
         padding: 30px 0 42px;
@@ -285,8 +413,18 @@
       }
       footer .foot {
         display: flex;
+        align-items: center;
         justify-content: space-between;
         gap: 20px;
+      }
+      .foot-links {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        line-height: 1.2;
+      }
+      .foot-links .github-link {
+        line-height: 1.2;
       }
       @media (max-width: 800px) {
         .links a:not(.button) {
@@ -331,9 +469,27 @@
           ><span>OneDrop</span></a
         >
         <div class="links">
-          <a href="#features">Features</a><a href="#platforms">Platforms</a
-          ><a href="https://onedrop.sycamore.top/privacy-policy.html">Privacy</a
-          ><a class="button" href="#download">Get OneDrop</a>
+          <a
+            class="github-nav"
+            href="https://github.com/zixu0779/OneDrop"
+            target="_blank"
+            rel="noreferrer"
+            ><span class="github-mark" aria-hidden="true"
+              ><svg
+                fill="currentColor"
+                fill-rule="evenodd"
+                height="1em"
+                style="flex: none; line-height: 1"
+                viewBox="0 0 24 24"
+                width="1em"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <title>Github</title>
+                <path
+                  d="M12 0c6.63 0 12 5.276 12 11.79-.001 5.067-3.29 9.567-8.175 11.187-.6.118-.825-.25-.825-.56 0-.398.015-1.665.015-3.242 0-1.105-.375-1.813-.81-2.181 2.67-.295 5.475-1.297 5.475-5.822 0-1.297-.465-2.344-1.23-3.169.12-.295.54-1.503-.12-3.125 0 0-1.005-.324-3.3 1.209a11.32 11.32 0 00-3-.398c-1.02 0-2.04.133-3 .398-2.295-1.518-3.3-1.209-3.3-1.209-.66 1.622-.24 2.83-.12 3.125-.765.825-1.23 1.887-1.23 3.169 0 4.51 2.79 5.527 5.46 5.822-.345.294-.66.81-.765 1.577-.69.31-2.415.81-3.495-.973-.225-.354-.9-1.223-1.845-1.209-1.005.015-.405.56.015.781.51.28 1.095 1.327 1.23 1.666.24.663 1.02 1.93 4.035 1.385 0 .988.015 1.916.015 2.196 0 .31-.225.664-.825.56C3.303 21.374-.003 16.867 0 11.791 0 5.276 5.37 0 12 0z"
+                ></path></svg></span
+            >GitHub</a
+          ><a class="button" href="#platforms">Get OneDrop</a>
         </div>
       </nav>
     </header>
@@ -347,7 +503,7 @@
             own OneDrive. No application server. No separate cloud to manage.
           </p>
           <div class="actions">
-            <a class="button" href="#download">Learn how to install</a
+            <a class="button" href="#platforms">Learn how to install</a
             ><a class="button secondary" href="#features">See what it does</a>
           </div>
         </div>
@@ -355,20 +511,47 @@
           class="device"
           aria-label="Illustration of the OneDrop message panel"
         >
-          <div class="panel">
-            <div class="panel-top">
-              <strong>OneDrop</strong><span>OneDrive connected</span>
-            </div>
-            <div class="bubble">Remember to send the project notes.</div>
-            <div class="bubble dark">Sent from desktop Edge</div>
-            <div class="file">
-              <span>▣</span
-              ><span
-                ><strong>project-notes.pdf</strong><br /><small
-                  >Ready on your other device</small
-                ></span
-              >
-            </div>
+          <div class="panel-showcase" aria-label="OneDrop feature screenshots">
+            <button
+              class="panel is-active"
+              type="button"
+              aria-label="Conversation screenshot"
+            >
+              <img
+                src="assets/screenshot/message.png"
+                alt="OneDrop conversation with an image, file, and text message"
+              />
+            </button>
+            <button
+              class="panel is-after"
+              type="button"
+              aria-label="Account screenshot"
+            >
+              <img
+                src="assets/screenshot/account.png"
+                alt="OneDrop account panel"
+              />
+            </button>
+            <button
+              class="panel is-before"
+              type="button"
+              aria-label="Recycle bin screenshot"
+            >
+              <img
+                src="assets/screenshot/recycle-bin.png"
+                alt="OneDrop recycle bin with restorable deleted items"
+              />
+            </button>
+            <button
+              class="panel is-before"
+              type="button"
+              aria-label="Settings screenshot"
+            >
+              <img
+                src="assets/screenshot/settings.png"
+                alt="OneDrop appearance and message settings"
+              />
+            </button>
           </div>
         </div>
       </section>
@@ -424,16 +607,36 @@
             <div class="platform">
               <h3>Desktop Edge</h3>
               <small>Side Panel for everyday desktop workflows.</small>
+              <a
+                class="platform-action"
+                href="https://microsoftedge.microsoft.com/addons/"
+                target="_blank"
+                rel="noreferrer"
+                ><span class="platform-action-icon" aria-hidden="true">E</span>
+                Edge Add-ons</a
+              >
             </div>
             <div class="platform">
               <h3>Android Edge</h3>
               <small>Mobile layout for the Android Edge target.</small>
+              <a
+                class="platform-action"
+                href="https://microsoftedge.microsoft.com/addons/"
+                target="_blank"
+                rel="noreferrer"
+                ><span class="platform-action-icon" aria-hidden="true">E</span>
+                Edge Add-ons</a
+              >
             </div>
             <div class="platform">
               <h3>iOS</h3>
               <small
                 >Native client development target, with shared OneDrop domain
                 logic.</small
+              >
+              <a class="platform-action" href="downloads/onedrop.ipa" download
+                ><span class="platform-action-icon" aria-hidden="true">↓</span>
+                Download IPA</a
               >
             </div>
           </div>
@@ -450,26 +653,164 @@
               Folder.
             </p>
           </div>
-          <div class="actions">
-            <a
-              class="button"
-              href="https://onedrop.sycamore.top/privacy-policy.html"
-              >Read the privacy policy</a
-            >
-          </div>
         </div>
       </section>
     </main>
     <footer>
       <div class="wrap foot">
-        <span>© 2026 OneDrop</span
-        ><span
-          ><a href="https://onedrop.sycamore.top/privacy-policy.html"
+        <span>© 2026 <a href="https://onedrop.sycamore.top">OneDrop</a></span>
+        <span class="foot-links">
+          <a
+            class="github-link"
+            href="https://github.com/zixu0779/OneDrop"
+            target="_blank"
+            rel="noreferrer"
+            ><span class="github-mark" aria-hidden="true"
+              ><svg
+                fill="currentColor"
+                fill-rule="evenodd"
+                height="1em"
+                style="flex: none; line-height: 1"
+                viewBox="0 0 24 24"
+                width="1em"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <title>Github</title>
+                <path
+                  d="M12 0c6.63 0 12 5.276 12 11.79-.001 5.067-3.29 9.567-8.175 11.187-.6.118-.825-.25-.825-.56 0-.398.015-1.665.015-3.242 0-1.105-.375-1.813-.81-2.181 2.67-.295 5.475-1.297 5.475-5.822 0-1.297-.465-2.344-1.23-3.169.12-.295.54-1.503-.12-3.125 0 0-1.005-.324-3.3 1.209a11.32 11.32 0 00-3-.398c-1.02 0-2.04.133-3 .398-2.295-1.518-3.3-1.209-3.3-1.209-.66 1.622-.24 2.83-.12 3.125-.765.825-1.23 1.887-1.23 3.169 0 4.51 2.79 5.527 5.46 5.822-.345.294-.66.81-.765 1.577-.69.31-2.415.81-3.495-.973-.225-.354-.9-1.223-1.845-1.209-1.005.015-.405.56.015.781.51.28 1.095 1.327 1.23 1.666.24.663 1.02 1.93 4.035 1.385 0 .988.015 1.916.015 2.196 0 .31-.225.664-.825.56C3.303 21.374-.003 16.867 0 11.791 0 5.276 5.37 0 12 0z"
+                ></path></svg></span
+            >GitHub repo</a
+          >
+          ·
+          <a href="https://onedrop.sycamore.top/privacy-policy.html"
             >Privacy policy</a
           >
           · Built for your devices</span
         >
       </div>
     </footer>
+    <script>
+      (() => {
+        const showcase = document.querySelector(".panel-showcase");
+        if (!showcase) return;
+
+        const cards = [...showcase.querySelectorAll(".panel")];
+        let activeIndex = 0;
+        let dragStartX = null;
+        let suppressClick = false;
+        let isHovering = false;
+        let autoAdvance;
+
+        const render = () => {
+          cards.forEach((card, index) => {
+            card.classList.remove(
+              "is-active",
+              "is-before",
+              "is-after",
+              "is-after-2",
+              "is-after-3",
+            );
+            const distance =
+              (index - activeIndex + cards.length) % cards.length;
+            if (distance === 0) card.classList.add("is-active");
+            else if (distance === 1) card.classList.add("is-after");
+            else if (distance === 2) card.classList.add("is-after-2");
+            else card.classList.add("is-after-3");
+            card.setAttribute("aria-pressed", String(index === activeIndex));
+          });
+        };
+
+        const restartAutoAdvance = () => {
+          window.clearInterval(autoAdvance);
+          if (isHovering) return;
+          autoAdvance = window.setInterval(() => {
+            advanceTo((activeIndex + 1) % cards.length);
+          }, 5000);
+        };
+
+        const advanceTo = (nextIndex) => {
+          const outgoing = cards[activeIndex];
+          outgoing.classList.add("is-leaving");
+          window.setTimeout(() => {
+            outgoing.classList.remove("is-leaving");
+            activeIndex = nextIndex;
+            render();
+          }, 250);
+        };
+
+        cards.forEach((card, index) => {
+          card.addEventListener("click", () => {
+            if (suppressClick) {
+              suppressClick = false;
+              return;
+            }
+            if (index !== activeIndex) {
+              activeIndex = index;
+              render();
+            }
+            restartAutoAdvance();
+          });
+        });
+
+        showcase.addEventListener("pointerdown", (event) => {
+          dragStartX = event.clientX;
+          cards[activeIndex].classList.add("is-dragging");
+          showcase.setPointerCapture(event.pointerId);
+        });
+        showcase.addEventListener("pointermove", (event) => {
+          if (dragStartX === null) return;
+          cards[activeIndex].style.setProperty(
+            "--drag-x",
+            `${event.clientX - dragStartX}px`,
+          );
+        });
+        showcase.addEventListener("pointerup", (event) => {
+          if (dragStartX === null) return;
+          const distance = event.clientX - dragStartX;
+          dragStartX = null;
+          cards.forEach((card) => {
+            card.classList.remove("is-dragging");
+            card.style.removeProperty("--drag-x");
+          });
+          if (Math.abs(distance) < 35) {
+            cards.forEach((card) => card.classList.remove("is-dragging"));
+            return;
+          }
+          suppressClick = true;
+          const nextIndex =
+            distance < 0
+              ? (activeIndex + 1) % cards.length
+              : (activeIndex - 1 + cards.length) % cards.length;
+          // Drag release keeps the insertion motion but never rotates the leaving card.
+          const draggedCard = cards[activeIndex];
+          draggedCard.classList.add("is-drag-leaving");
+          window.setTimeout(() => {
+            draggedCard.classList.remove("is-drag-leaving");
+            activeIndex = nextIndex;
+            render();
+          }, 250);
+          restartAutoAdvance();
+        });
+        showcase.addEventListener("pointercancel", () => {
+          dragStartX = null;
+          cards.forEach((card) => {
+            card.classList.remove("is-dragging");
+            card.style.removeProperty("--drag-x");
+          });
+        });
+
+        showcase.addEventListener("mouseenter", () => {
+          isHovering = true;
+          window.clearInterval(autoAdvance);
+        });
+        showcase.addEventListener("mouseleave", () => {
+          isHovering = false;
+          restartAutoAdvance();
+        });
+
+        render();
+        restartAutoAdvance();
+      })();
+    </script>
   </body>
 </html>

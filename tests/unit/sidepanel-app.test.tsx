@@ -402,6 +402,8 @@ describe("side panel message composer", () => {
     ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
 
+    expect(screen.getByRole("button", { name: "Restore" })).toBeDisabled();
+
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
         type: "deleted-data/clean-now",

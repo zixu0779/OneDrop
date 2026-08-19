@@ -1,6 +1,12 @@
 import { defineConfig } from "wxt";
 import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { appMetadata } from "./packages/core/src/config/app";
+
+const desktopSigningKeyPath = resolve(".keys", "desktop-dev-public.key");
+const desktopSigningKey = existsSync(desktopSigningKeyPath)
+  ? readFileSync(desktopSigningKeyPath, "utf8").trim()
+  : undefined;
 
 export default defineConfig({
   srcDir: "apps/desktop-edge",
@@ -38,5 +44,6 @@ export default defineConfig({
       "https://login.microsoftonline.com/*",
     ],
     action: { default_title: "Open OneDrop" },
+    ...(desktopSigningKey ? { key: desktopSigningKey } : {}),
   },
 });

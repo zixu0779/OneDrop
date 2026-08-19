@@ -12,7 +12,7 @@ const generatedPem = `${extensionDirectory}.pem`;
 const keyDirectory = resolve(projectRoot, ".keys");
 // Keep the established key filename so existing Android installations retain
 // the same extension ID when a new CRX is packed.
-const persistentKey = resolve(keyDirectory, "android-probe.pem");
+const persistentKey = resolve(keyDirectory, "android-dev.pem");
 const edgeBinary =
   process.platform === "darwin"
     ? "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"

@@ -25,10 +25,7 @@ const probeItemSchema = z.object({
   parentReference: z.object({ id: z.string().min(1) }).optional(),
 });
 
-const inFlightChecks = new Map<
-  string,
-  Promise<AppFolderSummary>
->();
+const inFlightChecks = new Map<string, Promise<AppFolderSummary>>();
 
 export async function verifyAppFolder(
   signal?: AbortSignal,
@@ -79,9 +76,7 @@ async function verifyAppFolderUnshared(
 
     if (response.ok) return parseAppFolder(await response.json());
     const retryDelay =
-      response.status === 404
-        ? APP_FOLDER_RETRY_DELAYS_MS[attempt]
-        : undefined;
+      response.status === 404 ? APP_FOLDER_RETRY_DELAYS_MS[attempt] : undefined;
     if (retryDelay === undefined) break;
     await waitForRetry(retryDelay, signal);
   }
@@ -149,7 +144,10 @@ async function provisionAppFolder(
   }
 }
 
-function waitForRetry(milliseconds: number, signal?: AbortSignal): Promise<void> {
+function waitForRetry(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
   if (signal?.aborted) {
     return Promise.reject(new DOMException("Aborted", "AbortError"));
   }

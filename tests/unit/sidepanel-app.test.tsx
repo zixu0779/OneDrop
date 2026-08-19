@@ -400,11 +400,11 @@ describe("side panel message composer", () => {
         /bypasses the 10-day recovery period and cannot be undone/iu,
       ),
     ).toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
+    fireEvent.click(screen.getByRole("button", { name: "Clean up" }));
 
-      expect(screen.getByRole("button", { name: "Restore" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Restore" })).toBeDisabled();
 
-      await waitFor(() =>
+    await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
         type: "deleted-data/clean-now",
       }),

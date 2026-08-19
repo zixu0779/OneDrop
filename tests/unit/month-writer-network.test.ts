@@ -109,7 +109,10 @@ describe("appendTextMessage conflict recovery", () => {
         .fn()
         .mockResolvedValueOnce(new Response(null, { status: 404 }))
         .mockResolvedValueOnce(
-          Response.json({ id: "messages-folder-id", folder: {} }, { status: 201 }),
+          Response.json(
+            { id: "messages-folder-id", folder: {} },
+            { status: 201 },
+          ),
         )
         .mockResolvedValueOnce(new Response(null, { status: 404 }))
         .mockResolvedValueOnce(

@@ -9,6 +9,8 @@
     "build": "wxt build --browser edge",
     "build:android": "wxt build --browser edge --config wxt.android.config.ts --filter-entrypoint mobile --filter-entrypoint background",
     "pack:android": "npm run build:android && node scripts/pack-android.mjs",
+    "build:ios-edge": "wxt build --browser edge --config wxt.ios-edge.config.ts --filter-entrypoint mobile",
+    "pack:ios-edge": "npm run build:ios-edge && node scripts/pack-ios-edge.mjs",
     "postinstall": "patch-package",
     "build:ios": "vite build --config vite.ios.config.ts",
     "sync:ios": "npm run build:ios && cap sync ios",

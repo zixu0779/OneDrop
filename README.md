@@ -57,6 +57,20 @@ The CRX is written to `.output/edge-android/edge-mv3.crx`. The signing key is ke
 
 Install Microsoft Edge Canary on the Android device. Open Edge Canary settings, enable Developer options, then use **Extension install by crx** to select and install the generated CRX.
 
+### iOS Edge popup preview
+
+Generate the first-stage iOS Edge CRX used only to verify that Edge can open
+an extension popup:
+
+```bash
+npm run pack:ios-edge
+```
+
+Upload `.output/edge-ios/edge-mv3.crx` through the iOS Edge developer testing
+entry. This preview intentionally does not sign in, access OneDrive, or
+download files. Its signing key is kept separately at
+`.keys/ios-edge-dev.pem`.
+
 ### iOS
 
 Install Xcode, connect the iPhone, and wait until Xcode finishes device preparation.

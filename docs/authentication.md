@@ -19,7 +19,7 @@ The app registration must allow personal Microsoft accounts and must include the
 
 - Desktop and Android Edge builds use the exact `https://<extension-id>.chromiumapp.org/auth` URI shown by the build.
 - iOS uses bundle ID `com.sycamore.onedrop` and redirect URI `msauth.com.sycamore.onedrop://auth`.
-- Microsoft Graph delegated permission must include `Files.ReadWrite.AppFolder`.
+- Microsoft Graph delegated permission must include `Files.ReadWrite`.
 - Do not create or ship a client secret.
 
 A release build with a new stable extension ID needs its new redirect URI added before sign-in can work.

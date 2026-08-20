@@ -231,7 +231,7 @@ async function deleteMessageAttachment(
 ): Promise<"deleted" | "absent"> {
   const [year, monthNumber] = month.split("-");
   const folderResponse = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/files/${year}/${monthNumber}/${message.id}?$select=id,folder`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/files/${year}/${monthNumber}/${message.id}?$select=id,folder`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (folderResponse.status === 404) return "absent";
@@ -396,7 +396,7 @@ async function removeTombstone(
 ): Promise<void> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const metadata = await fetch(
-      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/tombstones/${month}.json`,
+      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/tombstones/${month}.json`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
     if (metadata.status === 404) return;
@@ -542,7 +542,7 @@ async function listTombstones(
   accessToken: string,
 ): Promise<z.infer<typeof tombstoneDocumentSchema>["tombstones"]> {
   let url: string | undefined =
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/tombstones:/children?$select=id,name&$top=200`;
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/tombstones:/children?$select=id,name&$top=200`;
   const tombstones: z.infer<typeof tombstoneDocumentSchema>["tombstones"] = [];
   while (url) {
     const response = await fetch(url, {

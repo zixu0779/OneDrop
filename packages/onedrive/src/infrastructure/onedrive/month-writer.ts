@@ -513,7 +513,7 @@ async function ensureMessagesFolder(accessToken: string): Promise<void> {
   if (await getMessagesFolderId()) return;
 
   const existingResponse = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages`,
     {
       headers: { Authorization: `Bearer ${accessToken}` },
     },
@@ -555,7 +555,7 @@ async function ensureMessagesFolder(accessToken: string): Promise<void> {
 
   if (response.status === 409) {
     const racedResponse = await fetch(
-      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages`,
+      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages`,
       {
         headers: { Authorization: `Bearer ${accessToken}` },
       },
@@ -578,7 +578,7 @@ async function ensureMonthFolder(
   canRepairMessagesFolder = true,
 ): Promise<void> {
   const existing = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages/${month}`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (existing.ok) return;
@@ -629,7 +629,7 @@ function createChunk(
   );
   const name = `${index.toString().padStart(4, "0")}.json`;
   return fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}/${name}:/content?${conflictBehavior}=fail`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages/${month}/${name}:/content?${conflictBehavior}=fail`,
     {
       method: "PUT",
       headers: {

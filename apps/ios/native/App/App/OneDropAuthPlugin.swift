@@ -310,7 +310,7 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
 
     private var redirectUri: String { "\(callbackScheme)://auth" }
     private var scopes: String {
-        "openid profile offline_access https://graph.microsoft.com/Files.ReadWrite.AppFolder"
+        "openid profile offline_access https://graph.microsoft.com/Files.ReadWrite"
     }
 
     private func randomBase64Url(byteCount: Int) -> String {

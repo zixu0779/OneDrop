@@ -14,7 +14,7 @@ const SCOPES = [
   "openid",
   "profile",
   "offline_access",
-  "https://graph.microsoft.com/Files.ReadWrite.AppFolder",
+  "https://graph.microsoft.com/Files.ReadWrite",
 ] as const;
 
 type StoredToken = TokenResponse & {

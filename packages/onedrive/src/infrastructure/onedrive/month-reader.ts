@@ -255,7 +255,7 @@ async function readChunks(
   cachedChunks: CachedChunk[],
 ): Promise<{ chunks: CachedChunk[]; corruptFiles: CorruptMonthFile[] }> {
   let url: string | undefined =
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}:/children?$select=id,name,eTag&$top=200`;
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages/${month}:/children?$select=id,name,eTag&$top=200`;
   const items: z.infer<typeof driveItemSchema>[] = [];
 
   while (url) {

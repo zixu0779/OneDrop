@@ -5,10 +5,8 @@ import type { AppFolderSummary } from "@onedrop/core/contracts/runtime-messages"
 import { getCurrentAccessToken } from "@onedrop/app-runtime/features/auth/auth-service";
 import { readGraphError } from "@onedrop/onedrive/infrastructure/graph/graph-error";
 
-// OneDrive can take a short time to provision the special App Folder after
-// the previous folder was deleted. Treat that initial 404 as transient.
-const APP_FOLDER_RETRY_DELAYS_MS = [100, 300, 900] as const;
-const APP_FOLDER_PROBE_PREFIX = ".onedrop-app-folder-probe-";
+const APPS_FOLDER_NAME = "Apps";
+const APP_FOLDER_NAME = "OneDrop";
 
 const driveItemSchema = z.object({
   id: z.string().min(1),
@@ -20,9 +18,8 @@ const driveItemSchema = z.object({
     })
     .optional(),
 });
-const probeItemSchema = z.object({
-  id: z.string().min(1),
-  parentReference: z.object({ id: z.string().min(1) }).optional(),
+const driveItemCollectionSchema = z.object({
+  value: z.array(driveItemSchema),
 });
 
 const inFlightChecks = new Map<string, Promise<AppFolderSummary>>();
@@ -38,13 +35,14 @@ export async function verifyAppFolderWithAccessToken(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<AppFolderSummary> {
-  // Startup reads settings, messages, and the explicit folder check in
-  // parallel. Share the no-signal check so they do not multiply a transient
-  // App Folder recovery into a burst of identical Graph requests.
-  if (!signal) {
-    const inFlight = inFlightChecks.get(accessToken);
-    if (inFlight) return inFlight;
-    const check = verifyAppFolderUnshared(accessToken);
+  // Startup reads settings, messages, pending transfers, and the explicit
+  // folder check in parallel. Some callers have their own AbortSignal, but
+  // allowing those calls to provision independently can create OneDrop and
+  // OneDrop 1 at the same time. Keep one non-cancellable cloud operation per
+  // token and only cancel an individual caller's wait.
+  let check = inFlightChecks.get(accessToken);
+  if (!check) {
+    check = verifyAppFolderUnshared(accessToken);
     inFlightChecks.set(accessToken, check);
     void check
       .finally(() => {
@@ -53,115 +51,108 @@ export async function verifyAppFolderWithAccessToken(
         }
       })
       .catch(() => undefined);
-    return check;
   }
-  return verifyAppFolderUnshared(accessToken, signal);
+  return signal ? waitForSharedCheck(check, signal) : check;
+}
+
+function waitForSharedCheck(
+  check: Promise<AppFolderSummary>,
+  signal: AbortSignal,
+): Promise<AppFolderSummary> {
+  if (signal.aborted) {
+    return Promise.reject(new DOMException("Aborted", "AbortError"));
+  }
+
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void check.then(resolve, reject).finally(() => {
+      signal.removeEventListener("abort", onAbort);
+    });
+  });
 }
 
 async function verifyAppFolderUnshared(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<AppFolderSummary> {
-  let response: Response;
-  for (let attempt = 0; ; attempt += 1) {
-    response = await fetch(
-      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}`,
-      {
-        ...(signal ? { signal } : {}),
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      },
-    );
+  const response = await fetch(
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}`,
+    {
+      ...(signal ? { signal } : {}),
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
 
-    if (response.ok) return parseAppFolder(await response.json());
-    const retryDelay =
-      response.status === 404 ? APP_FOLDER_RETRY_DELAYS_MS[attempt] : undefined;
-    if (retryDelay === undefined) break;
-    await waitForRetry(retryDelay, signal);
-  }
-
+  if (response.ok) return parseAppFolder(await response.json());
   if (response.status === 404) {
     return provisionAppFolder(accessToken, signal);
   }
 
-  if (!response.ok) {
-    const message = await readGraphError(response);
-    throw new Error(`OneDrive App Folder check failed: ${message}`);
-  }
-
-  return parseAppFolder(await response.json());
+  const message = await readGraphError(response);
+  throw new Error(`OneDrive App Folder check failed: ${message}`);
 }
 
 async function provisionAppFolder(
   accessToken: string,
   signal?: AbortSignal,
 ): Promise<AppFolderSummary> {
-  const probeName = `${APP_FOLDER_PROBE_PREFIX}${crypto.randomUUID()}.tmp`;
+  const apps = await ensureFolder(
+    accessToken,
+    "/me/drive/root",
+    APPS_FOLDER_NAME,
+    signal,
+  );
+  return ensureFolder(
+    accessToken,
+    `/me/drive/items/${encodeURIComponent(apps.id)}`,
+    APP_FOLDER_NAME,
+    signal,
+  );
+}
+
+async function ensureFolder(
+  accessToken: string,
+  parentPath: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<AppFolderSummary> {
   const response = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/${encodeURIComponent(probeName)}:/content`,
+    `${oneDropConfig.graphBaseUrl}${parentPath}/children`,
     {
-      method: "PUT",
+      method: "POST",
       ...(signal ? { signal } : {}),
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/octet-stream",
+        "Content-Type": "application/json",
       },
-      body: new Blob(),
+      body: JSON.stringify({
+        name,
+        folder: {},
+        "@microsoft.graph.conflictBehavior": "fail",
+      }),
     },
   );
-  if (!response.ok) {
-    const message = await readGraphError(response);
-    throw new Error(`OneDrive App Folder initialization failed: ${message}`);
-  }
 
-  const probe = probeItemSchema.parse(await response.json());
-  try {
-    const root = await fetch(
-      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}`,
+  if (response.ok) return parseAppFolder(await response.json());
+  if (response.status === 409) {
+    const children = await fetch(
+      `${oneDropConfig.graphBaseUrl}${parentPath}/children?$select=id,name,webUrl`,
       {
         ...(signal ? { signal } : {}),
         headers: { Authorization: `Bearer ${accessToken}` },
       },
     );
-    if (root.ok) return parseAppFolder(await root.json());
-    if (root.status !== 404) {
-      const message = await readGraphError(root);
-      throw new Error(`OneDrive App Folder check failed: ${message}`);
+    if (children.ok) {
+      const match = driveItemCollectionSchema
+        .parse(await children.json())
+        .value.find((item) => item.name === name);
+      if (match) return parseAppFolder(match);
     }
-    const rootId = probe.parentReference?.id;
-    if (rootId) return { id: rootId, name: "OneDrop" };
-    throw new Error("OneDrive did not return the App Folder parent ID.");
-  } finally {
-    await fetch(
-      `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(probe.id)}`,
-      {
-        method: "DELETE",
-        ...(signal ? { signal } : {}),
-        headers: { Authorization: `Bearer ${accessToken}` },
-      },
-    ).catch(() => undefined);
   }
-}
 
-function waitForRetry(
-  milliseconds: number,
-  signal?: AbortSignal,
-): Promise<void> {
-  if (signal?.aborted) {
-    return Promise.reject(new DOMException("Aborted", "AbortError"));
-  }
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(resolve, milliseconds);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timeout);
-        reject(new DOMException("Aborted", "AbortError"));
-      },
-      { once: true },
-    );
-  });
+  const message = await readGraphError(response);
+  throw new Error(`OneDrive folder initialization failed: ${message}`);
 }
 
 export function parseAppFolder(value: unknown): AppFolderSummary {

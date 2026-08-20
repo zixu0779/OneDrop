@@ -112,7 +112,7 @@ export async function listMessageTombstonesWithAccessToken(
   accessToken: string,
 ): Promise<MessageTombstone[]> {
   const folder = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/tombstones:/children?$select=id,name&$top=200`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/tombstones:/children?$select=id,name&$top=200`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (folder.status === 404) return [];
@@ -226,7 +226,7 @@ async function readTombstoneDocument(
 
 async function ensureTombstonesFolder(accessToken: string): Promise<void> {
   const existing = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/tombstones`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/tombstones`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (existing.ok) return;
@@ -296,7 +296,7 @@ function updateDocument(
 }
 
 function tombstoneItemUrl(month: string): string {
-  return `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/tombstones/${month}.json`;
+  return `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/tombstones/${month}.json`;
 }
 
 function tombstoneContentUrl(month: string): string {

@@ -27,7 +27,9 @@ The extension does not request `unlimitedStorage`; managed local data must remai
 
 ## OneDrive layout
 
-OneDrop uses the least-privilege OneDrive App Folder through `/me/drive/special/approot`.
+OneDrop stores its data in the explicit `/Apps/OneDrop` path through
+`/me/drive/root:/Apps/OneDrop`. On first use it creates `Apps` and `OneDrop`
+when they do not already exist.
 
 ```text
 Apps/OneDrop/
@@ -47,7 +49,8 @@ Apps/OneDrop/
     └── 2026-08.json
 ```
 
-The physical App Folder name is determined by the Microsoft Entra app registration. The supported live message layout is `messages/YYYY-MM/NNNN.json`; old flat `messages/YYYY-MM.json` documents are not part of the current storage contract.
+The supported live message layout is `messages/YYYY-MM/NNNN.json`; old flat
+`messages/YYYY-MM.json` documents are not part of the current storage contract.
 
 ## Message storage
 
@@ -122,7 +125,9 @@ User-opened and user-saved downloads are treated as user-owned files. OneDrop st
 
 Authentication uses Microsoft identity platform Authorization Code with PKCE. Setup details are in [authentication.md](authentication.md).
 
-The delegated Graph permission is `Files.ReadWrite.AppFolder`.
+The delegated Graph permission is `Files.ReadWrite`. This is broader than the
+preview App Folder permission but avoids relying on OneDrive's broken
+`approot` recreation after the user deletes the `Apps` folder.
 
 Desktop permissions:
 

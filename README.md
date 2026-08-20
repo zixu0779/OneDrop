@@ -53,7 +53,7 @@ Generate a CRX for device installation:
 npm run pack:android
 ```
 
-The CRX is written to `.output/edge-android/edge-mv3.crx`. The signing key is kept at `.keys/android-probe.pem` so reinstalling future CRX builds keeps the same extension ID.
+The CRX is written to `.output/edge-android/edge-mv3.crx`. The signing key is kept at `.keys/android-dev.pem` so reinstalling future CRX builds keeps the same extension ID.
 
 Install Microsoft Edge Canary on the Android device. Open Edge Canary settings, enable Developer options, then use **Extension install by crx** to select and install the generated CRX.
 

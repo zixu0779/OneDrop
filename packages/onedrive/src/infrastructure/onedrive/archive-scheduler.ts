@@ -311,7 +311,7 @@ async function cleanupSourceMonth(
 
 async function listSourceMonths(accessToken: string): Promise<string[]> {
   let url: string | undefined =
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages:/children?$select=id,name,folder&$top=200`;
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages:/children?$select=id,name,folder&$top=200`;
   const months: string[] = [];
   while (url) {
     const response = await fetch(url, {
@@ -433,7 +433,7 @@ async function waitForArchiveCompletion<T>(
 }
 
 function sourceMonthItemUrl(month: string): string {
-  return `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/messages/${month}`;
+  return `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages/${month}`;
 }
 
 class ArchiveBlockedError extends Error {}

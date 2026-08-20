@@ -38,76 +38,209 @@ describe("parseAppFolder", () => {
     });
   });
 
-  it("retries a transient missing App Folder while OneDrive provisions it", async () => {
-    vi.useFakeTimers();
+  it("returns an existing explicit OneDrop folder", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          id: "drive-item-id",
+          name: "OneDrop",
+          webUrl: "https://example.com/Apps/OneDrop",
+        }),
+      ),
+    );
+
+    await expect(
+      verifyAppFolderWithAccessToken("existing-token"),
+    ).resolves.toEqual({
+      id: "drive-item-id",
+      name: "OneDrop",
+      webUrl: "https://example.com/Apps/OneDrop",
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/me/drive/root:/Apps/OneDrop"),
+      expect.any(Object),
+    );
+  });
+
+  it("shares provisioning between callers with and without abort signals", async () => {
+    const controller = new AbortController();
     vi.stubGlobal(
       "fetch",
       vi
         .fn()
-        .mockResolvedValueOnce(
-          Response.json(
-            { error: { message: "The resource could not be found." } },
-            { status: 404 },
-          ),
-        )
-        .mockResolvedValueOnce(
-          Response.json(
-            { error: { message: "The resource could not be found." } },
-            { status: 404 },
-          ),
-        )
-        .mockResolvedValueOnce(
+        .mockResolvedValue(
           Response.json({ id: "drive-item-id", name: "OneDrop" }),
         ),
     );
 
-    const resultPromise = verifyAppFolderWithAccessToken("access-token");
-    await vi.runAllTimersAsync();
+    const plain = verifyAppFolderWithAccessToken("shared-token");
+    const cancellable = verifyAppFolderWithAccessToken(
+      "shared-token",
+      controller.signal,
+    );
 
-    await expect(resultPromise).resolves.toEqual({
+    await expect(Promise.all([plain, cancellable])).resolves.toEqual([
+      { id: "drive-item-id", name: "OneDrop" },
+      { id: "drive-item-id", name: "OneDrop" },
+    ]);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels only one caller while shared provisioning continues", async () => {
+    let resolveFetch!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockReturnValue(
+        new Promise<Response>((resolve) => {
+          resolveFetch = resolve;
+        }),
+      ),
+    );
+    const controller = new AbortController();
+
+    const shared = verifyAppFolderWithAccessToken("abort-token");
+    const cancelled = verifyAppFolderWithAccessToken(
+      "abort-token",
+      controller.signal,
+    );
+    const rejection = expect(cancelled).rejects.toMatchObject({
+      name: "AbortError",
+    });
+    controller.abort();
+    await rejection;
+
+    resolveFetch(Response.json({ id: "drive-item-id", name: "OneDrop" }));
+    await expect(shared).resolves.toEqual({
       id: "drive-item-id",
       name: "OneDrop",
     });
-    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it("provisions the App Folder through a temporary path when the root stays missing", async () => {
-    vi.useFakeTimers();
+  it("creates Apps and OneDrop when the explicit path is missing", async () => {
     vi.stubGlobal(
       "fetch",
       vi
         .fn()
         .mockResolvedValueOnce(new Response(null, { status: 404 }))
-        .mockResolvedValueOnce(new Response(null, { status: 404 }))
-        .mockResolvedValueOnce(new Response(null, { status: 404 }))
-        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(Response.json({ id: "apps-id", name: "Apps" }))
         .mockResolvedValueOnce(
-          Response.json({
-            id: "probe-item",
-            parentReference: { id: "drive-item-id" },
-          }),
-        )
-        .mockResolvedValueOnce(new Response(null, { status: 404 }))
-        .mockResolvedValueOnce(new Response(null, { status: 204 })),
+          Response.json({ id: "onedrop-id", name: "OneDrop" }),
+        ),
     );
 
-    const resultPromise = verifyAppFolderWithAccessToken("access-token");
-    await vi.runAllTimersAsync();
-
-    await expect(resultPromise).resolves.toEqual({
-      id: "drive-item-id",
+    await expect(
+      verifyAppFolderWithAccessToken("create-token"),
+    ).resolves.toEqual({
+      id: "onedrop-id",
       name: "OneDrop",
     });
-    expect(fetch).toHaveBeenCalledTimes(7);
+    expect(fetch).toHaveBeenCalledTimes(3);
     expect(fetch).toHaveBeenNthCalledWith(
-      5,
-      expect.stringContaining("/special/approot:/.onedrop-app-folder-probe-"),
-      expect.objectContaining({ method: "PUT" }),
+      2,
+      expect.stringContaining("/me/drive/root/children"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "Apps",
+          folder: {},
+          "@microsoft.graph.conflictBehavior": "fail",
+        }),
+      }),
     );
     expect(fetch).toHaveBeenNthCalledWith(
-      7,
-      expect.stringContaining("/items/probe-item"),
-      expect.objectContaining({ method: "DELETE" }),
+      3,
+      expect.stringContaining("/me/drive/items/apps-id/children"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          name: "OneDrop",
+          folder: {},
+          "@microsoft.graph.conflictBehavior": "fail",
+        }),
+      }),
     );
+  });
+
+  it("reuses Apps when another caller created it first", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(new Response(null, { status: 409 }))
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [{ id: "apps-id", name: "Apps" }],
+          }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({ id: "onedrop-id", name: "OneDrop" }),
+        ),
+    );
+
+    await expect(
+      verifyAppFolderWithAccessToken("apps-conflict-token"),
+    ).resolves.toEqual({
+      id: "onedrop-id",
+      name: "OneDrop",
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      expect.stringContaining("/me/drive/root/children?$select=id,name,webUrl"),
+      expect.any(Object),
+    );
+  });
+
+  it("reuses OneDrop when another caller created it first", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(Response.json({ id: "apps-id", name: "Apps" }))
+        .mockResolvedValueOnce(new Response(null, { status: 409 }))
+        .mockResolvedValueOnce(
+          Response.json({
+            value: [{ id: "onedrop-id", name: "OneDrop" }],
+          }),
+        ),
+    );
+
+    await expect(
+      verifyAppFolderWithAccessToken("onedrop-conflict-token"),
+    ).resolves.toEqual({
+      id: "onedrop-id",
+      name: "OneDrop",
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      expect.stringContaining(
+        "/me/drive/items/apps-id/children?$select=id,name,webUrl",
+      ),
+      expect.any(Object),
+    );
+  });
+
+  it("reports a non-conflict folder creation failure", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(new Response(null, { status: 404 }))
+        .mockResolvedValueOnce(
+          Response.json(
+            { error: { message: "Access denied." } },
+            { status: 403 },
+          ),
+        ),
+    );
+
+    await expect(
+      verifyAppFolderWithAccessToken("denied-token"),
+    ).rejects.toThrow("OneDrive folder initialization failed: Access denied.");
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

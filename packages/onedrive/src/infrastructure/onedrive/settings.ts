@@ -158,7 +158,7 @@ async function listDeviceSettings(
   accessToken: string,
 ): Promise<DeviceSettings[]> {
   let url: string | undefined =
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/settings/devices:/children?$select=id,name&$top=200`;
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/settings/devices:/children?$select=id,name&$top=200`;
   const devices: DeviceSettings[] = [];
   while (url) {
     const response = await fetch(url, {
@@ -197,7 +197,7 @@ async function readDocument<T>(
   accessToken: string,
 ): Promise<T | undefined> {
   const response = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/${path}:/content`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/${path}:/content`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (response.status === 404) return undefined;
@@ -217,7 +217,7 @@ async function writeDocument<T>(
 ): Promise<T> {
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     const metadata = await fetch(
-      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/${path}`,
+      `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/${path}`,
       { headers: { Authorization: `Bearer ${accessToken}` } },
     );
     if (metadata.status !== 404 && !metadata.ok) {
@@ -246,7 +246,7 @@ async function writeDocument<T>(
           },
         )
       : await fetch(
-          `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/${path}:/content?${conflictBehavior}=fail`,
+          `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/${path}:/content?${conflictBehavior}=fail`,
           {
             method: "PUT",
             headers: {

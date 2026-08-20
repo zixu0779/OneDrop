@@ -123,7 +123,7 @@ export async function publishMonthArchive(
 
 async function ensureArchiveFolder(accessToken: string): Promise<void> {
   const existing = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/archive`,
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/archive`,
     { headers: { Authorization: `Bearer ${accessToken}` } },
   );
   if (existing.ok) return;
@@ -155,7 +155,7 @@ async function ensureArchiveFolder(accessToken: string): Promise<void> {
 }
 
 function archiveItemUrl(month: string): string {
-  return `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}:/archive/${month}.json`;
+  return `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/archive/${month}.json`;
 }
 
 function archiveContentUrl(month: string): string {

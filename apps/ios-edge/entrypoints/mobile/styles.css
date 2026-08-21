@@ -1,17 +1,23 @@
 html,
 body {
   width: 100%;
-  min-width: 320px;
-  height: 600px;
-}
-
-body {
-  display: flex;
-  justify-content: center;
+  min-width: 0;
+  height: 100%;
+  min-height: 0;
 }
 
 #root {
-  width: min(100%, 360px);
-  height: 600px;
-  margin: 0 auto;
+  position: fixed;
+  top: var(--ios-edge-popup-offset-top, 0px);
+  right: 0;
+  left: 0;
+  width: 100%;
+  height: var(--ios-edge-popup-height, 100dvh);
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
+.ios-edge-surface .shell {
+  height: 100%;
 }

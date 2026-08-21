@@ -13,6 +13,7 @@ export const browserPlatformBridge: PlatformBridge = {
     showInFolder: !document.body.classList.contains("mobile-surface"),
     saveAs: !document.body.classList.contains("mobile-surface"),
     navigationDownload: document.body.classList.contains("mobile-surface"),
+    systemFileShare: false,
   },
 
   appVersion(): string {
@@ -47,6 +48,18 @@ export const browserPlatformBridge: PlatformBridge = {
 
   async openDownload(downloadId: number): Promise<void> {
     await browser.downloads.open(downloadId);
+  },
+
+  async getPreparedAttachment(): Promise<undefined> {
+    return undefined;
+  },
+
+  async prepareAttachment(): Promise<never> {
+    throw new Error("System file sharing is unavailable on this platform.");
+  },
+
+  async shareAttachment(): Promise<never> {
+    throw new Error("System file sharing is unavailable on this platform.");
   },
 
   async copyText(text: string): Promise<void> {

@@ -57,6 +57,20 @@ The CRX is written to `.output/edge-android/edge-mv3.crx`. The signing key is ke
 
 Install Microsoft Edge Canary on the Android device. Open Edge Canary settings, enable Developer options, then use **Extension install by crx** to select and install the generated CRX.
 
+### iOS Edge
+
+Generate the dedicated iOS Edge CRX:
+
+```bash
+npm run pack:ios-edge
+```
+
+Upload `.output/edge-ios/edge-mv3.crx` through the iOS Edge developer testing
+entry. Since iOS Edge does not currently expose the managed downloads API to
+extensions, OneDrop caches a requested attachment and opens it through the iOS
+system share sheet. Its signing key is kept separately at
+`.keys/ios-edge-dev.pem`.
+
 ### iOS
 
 Install Xcode, connect the iPhone, and wait until Xcode finishes device preparation.

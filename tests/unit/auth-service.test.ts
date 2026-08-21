@@ -54,6 +54,7 @@ describe("persistent authentication lifecycle", () => {
       },
       tabs: {
         create: vi.fn(async () => ({ id: 17 })),
+        query: vi.fn(async () => []),
         remove: vi.fn(async () => undefined),
         onUpdated: {
           addListener: vi.fn((listener) => tabUpdatedListeners.add(listener)),
@@ -120,6 +121,84 @@ describe("persistent authentication lifecycle", () => {
       (localState["onedrop.auth.token"] as Record<string, unknown>)
         .refresh_token,
     ).toBe("android-spa-refresh-token");
+  });
+
+  it("uses the reachable SPA redirect and a tab when the identity API is absent", async () => {
+    vi.stubGlobal("browser", {
+      ...browser,
+      identity: undefined,
+      runtime: { id: "ios-edge-extension" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          token_type: "Bearer",
+          scope: "openid offline_access",
+          expires_in: 3600,
+          access_token: "ios-edge-access-token",
+          refresh_token: "ios-edge-refresh-token",
+        }),
+      ),
+    );
+    const { getAuthStatus, signIn } =
+      await import("@onedrop/app-runtime/features/auth/auth-service");
+
+    await expect(getAuthStatus()).resolves.toMatchObject({
+      state: "signed-out",
+      redirectUri: "https://onedrop.sycamore.top/auth.html",
+    });
+    const signInPromise = signIn();
+    await vi.waitFor(() => expect(browser.tabs.create).toHaveBeenCalled());
+    const authorizeUrl = new URL(
+      vi.mocked(browser.tabs.create).mock.calls[0]![0].url!,
+    );
+    for (const listener of tabUpdatedListeners) {
+      listener(17, {
+        url: `https://onedrop.sycamore.top/auth.html?code=ios-code&state=${authorizeUrl.searchParams.get("state")}`,
+      });
+    }
+
+    await expect(signInPromise).resolves.toMatchObject({ state: "signed-in" });
+  });
+
+  it("resumes a completed tab callback after the extension background was suspended", async () => {
+    localState["onedrop.auth.pending"] = {
+      state: "saved-state",
+      verifier: "saved-verifier",
+      redirectUri: "https://onedrop.sycamore.top/auth.html",
+      createdAt: Date.now(),
+      interactive: true,
+    };
+    const queryTabs = browser.tabs.query as unknown as {
+      mockResolvedValue(value: Array<{ id?: number; url?: string }>): void;
+    };
+    queryTabs.mockResolvedValue([
+      {
+        id: 44,
+        url: "https://onedrop.sycamore.top/auth.html?code=resumed-code&state=saved-state",
+      },
+    ]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({
+          token_type: "Bearer",
+          scope: "openid offline_access",
+          expires_in: 3600,
+          access_token: "resumed-access-token",
+          refresh_token: "resumed-refresh-token",
+        }),
+      ),
+    );
+    const { getAuthStatus } =
+      await import("@onedrop/app-runtime/features/auth/auth-service");
+
+    await expect(getAuthStatus()).resolves.toMatchObject({
+      state: "signed-in",
+    });
+    expect(browser.tabs.remove).toHaveBeenCalledWith(44);
+    expect(localState["onedrop.auth.pending"]).toBeUndefined();
   });
 
   it("refreshes an expired access token and retains the refresh token when Microsoft omits a replacement", async () => {

@@ -82,9 +82,11 @@ const activeFileUploads = new Map<string, AbortController>();
 const cancelledFileUploads = new Set<string>();
 
 export default defineBackground(() => {
-  browser.downloads.onCreated.addListener((item) => {
-    void claimMobileNavigationDownload(item).catch(() => undefined);
-  });
+  if (browser.downloads?.onCreated) {
+    browser.downloads.onCreated.addListener((item) => {
+      void claimMobileNavigationDownload(item).catch(() => undefined);
+    });
+  }
   const hasSidePanelPermission =
     browser.runtime.getManifest().permissions?.includes("sidePanel") ?? false;
   if (!hasSidePanelPermission) {

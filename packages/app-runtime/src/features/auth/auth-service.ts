@@ -8,8 +8,11 @@ import {
 } from "./token";
 
 const TOKEN_STORAGE_KEY = "onedrop.auth.token";
+const PENDING_AUTH_STORAGE_KEY = "onedrop.auth.pending";
 const EXPIRY_SKEW_MS = 60_000;
+const PENDING_AUTH_MAX_AGE_MS = 5 * 60_000;
 const REDIRECT_PATH = "auth";
+const DEFAULT_TAB_REDIRECT_URI = "https://onedrop.sycamore.top/auth.html";
 const SCOPES = [
   "openid",
   "profile",
@@ -19,6 +22,14 @@ const SCOPES = [
 
 type StoredToken = TokenResponse & {
   expiresAt: string;
+};
+
+type PendingAuthorization = {
+  state: string;
+  verifier: string;
+  redirectUri: string;
+  createdAt: number;
+  interactive: boolean;
 };
 
 function getClientId(): string | undefined {
@@ -34,7 +45,39 @@ function getAuthority(): string {
 }
 
 function getRedirectUri(): string {
-  return browser.identity.getRedirectURL(REDIRECT_PATH);
+  const identity = getIdentityApi();
+  return identity?.getRedirectURL
+    ? identity.getRedirectURL(REDIRECT_PATH)
+    : getTabRedirectUri();
+}
+
+function getTabRedirectUri(): string {
+  return (
+    import.meta.env.WXT_ONEDROP_TAB_REDIRECT_URI?.trim() ||
+    DEFAULT_TAB_REDIRECT_URI
+  );
+}
+
+function getIdentityApi():
+  | {
+      getRedirectURL?(path?: string): string;
+      launchWebAuthFlow?(details: {
+        url: string;
+        interactive?: boolean;
+      }): Promise<string | undefined>;
+    }
+  | undefined {
+  return (
+    browser as typeof browser & {
+      identity?: {
+        getRedirectURL?(path?: string): string;
+        launchWebAuthFlow?(details: {
+          url: string;
+          interactive?: boolean;
+        }): Promise<string | undefined>;
+      };
+    }
+  ).identity;
 }
 
 async function readStoredToken(): Promise<StoredToken | undefined> {
@@ -112,6 +155,7 @@ export async function getAuthStatus(): Promise<AuthStatus> {
     return { state: "unconfigured", redirectUri };
   }
 
+  await resumePendingTabAuthorization();
   const token = await getUsableToken();
 
   if (!token) {
@@ -242,11 +286,27 @@ async function acquireAuthorizationCodeToken(options: {
   }).toString();
 
   let callbackUrl: string | undefined;
+  const identity = getIdentityApi();
   try {
-    callbackUrl = await browser.identity.launchWebAuthFlow({
-      url: authorizeUrl.toString(),
-      interactive: options.interactive,
-    });
+    if (!identity?.launchWebAuthFlow) {
+      await storePendingAuthorization({
+        state,
+        verifier,
+        redirectUri,
+        createdAt: Date.now(),
+        interactive: options.interactive,
+      });
+    }
+    callbackUrl = identity?.launchWebAuthFlow
+      ? await identity.launchWebAuthFlow({
+          url: authorizeUrl.toString(),
+          interactive: options.interactive,
+        })
+      : await launchTabAuthorizationFlow(
+          authorizeUrl.toString(),
+          redirectUri,
+          options.interactive,
+        );
   } catch (cause) {
     if (shouldUseTabAuthorizationFallback(cause)) {
       try {
@@ -279,17 +339,37 @@ async function acquireAuthorizationCodeToken(options: {
     throw new Error("Microsoft sign-in did not return a callback URL.");
   }
 
+  const storedToken = await exchangeAuthorizationCallback(callbackUrl, {
+    state,
+    verifier,
+    redirectUri,
+    createdAt: Date.now(),
+    interactive: options.interactive,
+  });
+  await browser.storage.local.remove(PENDING_AUTH_STORAGE_KEY);
+  return storedToken;
+}
+
+async function exchangeAuthorizationCallback(
+  callbackUrl: string,
+  pending: PendingAuthorization,
+): Promise<StoredToken> {
+  const clientId = getClientId();
+  if (!clientId) {
+    throw new Error("Microsoft Entra Client ID is not configured.");
+  }
+
   const callback = new URL(callbackUrl);
   const authError = callback.searchParams.get("error_description");
 
   if (authError) {
-    if (!options.interactive) {
+    if (!pending.interactive) {
       throw new SignInRequiredError(authError);
     }
     throw new Error(authError);
   }
 
-  if (callback.searchParams.get("state") !== state) {
+  if (callback.searchParams.get("state") !== pending.state) {
     throw new Error("Microsoft sign-in state validation failed.");
   }
 
@@ -299,15 +379,15 @@ async function acquireAuthorizationCodeToken(options: {
     throw new Error("Microsoft sign-in did not return an authorization code.");
   }
 
-  const tokenResponse = await fetch(`${authority}/oauth2/v2.0/token`, {
+  const tokenResponse = await fetch(`${getAuthority()}/oauth2/v2.0/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       client_id: clientId,
       grant_type: "authorization_code",
       code,
-      redirect_uri: redirectUri,
-      code_verifier: verifier,
+      redirect_uri: pending.redirectUri,
+      code_verifier: pending.verifier,
       scope: SCOPES.join(" "),
     }),
   });
@@ -316,7 +396,7 @@ async function acquireAuthorizationCodeToken(options: {
 
   if (!tokenResponse.ok) {
     const message = getTokenErrorMessage(tokenBody);
-    if (!options.interactive && isPermanentRefreshFailure(tokenBody)) {
+    if (!pending.interactive && isPermanentRefreshFailure(tokenBody)) {
       throw new SignInRequiredError(message);
     }
     throw new Error(`Microsoft token exchange failed: ${message}`);
@@ -330,6 +410,36 @@ async function acquireAuthorizationCodeToken(options: {
 
   await storeToken(storedToken);
   return storedToken;
+}
+
+async function storePendingAuthorization(
+  pending: PendingAuthorization,
+): Promise<void> {
+  await browser.storage.local.set({ [PENDING_AUTH_STORAGE_KEY]: pending });
+}
+
+async function resumePendingTabAuthorization(): Promise<void> {
+  const stored = await browser.storage.local.get(PENDING_AUTH_STORAGE_KEY);
+  const pending = stored[PENDING_AUTH_STORAGE_KEY] as
+    PendingAuthorization | undefined;
+  if (!pending) return;
+  if (Date.now() - pending.createdAt > PENDING_AUTH_MAX_AGE_MS) {
+    await browser.storage.local.remove(PENDING_AUTH_STORAGE_KEY);
+    return;
+  }
+  const tabs = await browser.tabs.query({});
+  const callbackTab = tabs.find((tab) =>
+    tab.url?.startsWith(pending.redirectUri),
+  );
+  if (!callbackTab?.url) return;
+  try {
+    await exchangeAuthorizationCallback(callbackTab.url, pending);
+    await browser.storage.local.remove(PENDING_AUTH_STORAGE_KEY);
+  } finally {
+    if (callbackTab.id !== undefined) {
+      await browser.tabs.remove(callbackTab.id).catch(() => undefined);
+    }
+  }
 }
 
 export async function signOut(): Promise<AuthStatus> {

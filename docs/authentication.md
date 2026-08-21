@@ -9,6 +9,8 @@ Create `.env.local` in the repository root:
 ```dotenv
 WXT_ONEDROP_ENTRA_CLIENT_ID=<Application client ID>
 WXT_ONEDROP_ENTRA_AUTHORITY=https://login.microsoftonline.com/common
+# Optional override for clients without browser.identity:
+WXT_ONEDROP_TAB_REDIRECT_URI=https://onedrop.sycamore.top/auth.html
 ```
 
 Restart `npm run dev` after changing these values. If the extension is already loaded, reload `.output/edge-mv3-dev` and reopen the Side Panel.
@@ -18,6 +20,7 @@ Restart `npm run dev` after changing these values. If the extension is already l
 The app registration must allow personal Microsoft accounts and must include the redirect URI for each packaged client.
 
 - Desktop and Android Edge builds use the exact `https://<extension-id>.chromiumapp.org/auth` URI shown by the build.
+- iOS Edge currently lacks the Identity API and uses the reachable SPA redirect `https://onedrop.sycamore.top/auth.html` with a temporary Edge tab.
 - iOS uses bundle ID `com.sycamore.onedrop` and redirect URI `msauth.com.sycamore.onedrop://auth`.
 - Microsoft Graph delegated permission must include `Files.ReadWrite`.
 - Do not create or ship a client secret.
@@ -27,7 +30,7 @@ A release build with a new stable extension ID needs its new redirect URI added 
 ## Runtime behavior
 
 - Desktop Edge starts sign-in with `browser.identity.launchWebAuthFlow`.
-- Android Edge uses a temporary Edge tab for the same PKCE request because it cannot create the identity window.
+- Android Edge and iOS Edge can fall back to a temporary Edge tab for the same PKCE request when the identity window cannot be created.
 - iOS uses the native redirect flow.
 - Tokens are stored in `browser.storage.local`, private to the app or extension but not an operating-system credential vault.
 - OneDrop requests `offline_access` and refreshes access tokens on demand.

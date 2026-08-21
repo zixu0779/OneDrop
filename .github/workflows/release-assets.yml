@@ -1,0 +1,119 @@
+name: Release assets
+
+on:
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing GitHub release tag to receive the assets
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name || inputs.release_tag }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+  WXT_ONEDROP_ENTRA_CLIENT_ID: ${{ secrets.ONEDROP_ENTRA_CLIENT_ID }}
+
+jobs:
+  edge:
+    name: Edge release packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore stable CRX signing keys
+        env:
+          ANDROID_EDGE_CRX_KEY: ${{ secrets.ANDROID_EDGE_CRX_KEY }}
+          IOS_EDGE_CRX_KEY: ${{ secrets.IOS_EDGE_CRX_KEY }}
+        run: |
+          test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
+          test -n "$ANDROID_EDGE_CRX_KEY"
+          test -n "$IOS_EDGE_CRX_KEY"
+          mkdir -p .keys
+          printf '%s' "$ANDROID_EDGE_CRX_KEY" | base64 --decode > .keys/android-dev.pem
+          printf '%s' "$IOS_EDGE_CRX_KEY" | base64 --decode > .keys/ios-edge-dev.pem
+          chmod 600 .keys/android-dev.pem .keys/ios-edge-dev.pem
+
+      - name: Build desktop Edge ZIP
+        run: npm run zip
+
+      - name: Build Android Edge CRX
+        env:
+          ONEDROP_CHROMIUM_BINARY: /usr/bin/google-chrome
+        run: npm run pack:android
+
+      - name: Build iOS Edge CRX
+        env:
+          ONEDROP_CHROMIUM_BINARY: /usr/bin/google-chrome
+        run: npm run pack:ios-edge
+
+      - name: Stage Edge release assets
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p release-assets
+          cp ".output/onedrop-${VERSION}-edge.zip" "release-assets/OneDrop-${VERSION}-desktop-edge.zip"
+          cp .output/edge-android/edge-mv3.crx "release-assets/OneDrop-${VERSION}-android-edge.crx"
+          cp .output/edge-ios/edge-mv3.crx "release-assets/OneDrop-${VERSION}-ios-edge.crx"
+
+      - name: Upload Edge packages to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+  ios:
+    name: Native iOS LiveContainer package
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build unsigned LiveContainer IPA
+        run: |
+          test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
+          npm run pack:ios
+
+      - name: Stage iOS release asset
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          mkdir -p release-assets
+          cp .output/ios-native/onedrop-ios-livecontainer.ipa "release-assets/OneDrop-${VERSION}-ios-livecontainer.ipa"
+
+      - name: Upload iOS package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$RELEASE_TAG" release-assets/* --clobber

@@ -111,6 +111,7 @@ export const iosPlatformBridge: PlatformBridge = {
     showInFolder: true,
     saveAs: true,
     navigationDownload: false,
+    systemFileShare: false,
   },
 
   appVersion() {
@@ -157,6 +158,18 @@ export const iosPlatformBridge: PlatformBridge = {
       );
     }
     await nativeDownload.open({ driveItemId });
+  },
+
+  async getPreparedAttachment() {
+    return undefined;
+  },
+
+  async prepareAttachment() {
+    throw new Error("System file sharing is handled by the native iOS app.");
+  },
+
+  async shareAttachment() {
+    throw new Error("System file sharing is handled by the native iOS app.");
   },
 
   async copyText(text) {

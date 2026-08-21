@@ -4936,6 +4936,7 @@ export function CommittedMessageItem({
     useState<string>();
   const [localDownloadId, setLocalDownloadId] = useState<number | null>();
   const [downloadProgress, setDownloadProgress] = useState<number>();
+  const [preparedShareFile, setPreparedShareFile] = useState<File>();
   const [imagePreviewDataUrl, setImagePreviewDataUrl] = useState<string>();
   const [imagePreviewStatus, setImagePreviewStatus] = useState<
     "loading" | "available" | "failed"
@@ -4964,6 +4965,18 @@ export function CommittedMessageItem({
   useEffect(() => {
     let active = true;
     if (!isAttachment || message.type !== "file") return;
+    if (platformCapabilities.systemFileShare) {
+      setLocalDownloadId(null);
+      void getPlatformBridge()
+        .getPreparedAttachment(message.attachment)
+        .then((file) => {
+          if (active && file) setPreparedShareFile(file);
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }
     void getDownloadRecord(message.attachment.driveItemId)
       .then(async (record) => {
         if (!record) {
@@ -5012,6 +5025,7 @@ export function CommittedMessageItem({
     isAttachment,
     isMobileSurface,
     platformCapabilities.navigationDownload,
+    platformCapabilities.systemFileShare,
   ]);
 
   useEffect(() => {
@@ -5227,6 +5241,50 @@ export function CommittedMessageItem({
     if (message.type !== "file" || isAttachmentWorking || isCloudMissing) {
       return;
     }
+    if (platformCapabilities.systemFileShare) {
+      setIsAttachmentWorking(true);
+      setIsMenuOpen(false);
+      setAttachmentOperationError(undefined);
+      const bridge = getPlatformBridge();
+      const controller = new AbortController();
+      mobileDownloadControllerRef.current = controller;
+      const share = preparedShareFile
+        ? bridge.shareAttachment(preparedShareFile)
+        : (async () => {
+            setDownloadProgress(0);
+            const file = await bridge.prepareAttachment(
+              message.attachment,
+              (receivedBytes, totalBytes) => {
+                setDownloadProgress(
+                  totalBytes > 0
+                    ? Math.min(99, (receivedBytes / totalBytes) * 100)
+                    : 0,
+                );
+              },
+              controller.signal,
+            );
+            setPreparedShareFile(file);
+            setDownloadProgress(100);
+            await bridge.shareAttachment(file);
+          })();
+      void share
+        .catch((cause: unknown) => {
+          if (!(cause instanceof DOMException && cause.name === "AbortError")) {
+            setAttachmentOperationError(
+              cause instanceof Error
+                ? cause.message
+                : "Couldn’t open this file.",
+            );
+          }
+        })
+        .finally(() => {
+          mobileDownloadControllerRef.current = undefined;
+          downloadCancelledByUserRef.current = false;
+          setDownloadProgress(undefined);
+          setIsAttachmentWorking(false);
+        });
+      return;
+    }
     setIsAttachmentWorking(true);
     setIsMenuOpen(false);
 
@@ -5436,7 +5494,9 @@ export function CommittedMessageItem({
         localDownloadId !== undefined ? (
           <button
             aria-label={
-              localDownloadId === null ? "Download file" : "Open file"
+              platformCapabilities.systemFileShare || localDownloadId !== null
+                ? "Open file"
+                : "Download file"
             }
             className={`message-local-button${downloadProgress !== undefined ? " message-local-button-working" : ""}`}
             disabled={isAttachmentWorking}
@@ -5445,7 +5505,8 @@ export function CommittedMessageItem({
           >
             {downloadProgress !== undefined ? (
               <DownloadProgressRing progress={downloadProgress} />
-            ) : localDownloadId === null ? (
+            ) : localDownloadId === null &&
+              !platformCapabilities.systemFileShare ? (
               <DownloadLocalIcon />
             ) : (
               <OpenLocalIcon />
@@ -5483,7 +5544,9 @@ export function CommittedMessageItem({
               role="menuitem"
               type="button"
             >
-              {localDownloadId === null ? "Download" : "Open"}
+              {platformCapabilities.systemFileShare || localDownloadId !== null
+                ? "Open"
+                : "Download"}
             </button>
             {typeof localDownloadId === "number" ? (
               <button

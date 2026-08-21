@@ -67,12 +67,22 @@ export type DownloadRecord = {
   lastOpenedAt?: string;
 };
 
+export type AttachmentCacheRecord = {
+  driveItemId: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  blob: Blob;
+  cachedAt: string;
+};
+
 class OneDropDatabase extends Dexie {
   monthCache!: EntityTable<MonthCacheRecord, "month">;
   settings!: EntityTable<SettingRecord, "key">;
   pendingTransfers!: EntityTable<PendingTransferRecord, "id">;
   pendingTexts!: EntityTable<PendingTextRecord, "id">;
   downloads!: EntityTable<DownloadRecord, "driveItemId">;
+  attachmentCache!: EntityTable<AttachmentCacheRecord, "driveItemId">;
 
   constructor() {
     super("OneDrop");
@@ -97,6 +107,14 @@ class OneDropDatabase extends Dexie {
       pendingTransfers: "&id,createdAt,status",
       pendingTexts: "&id,createdAt,status",
       downloads: "&driveItemId,downloadId,lastOpenedAt",
+    });
+    this.version(5).stores({
+      monthCache: "&month",
+      settings: "&key",
+      pendingTransfers: "&id,createdAt,status",
+      pendingTexts: "&id,createdAt,status",
+      downloads: "&driveItemId,downloadId,lastOpenedAt",
+      attachmentCache: "&driveItemId,cachedAt",
     });
   }
 }

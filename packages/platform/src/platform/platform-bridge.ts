@@ -4,6 +4,7 @@ import type {
   RuntimeRequest,
   RuntimeResponse,
 } from "@onedrop/core/contracts/runtime-messages";
+import type { Attachment } from "@onedrop/core/domain/message";
 
 export type PlatformRuntimeEvent =
   | ArchiveRuntimeEvent
@@ -26,6 +27,7 @@ export type PlatformCapabilities = {
   showInFolder: boolean;
   saveAs: boolean;
   navigationDownload: boolean;
+  systemFileShare: boolean;
 };
 
 export interface PlatformBridge {
@@ -38,6 +40,13 @@ export interface PlatformBridge {
     driveItemId: string,
   ): Promise<PlatformDownload | undefined>;
   openDownload(downloadId: number): Promise<void>;
+  getPreparedAttachment(attachment: Attachment): Promise<File | undefined>;
+  prepareAttachment(
+    attachment: Attachment,
+    onProgress: (receivedBytes: number, totalBytes: number) => void,
+    signal: AbortSignal,
+  ): Promise<File>;
+  shareAttachment(file: File): Promise<void>;
   copyText(text: string): Promise<void>;
   copyImage(dataUrl: string): Promise<void>;
 }
@@ -49,6 +58,7 @@ const defaultBrowserBridge: PlatformBridge = {
     showInFolder: true,
     saveAs: true,
     navigationDownload: false,
+    systemFileShare: false,
   },
   appVersion() {
     return browser.runtime.getManifest().version;
@@ -76,6 +86,15 @@ const defaultBrowserBridge: PlatformBridge = {
   },
   async openDownload(downloadId) {
     await browser.downloads.open(downloadId);
+  },
+  async getPreparedAttachment() {
+    return undefined;
+  },
+  async prepareAttachment() {
+    throw new Error("System file sharing is unavailable on this platform.");
+  },
+  async shareAttachment() {
+    throw new Error("System file sharing is unavailable on this platform.");
   },
   async copyText(text) {
     await navigator.clipboard.writeText(text);

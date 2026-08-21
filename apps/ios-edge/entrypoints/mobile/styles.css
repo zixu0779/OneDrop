@@ -1,0 +1,17 @@
+html,
+body {
+  width: 100%;
+  min-width: 320px;
+  height: 600px;
+}
+
+body {
+  display: flex;
+  justify-content: center;
+}
+
+#root {
+  width: min(100%, 360px);
+  height: 600px;
+  margin: 0 auto;
+}

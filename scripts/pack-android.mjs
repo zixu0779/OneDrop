@@ -14,9 +14,10 @@ const keyDirectory = resolve(projectRoot, ".keys");
 // the same extension ID when a new CRX is packed.
 const persistentKey = resolve(keyDirectory, "android-dev.pem");
 const edgeBinary =
-  process.platform === "darwin"
+  process.env.ONEDROP_CHROMIUM_BINARY?.trim() ||
+  (process.platform === "darwin"
     ? "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
-    : "msedge";
+    : "msedge");
 
 mkdirSync(keyDirectory, { recursive: true });
 if (!existsSync(persistentKey) && existsSync(generatedPem)) {

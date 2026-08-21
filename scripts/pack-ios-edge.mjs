@@ -9,9 +9,10 @@ const generatedPem = `${extensionDirectory}.pem`;
 const keyDirectory = resolve(projectRoot, ".keys");
 const persistentKey = resolve(keyDirectory, "ios-edge-dev.pem");
 const edgeBinary =
-  process.platform === "darwin"
+  process.env.ONEDROP_CHROMIUM_BINARY?.trim() ||
+  (process.platform === "darwin"
     ? "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
-    : "msedge";
+    : "msedge");
 
 const manifestPath = resolve(extensionDirectory, "manifest.json");
 const mobilePagePath = resolve(extensionDirectory, "mobile.html");

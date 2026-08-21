@@ -7,3 +7,6 @@ package-lock.json
 ios/App/App/capacitor.config.json
 ios/App/App/public
 ios/App/Pods
+apps/ios/native/App/App/capacitor.config.json
+apps/ios/native/App/App/public
+apps/ios/native/App/Pods

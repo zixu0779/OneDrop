@@ -95,6 +95,37 @@ npm run open:ios
 
 Select the connected device in Xcode, confirm signing settings, and run the app from Xcode.
 
+Generate an unsigned IPA for import into LiveContainer:
+
+```bash
+npm run pack:ios
+```
+
+The IPA is written to `.output/ios-native/onedrop-ios-livecontainer.ipa`. It is
+not signed for direct installation; LiveContainer signs imported apps with its
+own active certificate.
+
+### Release assets
+
+Publishing a GitHub Release runs `.github/workflows/release-assets.yml` and
+uploads the desktop Edge ZIP, Android Edge CRX, iOS Edge CRX, and unsigned
+LiveContainer IPA to that release. Configure these GitHub Actions secrets first:
+
+- `ONEDROP_ENTRA_CLIENT_ID`: Microsoft Entra application client ID embedded in
+  all release builds.
+- `ANDROID_EDGE_CRX_KEY`: base64 form of `.keys/android-dev.pem`.
+- `IOS_EDGE_CRX_KEY`: base64 form of `.keys/ios-edge-dev.pem`.
+
+On macOS, copy a key in the required base64 form with:
+
+```bash
+base64 < .keys/android-dev.pem | tr -d '\n' | pbcopy
+```
+
+Repeat with `ios-edge-dev.pem` for the iOS Edge secret. Keeping these keys
+stable preserves the installed extension IDs across releases. The workflow can
+also be run manually for an existing release tag.
+
 ### Checks
 
 Before submitting changes, run the checks that match the area you touched:

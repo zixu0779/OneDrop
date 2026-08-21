@@ -14,6 +14,7 @@
     "postinstall": "patch-package",
     "build:ios": "vite build --config vite.ios.config.ts",
     "sync:ios": "npm run build:ios && cap sync ios",
+    "pack:ios": "npm run sync:ios && node scripts/pack-ios-ipa.mjs",
     "open:ios": "cap open ios",
     "zip": "wxt zip --browser edge",
     "compile": "wxt prepare && tsc --noEmit",

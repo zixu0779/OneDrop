@@ -28,7 +28,7 @@ body.mobile-surface {
 /* Edge extends the root canvas into the browser-owned strip above the IME.
    Match that canvas to the focused composer, and keep the field's glow inside
    the drawable viewport instead of letting Edge clip it at the lower edge. */
-html:has(body.mobile-surface:not(.ios-surface)) {
+html:has(body.mobile-surface:not(.ios-surface):not(.ios-edge-surface)) {
   background: var(--mobile-keyboard-canvas);
 }
 
@@ -58,20 +58,24 @@ html:has(body.mobile-surface:not(.ios-surface)) {
   padding-bottom: 8px;
 }
 
-.mobile-surface:not(.ios-surface) .shell.mobile-keyboard-visible,
-.mobile-surface:not(.ios-surface) .shell:has(.composer textarea:focus) {
+.mobile-surface:not(.ios-surface):not(.ios-edge-surface)
+  .shell.mobile-keyboard-visible,
+.mobile-surface:not(.ios-surface):not(.ios-edge-surface)
+  .shell:has(.composer textarea:focus) {
   height: 100%;
   padding-bottom: 14px;
 }
 
-.mobile-surface:not(.ios-surface) .shell.mobile-keyboard-visible .composer {
+.mobile-surface:not(.ios-surface):not(.ios-edge-surface)
+  .shell.mobile-keyboard-visible
+  .composer {
   margin-bottom: -4px;
   padding-bottom: 2px;
   background: var(--mobile-keyboard-canvas);
   backdrop-filter: none;
 }
 
-.mobile-surface:not(.ios-surface)
+.mobile-surface:not(.ios-surface):not(.ios-edge-surface)
   .shell:has(.composer textarea:focus)
   .composer {
   background: var(--mobile-keyboard-canvas);
@@ -80,7 +84,8 @@ html:has(body.mobile-surface:not(.ios-surface)) {
 
 /* Keep the gradient focus border, but do not let Android's browser-owned
    keyboard strip clip an outward glow below the composer field. */
-.mobile-surface:not(.ios-surface) .composer-field:focus-within {
+.mobile-surface:not(.ios-surface):not(.ios-edge-surface)
+  .composer-field:focus-within {
   box-shadow: none;
 }
 

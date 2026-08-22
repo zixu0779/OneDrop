@@ -12,7 +12,7 @@
     "build:ios-edge": "wxt build --browser edge --config wxt.ios-edge.config.ts --filter-entrypoint mobile --filter-entrypoint background",
     "pack:ios-edge": "npm run build:ios-edge && node scripts/pack-ios-edge.mjs",
     "postinstall": "patch-package",
-    "build:ios": "vite build --config vite.ios.config.ts",
+    "build:ios": "wxt prepare && vite build --config vite.ios.config.ts",
     "sync:ios": "npm run build:ios && cap sync ios",
     "pack:ios": "npm run sync:ios && node scripts/pack-ios-ipa.mjs",
     "open:ios": "cap open ios",

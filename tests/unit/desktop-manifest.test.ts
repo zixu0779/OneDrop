@@ -1,0 +1,17 @@
+import { describe, expect, it } from "vitest";
+
+import { createDesktopManifest } from "../../wxt.config";
+
+describe("desktop Edge manifest", () => {
+  it("keeps the fixed extension ID key in development", () => {
+    expect(createDesktopManifest("serve", "development-public-key")).toEqual(
+      expect.objectContaining({ key: "development-public-key" }),
+    );
+  });
+
+  it("omits the development key from Partner Center builds", () => {
+    expect(
+      createDesktopManifest("build", "development-public-key"),
+    ).not.toHaveProperty("key");
+  });
+});

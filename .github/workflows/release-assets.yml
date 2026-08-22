@@ -108,6 +108,7 @@ jobs:
       - name: Build unsigned LiveContainer IPA
         run: |
           test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
+          npm exec -- wxt prepare
           npm run pack:ios
 
       - name: Stage iOS release asset

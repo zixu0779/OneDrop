@@ -7,9 +7,10 @@ const desktopSigningKeyPath = resolve(".keys", "desktop-dev-public.key");
 const desktopSigningKey = existsSync(desktopSigningKeyPath)
   ? readFileSync(desktopSigningKeyPath, "utf8").trim()
   : undefined;
+const isStorePackage = process.env.ONEDROP_STORE_PACKAGE === "1";
 
 export function createDesktopManifest(
-  command: "serve" | "build",
+  includeSigningKey: boolean,
   signingKey = desktopSigningKey,
 ) {
   return {
@@ -31,7 +32,7 @@ export function createDesktopManifest(
       "https://login.microsoftonline.com/*",
     ],
     action: { default_title: "Open OneDrop" },
-    ...(command === "serve" && signingKey ? { key: signingKey } : {}),
+    ...(includeSigningKey && signingKey ? { key: signingKey } : {}),
   };
 }
 
@@ -52,5 +53,10 @@ export default defineConfig({
   }),
   modules: ["@wxt-dev/module-react"],
   dev: { server: { port: 3000, strictPort: true } },
-  manifest: ({ command }) => createDesktopManifest(command),
+  manifest: () => createDesktopManifest(!isStorePackage),
+  zip: {
+    artifactTemplate: isStorePackage
+      ? "OneDrop-{{version}}-desktop-edge-store.zip"
+      : "OneDrop-{{version}}-desktop-edge.zip",
+  },
 });

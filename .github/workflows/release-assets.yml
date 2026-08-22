@@ -43,18 +43,21 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Restore stable CRX signing keys
+      - name: Restore stable extension keys
         env:
+          DESKTOP_EDGE_PUBLIC_KEY: ${{ secrets.DESKTOP_EDGE_PUBLIC_KEY }}
           ANDROID_EDGE_CRX_KEY: ${{ secrets.ANDROID_EDGE_CRX_KEY }}
           IOS_EDGE_CRX_KEY: ${{ secrets.IOS_EDGE_CRX_KEY }}
         run: |
           test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
+          test -n "$DESKTOP_EDGE_PUBLIC_KEY"
           test -n "$ANDROID_EDGE_CRX_KEY"
           test -n "$IOS_EDGE_CRX_KEY"
           mkdir -p .keys
+          printf '%s' "$DESKTOP_EDGE_PUBLIC_KEY" > .keys/desktop-dev-public.key
           printf '%s' "$ANDROID_EDGE_CRX_KEY" | base64 --decode > .keys/android-dev.pem
           printf '%s' "$IOS_EDGE_CRX_KEY" | base64 --decode > .keys/ios-edge-dev.pem
-          chmod 600 .keys/android-dev.pem .keys/ios-edge-dev.pem
+          chmod 600 .keys/desktop-dev-public.key .keys/android-dev.pem .keys/ios-edge-dev.pem
 
       - name: Build desktop Edge ZIP
         run: npm run zip
@@ -73,7 +76,7 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           mkdir -p release-assets
-          cp ".output/onedrop-${VERSION}-edge.zip" "release-assets/OneDrop-${VERSION}-desktop-edge.zip"
+          cp ".output/OneDrop-${VERSION}-desktop-edge.zip" "release-assets/OneDrop-${VERSION}-desktop-edge.zip"
           cp .output/edge-android/edge-mv3.crx "release-assets/OneDrop-${VERSION}-android-edge.crx"
           cp .output/edge-ios/edge-mv3.crx "release-assets/OneDrop-${VERSION}-ios-edge.crx"
 

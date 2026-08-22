@@ -15,6 +15,11 @@ It uses the user's Microsoft account and OneDrive App Folder as the storage boun
 
 See [docs/architecture.md](docs/architecture.md) for the storage layout and synchronization rules.
 
+## Installation
+
+See [docs/installation.md](docs/installation.md) for platform-specific release and development installation instructions,
+including Desktop Edge, Android Edge Canary, iOS Edge TestFlight, and native iOS through LiveContainer.
+
 ## Development
 
 Install dependencies:
@@ -65,13 +70,10 @@ Generate the dedicated iOS Edge CRX:
 npm run pack:ios-edge
 ```
 
-Upload `.output/edge-ios/edge-mv3.crx` through the iOS Edge developer testing
-entry. Since iOS Edge does not currently expose the managed downloads API to
-extensions, OneDrop caches a requested attachment and opens it through the iOS
-system share sheet. Its signing key is kept separately at
-`.keys/ios-edge-dev.pem`.
+Upload `.output/edge-ios/edge-mv3.crx` through the iOS Edge TestFlight
+developer testing entry. This is the iOS Edge extension package, separate from the native iOS application.
 
-### iOS
+### Native iOS
 
 Install Xcode, connect the iPhone, and wait until Xcode finishes device preparation.
 
@@ -101,30 +103,8 @@ Generate an unsigned IPA for import into LiveContainer:
 npm run pack:ios
 ```
 
-The IPA is written to `.output/ios-native/onedrop-ios-livecontainer.ipa`. It is
-not signed for direct installation; LiveContainer signs imported apps with its
-own active certificate.
-
-### Release assets
-
-Publishing a GitHub Release runs `.github/workflows/release-assets.yml` and
-uploads the desktop Edge ZIP, Android Edge CRX, iOS Edge CRX, and unsigned
-LiveContainer IPA to that release. Configure these GitHub Actions secrets first:
-
-- `ONEDROP_ENTRA_CLIENT_ID`: Microsoft Entra application client ID embedded in
-  all release builds.
-- `ANDROID_EDGE_CRX_KEY`: base64 form of `.keys/android-dev.pem`.
-- `IOS_EDGE_CRX_KEY`: base64 form of `.keys/ios-edge-dev.pem`.
-
-On macOS, copy a key in the required base64 form with:
-
-```bash
-base64 < .keys/android-dev.pem | tr -d '\n' | pbcopy
-```
-
-Repeat with `ios-edge-dev.pem` for the iOS Edge secret. Keeping these keys
-stable preserves the installed extension IDs across releases. The workflow can
-also be run manually for an existing release tag.
+The IPA is written to `.output/ios-native/onedrop-ios-livecontainer.ipa`.
+It is the native iOS package, separate from the iOS Edge CRX, and is not signed for direct installation; LiveContainer signs imported apps with its own active certificate.
 
 ### Checks
 

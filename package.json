@@ -17,6 +17,7 @@
     "pack:ios": "npm run sync:ios && node scripts/pack-ios-ipa.mjs",
     "open:ios": "cap open ios",
     "zip": "wxt zip --browser edge",
+    "zip:store": "node scripts/pack-desktop-store.mjs",
     "compile": "wxt prepare && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

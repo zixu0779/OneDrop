@@ -53,7 +53,16 @@ html:has(body.mobile-surface:not(.ios-surface):not(.ios-edge-surface)) {
   padding-bottom: 6px;
 }
 
+.ios-edge-surface .shell.mobile-keyboard-visible {
+  padding-bottom: 6px;
+}
+
 .ios-surface .shell.mobile-keyboard-visible .composer {
+  margin-bottom: -6px;
+  padding-bottom: 8px;
+}
+
+.ios-edge-surface .shell.mobile-keyboard-visible .composer {
   margin-bottom: -6px;
   padding-bottom: 8px;
 }

@@ -40,6 +40,7 @@ export type RuntimeRequest =
   | { type: "settings/read"; platform: DevicePlatform; deviceName: string }
   | { type: "settings/save-account"; account: AccountSettings }
   | { type: "settings/save-device"; device: DeviceSettings }
+  | { type: "settings/delete-device"; deviceId: string }
   | {
       type: "settings/copy-device";
       sourceDeviceId: string;
@@ -173,6 +174,7 @@ export type RuntimeResponse =
   | { ok: true; type: "settings/snapshot"; snapshot: SettingsSnapshot }
   | { ok: true; type: "settings/account"; account: AccountSettings }
   | { ok: true; type: "settings/device"; device: DeviceSettings }
+  | { ok: true; type: "settings/device-deleted"; deviceId: string }
   | { ok: true; type: "app/project-opened" }
   | {
       ok: true;

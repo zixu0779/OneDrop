@@ -6,8 +6,8 @@ It uses the user's Microsoft account and OneDrive App Folder as the storage boun
 
 ## Architecture
 
-- Desktop and Android clients are Manifest V3 Edge extensions built with WXT.
-- iOS runs the shared React UI in Capacitor.
+- Desktop and Mobile (Android & iOS) clients are Manifest V3 Edge extensions built with WXT.
+- Native iOS runs the shared React UI in Capacitor.
 - Microsoft Graph is the only cloud API.
 - Messages are stored as monthly JSON chunks with ETag-protected writes.
 - Files are stored separately in the OneDrive App Folder.
@@ -19,6 +19,36 @@ See [docs/architecture.md](docs/architecture.md) for the storage layout and sync
 
 See [docs/installation.md](docs/installation.md) for platform-specific release and development installation instructions,
 including Desktop Edge, Android Edge Canary, iOS Edge TestFlight, and native iOS through LiveContainer.
+
+## Release packaging
+
+Create the key-free universal Edge package for Partner Center:
+
+```bash
+npm run zip:store
+```
+
+The package is written to `.output/OneDrop-<version>-edge-store.zip`.
+
+### Automated Partner Center updates
+
+Publishing a GitHub Release builds the key-free universal Edge package and,
+after package validation succeeds, submits it to Partner Center for
+certification. Add a short section like this to every GitHub Release body:
+
+```markdown
+### Partner Center Notes
+
+- Unified the desktop, Android, and iOS Edge builds into one extension package.
+- Fixed keyboard positioning and device identification on iOS Edge.
+- Added device removal in Settings.
+```
+
+The workflow appends this section under `VERSION-SPECIFIC NOTES` after the
+fixed sign-in and test-account instructions stored in GitHub Actions secrets.
+Manual workflow runs skip Partner Center by default; `validate` checks the
+package and notes without contacting Partner Center, while `publish` performs
+the real submission.
 
 ## Development
 
@@ -38,40 +68,33 @@ npm run dev
 
 If Edge does not open automatically, load `.output/edge-mv3-dev` from `edge://extensions`.
 
-Create a production desktop build:
+Create the production Edge build. The same output contains the desktop side panel and the separate Android and iOS mobile entrypoints:
 
 ```bash
 npm run build
 ```
 
-### Android Edge
+### Edge Mobile
 
-Build the Android Edge extension:
-
-```bash
-npm run build:android
-```
-
-Generate a CRX for device installation:
+Generate the shared CRX for Android and iOS device installation:
 
 ```bash
-npm run pack:android
+npm run pack:mobile-edge
 ```
 
-The CRX is written to `.output/edge-android/edge-mv3.crx`. The signing key is kept at `.keys/android-dev.pem` so reinstalling future CRX builds keeps the same extension ID.
+The CRX is written to `.output/edge-mobile/edge-mv3.crx` and uses one signing identity on both mobile platforms.
 
-Install Microsoft Edge Canary on the Android device. Open Edge Canary settings, enable Developer options, then use **Extension install by crx** to select and install the generated CRX.
+#### Android Edge
 
-### iOS Edge
+Install or update Microsoft Edge Canary on the Android device. Open **Settings → About Microsoft Edge**, tap the Edge version number several times to enable **Developer options**, then open **Settings → Developer options**. Select **Extension install by CRX**, choose `.output/edge-mobile/edge-mv3.crx`, confirm the installation, and then open OneDrop from the extensions list or toolbar.
 
-Generate the dedicated iOS Edge CRX:
+The regular stable Edge app may not expose this developer installation entry.
 
-```bash
-npm run pack:ios-edge
-```
+#### iOS Edge
 
-Upload `.output/edge-ios/edge-mv3.crx` through the iOS Edge TestFlight
-developer testing entry. This is the iOS Edge extension package, separate from the native iOS application.
+Install the Microsoft Edge TestFlight build on the iOS device. Open **Extensions → Manage extensions**, tap the settings button in the upper-right corner, and enable **Developer mode**. Select **Load .crx Package**, choose `.output/edge-mobile/edge-mv3.crx`, confirm the installation, and then open OneDrop from the extensions list.
+
+The regular App Store Edge build does not expose this developer installation entry. This CRX is the iOS Edge extension package, separate from the native iOS application.
 
 ### Native iOS
 

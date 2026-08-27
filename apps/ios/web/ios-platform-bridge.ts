@@ -42,6 +42,7 @@ import {
 import { verifyAppFolderWithAccessToken } from "@onedrop/onedrive/infrastructure/onedrive/app-folder";
 import {
   copyDevicePreferencesWithAccessToken,
+  deleteDeviceSettingsWithAccessToken,
   readSettingsWithAccessToken,
   resetDevicePreferences,
   saveAccountSettingsWithAccessToken,
@@ -233,6 +234,19 @@ async function handleRequest(
           await accessToken(),
           request.device,
         ),
+      };
+    case "settings/delete-device":
+      if (request.deviceId === deviceId()) {
+        throw new Error("The current device cannot delete itself.");
+      }
+      await deleteDeviceSettingsWithAccessToken(
+        await accessToken(),
+        request.deviceId,
+      );
+      return {
+        ok: true,
+        type: "settings/device-deleted",
+        deviceId: request.deviceId,
       };
     case "settings/copy-device": {
       const token = await accessToken();

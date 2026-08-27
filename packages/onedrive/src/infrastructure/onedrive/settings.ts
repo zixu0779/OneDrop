@@ -75,12 +75,34 @@ export async function readSettingsWithAccessToken(
   ) {
     current = { ...device, displayName: uniqueDisplayName };
   }
+  if (device && device.platform !== platform) {
+    const generatedNames = new Set([
+      "Desktop",
+      "Windows",
+      "macOS",
+      "Linux",
+      "Android",
+      "iOS",
+      "This iPhone",
+      "This Android device",
+      "This Edge device",
+    ]);
+    current = {
+      ...current,
+      platform,
+      ...(generatedNames.has(device.displayName)
+        ? { displayName: uniqueDisplayName }
+        : {}),
+    };
+  }
   const resolvedAccount = account ?? defaultAccountSettings(now);
   await Promise.all([
     account
       ? Promise.resolve()
       : saveAccountSettingsWithAccessToken(accessToken, resolvedAccount),
-    device && current.displayName === device.displayName
+    device &&
+    current.displayName === device.displayName &&
+    current.platform === device.platform
       ? Promise.resolve()
       : saveDeviceSettingsWithAccessToken(accessToken, current),
   ]);
@@ -126,6 +148,35 @@ export async function saveDeviceSettingsWithAccessToken(
     deviceSettingsSchema,
     accessToken,
   );
+}
+
+export async function deleteDeviceSettingsWithAccessToken(
+  accessToken: string,
+  deviceId: string,
+): Promise<void> {
+  const metadata = await fetch(
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/settings/devices/${encodeURIComponent(deviceId)}.json`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (metadata.status === 404) return;
+  if (!metadata.ok) {
+    throw new Error(
+      `Device settings lookup failed: ${await readGraphError(metadata)}`,
+    );
+  }
+  const item = itemSchema.parse(await metadata.json());
+  const response = await fetch(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  );
+  if (!response.ok && response.status !== 404) {
+    throw new Error(
+      `Device settings could not be deleted: ${await readGraphError(response)}`,
+    );
+  }
 }
 
 export async function copyDevicePreferencesWithAccessToken(

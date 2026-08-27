@@ -10,6 +10,7 @@ import {
 } from "@onedrop/app-runtime/features/auth/auth-service";
 import {
   copyDevicePreferencesWithAccessToken,
+  deleteDeviceSettingsWithAccessToken,
   readAccountSettingsWithAccessToken,
   readSettingsWithAccessToken,
   resetDevicePreferences,
@@ -77,32 +78,39 @@ import {
   prepareMobileNavigationDownload,
   readMobileNavigationDownloadStatus,
 } from "@onedrop/app-runtime/features/downloads/mobile-navigation-download";
+import {
+  detectEdgeRuntimePlatform,
+  type EdgeRuntimePlatform,
+} from "./edge-platform";
 
 const activeFileUploads = new Map<string, AbortController>();
 const cancelledFileUploads = new Set<string>();
 
 export default defineBackground(() => {
+  const runtimePlatform = readRuntimePlatform();
+
   if (browser.downloads?.onCreated) {
     browser.downloads.onCreated.addListener((item) => {
       void claimMobileNavigationDownload(item).catch(() => undefined);
     });
   }
-  const hasSidePanelPermission =
-    browser.runtime.getManifest().permissions?.includes("sidePanel") ?? false;
-  if (!hasSidePanelPermission) {
-    browser.action.onClicked.addListener(() => {
-      void openOrFocusMobilePage().catch(async (error: unknown) => {
+  browser.action.onClicked.addListener(() => {
+    void runtimePlatform.then(async (platform) => {
+      if (platform !== "android") return;
+      try {
+        await openOrFocusMobilePage("/android-mobile.html");
+      } catch (error: unknown) {
         console.error("OneDrop mobile page could not be opened.", error);
         await browser.action.setBadgeBackgroundColor({ color: "#d93025" });
         await browser.action.setBadgeText({ text: "!" });
-      });
+      }
     });
-  }
+  });
+
+  void configureExtensionAction(runtimePlatform);
 
   browser.runtime.onInstalled.addListener(() => {
-    if (browser.sidePanel?.setPanelBehavior) {
-      void browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-    }
+    void configureExtensionAction(runtimePlatform);
   });
 
   browser.runtime.onMessage.addListener(
@@ -160,6 +168,19 @@ export default defineBackground(() => {
                 await getCurrentAccessToken(),
                 request.device,
               ),
+            };
+          case "settings/delete-device":
+            if (request.deviceId === (await getOrCreateDeviceId())) {
+              throw new Error("The current device cannot delete itself.");
+            }
+            await deleteDeviceSettingsWithAccessToken(
+              await getCurrentAccessToken(),
+              request.deviceId,
+            );
+            return {
+              ok: true,
+              type: "settings/device-deleted",
+              deviceId: request.deviceId,
             };
           case "settings/copy-device": {
             const token = await getCurrentAccessToken();
@@ -637,10 +658,29 @@ export default defineBackground(() => {
   );
 });
 
-async function openOrFocusMobilePage() {
-  const path = "/mobile.html";
-  // The shared runtime is type-checked against the desktop entrypoint set,
-  // which intentionally does not emit mobile.html. Android does emit it.
+async function configureExtensionAction(
+  platformPromise: Promise<EdgeRuntimePlatform>,
+): Promise<void> {
+  const platform = await platformPromise;
+  await browser.action.setPopup({
+    popup: platform === "ios" ? "ios-mobile.html" : "",
+  });
+  if (platform === "desktop" && browser.sidePanel?.setPanelBehavior) {
+    await browser.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  }
+}
+
+async function readRuntimePlatform(): Promise<EdgeRuntimePlatform> {
+  let operatingSystem: string | undefined;
+  try {
+    operatingSystem = (await browser.runtime.getPlatformInfo()).os;
+  } catch {
+    // User-agent detection remains available on mobile extension runtimes.
+  }
+  return detectEdgeRuntimePlatform(navigator.userAgent, operatingSystem);
+}
+
+async function openOrFocusMobilePage(path: "/android-mobile.html") {
   const mobilePageUrl = browser.runtime.getURL(path as never);
   const matchingTabs = await browser.tabs.query({ url: `${mobilePageUrl}*` });
   const existingTab = matchingTabs.find(

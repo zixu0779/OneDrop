@@ -10,6 +10,15 @@ on:
         description: Existing GitHub release tag to receive the assets
         required: true
         type: string
+      partner_center_mode:
+        description: Partner Center action for a manual workflow run
+        required: true
+        default: skip
+        type: choice
+        options:
+          - skip
+          - validate
+          - publish
 
 permissions:
   contents: write
@@ -46,44 +55,59 @@ jobs:
       - name: Restore stable extension keys
         env:
           DESKTOP_EDGE_PUBLIC_KEY: ${{ secrets.DESKTOP_EDGE_PUBLIC_KEY }}
-          ANDROID_EDGE_CRX_KEY: ${{ secrets.ANDROID_EDGE_CRX_KEY }}
-          IOS_EDGE_CRX_KEY: ${{ secrets.IOS_EDGE_CRX_KEY }}
+          MOBILE_EDGE_CRX_KEY: ${{ secrets.MOBILE_EDGE_CRX_KEY || secrets.ANDROID_EDGE_CRX_KEY }}
         run: |
           test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
           test -n "$DESKTOP_EDGE_PUBLIC_KEY"
-          test -n "$ANDROID_EDGE_CRX_KEY"
-          test -n "$IOS_EDGE_CRX_KEY"
+          test -n "$MOBILE_EDGE_CRX_KEY"
           mkdir -p .keys
           printf '%s' "$DESKTOP_EDGE_PUBLIC_KEY" > .keys/desktop-dev-public.key
-          printf '%s' "$ANDROID_EDGE_CRX_KEY" | base64 --decode > .keys/android-dev.pem
-          printf '%s' "$IOS_EDGE_CRX_KEY" | base64 --decode > .keys/ios-edge-dev.pem
-          chmod 600 .keys/desktop-dev-public.key .keys/android-dev.pem .keys/ios-edge-dev.pem
+          printf '%s' "$MOBILE_EDGE_CRX_KEY" | base64 --decode > .keys/mobile-dev.pem
+          chmod 600 .keys/desktop-dev-public.key .keys/mobile-dev.pem
 
       - name: Build desktop Edge ZIP
         run: npm run zip
 
-      - name: Build Android Edge CRX
-        env:
-          ONEDROP_CHROMIUM_BINARY: /usr/bin/google-chrome
-        run: npm run pack:android
+      - name: Build Partner Center ZIP
+        run: npm run zip:store
 
-      - name: Build iOS Edge CRX
+      - name: Build Edge Mobile CRX
         env:
           ONEDROP_CHROMIUM_BINARY: /usr/bin/google-chrome
-        run: npm run pack:ios-edge
+        run: npm run pack:mobile-edge
 
       - name: Stage Edge release assets
         run: |
           VERSION=$(node -p "require('./package.json').version")
           mkdir -p release-assets
           cp ".output/OneDrop-${VERSION}-desktop-edge.zip" "release-assets/OneDrop-${VERSION}-desktop-edge.zip"
-          cp .output/edge-android/edge-mv3.crx "release-assets/OneDrop-${VERSION}-android-edge.crx"
-          cp .output/edge-ios/edge-mv3.crx "release-assets/OneDrop-${VERSION}-ios-edge.crx"
+          cp .output/edge-mobile/edge-mv3.crx "release-assets/OneDrop-${VERSION}-mobile-edge.crx"
 
       - name: Upload Edge packages to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+      - name: Prepare Partner Center release notes
+        if: github.event_name == 'release' || inputs.partner_center_mode != 'skip'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p .output/partner-center
+          gh release view "$RELEASE_TAG" --json body --jq .body > .output/partner-center/release-body.md
+
+      - name: Upload and submit Partner Center package
+        if: github.event_name == 'release' || inputs.partner_center_mode != 'skip'
+        env:
+          EDGE_ADDONS_PRODUCT_ID: ${{ secrets.EDGE_ADDONS_PRODUCT_ID }}
+          EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
+          EDGE_ADDONS_CLIENT_ID: ${{ secrets.EDGE_ADDONS_CLIENT_ID }}
+          EDGE_ADDONS_CERTIFICATION_NOTES: ${{ secrets.EDGE_ADDONS_CERTIFICATION_NOTES }}
+          EDGE_ADDONS_RELEASE_BODY_PATH: .output/partner-center/release-body.md
+          EDGE_ADDONS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.partner_center_mode == 'validate' && '1' || '0' }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          EDGE_ADDONS_PACKAGE_PATH=".output/OneDrop-${VERSION}-edge-store.zip" npm run publish:edge-store
 
   ios:
     name: Native iOS LiveContainer package
@@ -115,7 +139,7 @@ jobs:
         run: |
           VERSION=$(node -p "require('./package.json').version")
           mkdir -p release-assets
-          cp .output/ios-native/onedrop-ios-livecontainer.ipa "release-assets/OneDrop-${VERSION}-ios-livecontainer.ipa"
+          cp .output/ios-native/onedrop-ios-livecontainer.ipa "release-assets/OneDrop-${VERSION}.ipa"
 
       - name: Upload iOS package to release
         env:

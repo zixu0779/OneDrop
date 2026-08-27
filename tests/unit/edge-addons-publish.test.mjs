@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeCertificationNotes,
   extractVersionNotes,
+  isExpectedHttpStatus,
 } from "../../scripts/publish-edge-addons.mjs";
 
 describe("Edge Add-ons certification notes", () => {
@@ -38,5 +39,11 @@ Unrelated release content.`;
     expect(() =>
       extractVersionNotes("### Highlights\n\n- General notes"),
     ).toThrow('must contain a "### Partner Center Notes" section');
+  });
+
+  it("accepts both completed and in-progress polling responses", () => {
+    expect(isExpectedHttpStatus(200, [200, 202])).toBe(true);
+    expect(isExpectedHttpStatus(202, [200, 202])).toBe(true);
+    expect(isExpectedHttpStatus(500, [200, 202])).toBe(false);
   });
 });

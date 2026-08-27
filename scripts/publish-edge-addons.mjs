@@ -52,8 +52,12 @@ function operationIdFrom(response) {
   return location.replace(/\/$/, "").split("/").pop();
 }
 
-async function ensureResponse(response, expectedStatus, operation) {
-  if (response.status === expectedStatus) return;
+export function isExpectedHttpStatus(status, expectedStatuses) {
+  return expectedStatuses.includes(status);
+}
+
+async function ensureResponse(response, expectedStatuses, operation) {
+  if (isExpectedHttpStatus(response.status, expectedStatuses)) return;
   const body = await response.text();
   throw new Error(
     `${operation} failed with HTTP ${response.status}: ${body || response.statusText}`,
@@ -63,7 +67,7 @@ async function ensureResponse(response, expectedStatus, operation) {
 async function pollOperation(url, headers, label) {
   for (let attempt = 1; attempt <= MAX_POLL_ATTEMPTS; attempt += 1) {
     const response = await fetch(url, { headers });
-    await ensureResponse(response, 200, `${label} status check`);
+    await ensureResponse(response, [200, 202], `${label} status check`);
     const result = await response.json();
 
     if (result.status === "Succeeded") return result;
@@ -127,7 +131,7 @@ async function main() {
       body: packageBytes,
     },
   );
-  await ensureResponse(uploadResponse, 202, "Package upload");
+  await ensureResponse(uploadResponse, [202], "Package upload");
   const uploadOperationId = operationIdFrom(uploadResponse);
   await pollOperation(
     `${productPath}/submissions/draft/package/operations/${encodeURIComponent(uploadOperationId)}`,
@@ -144,7 +148,7 @@ async function main() {
     },
     body: JSON.stringify({ notes: certificationNotes }),
   });
-  await ensureResponse(publishResponse, 202, "Certification submission");
+  await ensureResponse(publishResponse, [202], "Certification submission");
   const publishOperationId = operationIdFrom(publishResponse);
   await pollOperation(
     `${productPath}/submissions/operations/${encodeURIComponent(publishOperationId)}`,

@@ -166,7 +166,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p release-source/.output/partner-center
-          gh release view "$RELEASE_TAG" --json body --jq .body > release-source/.output/partner-center/release-body.md
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body > release-source/.output/partner-center/release-body.md
 
       - name: Upload and submit Partner Center package
         env:

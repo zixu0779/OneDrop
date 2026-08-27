@@ -9,7 +9,7 @@ const desktopSigningKey = existsSync(desktopSigningKeyPath)
   : undefined;
 const isStorePackage = process.env.ONEDROP_STORE_PACKAGE === "1";
 
-export function createDesktopManifest(
+export function createEdgeManifest(
   includeSigningKey: boolean,
   signingKey = desktopSigningKey,
 ) {
@@ -26,10 +26,13 @@ export function createDesktopManifest(
       "identity",
       "sidePanel",
       "storage",
+      "tabs",
     ],
     host_permissions: [
       "https://graph.microsoft.com/*",
       "https://login.microsoftonline.com/*",
+      "https://*.files.1drv.com/*",
+      "https://*.sharepoint.com/*",
     ],
     action: { default_title: "Open OneDrop" },
     ...(includeSigningKey && signingKey ? { key: signingKey } : {}),
@@ -37,8 +40,14 @@ export function createDesktopManifest(
 }
 
 export default defineConfig({
-  srcDir: "apps/desktop-edge",
+  srcDir: "apps/edge",
   vite: () => ({
+    build: {
+      // Edge extension pages reject Vite's preload request when the imported
+      // module is evaluated in a different extension world. Normal module
+      // imports still load the same chunks without the misleading warnings.
+      modulePreload: false,
+    },
     resolve: {
       alias: {
         "@onedrop/core": resolve("packages/core/src"),
@@ -53,10 +62,10 @@ export default defineConfig({
   }),
   modules: ["@wxt-dev/module-react"],
   dev: { server: { port: 3000, strictPort: true } },
-  manifest: () => createDesktopManifest(!isStorePackage),
+  manifest: () => createEdgeManifest(!isStorePackage),
   zip: {
     artifactTemplate: isStorePackage
-      ? "OneDrop-{{version}}-desktop-edge-store.zip"
+      ? "OneDrop-{{version}}-edge-store.zip"
       : "OneDrop-{{version}}-desktop-edge.zip",
   },
 });

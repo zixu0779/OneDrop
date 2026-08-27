@@ -214,6 +214,7 @@ const sendMessage = vi.fn(defaultSendMessage);
 describe("side panel message composer", () => {
   afterEach(() => {
     cleanup();
+    document.body.className = "";
     vi.restoreAllMocks();
   });
 
@@ -233,6 +234,21 @@ describe("side panel message composer", () => {
         },
       },
     });
+  });
+
+  it("activates the keyboard layout when the iOS Edge composer receives focus", async () => {
+    document.body.classList.add("mobile-surface", "ios-edge-surface");
+    const composer = await screenForComposer();
+
+    fireEvent.focus(composer);
+
+    expect(document.querySelector(".shell")).toHaveClass(
+      "mobile-keyboard-visible",
+    );
+    fireEvent.blur(composer);
+    expect(document.querySelector(".shell")).not.toHaveClass(
+      "mobile-keyboard-visible",
+    );
   });
 
   it("batches restored local file failures as text while keeping active transfers visible", () => {

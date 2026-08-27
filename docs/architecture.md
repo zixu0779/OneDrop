@@ -8,9 +8,22 @@ OneDrive is the cloud source of truth. Local browser storage and IndexedDB hold 
 
 ## Clients
 
-- Desktop Edge: WXT, React, TypeScript, Manifest V3.
-- Android Edge: WXT, React, TypeScript, Manifest V3, with a tab-based auth fallback.
-- iOS: the shared React UI inside Capacitor with native auth and platform adapters.
+- Edge extension: one WXT, React, TypeScript, Manifest V3 package containing
+  the desktop side panel plus separate Android tab and iOS Edge popup entrypoints.
+- Native iOS: the shared React UI inside Capacitor with native auth and platform adapters.
+
+The Edge package has one manifest and one code build across desktop, Android,
+and iOS. At runtime the service worker selects the desktop side panel, Android
+mobile tab, or iOS mobile popup. Because iOS Edge may open the statically
+declared side-panel path instead of honoring a dynamically selected popup, the
+side-panel entrypoint also detects iOS and loads the iOS mobile surface and
+platform bridge as a compatibility fallback.
+
+Android Edge Canary and the iOS Edge TestFlight build install the same CRX,
+signed with one retained mobile private key and therefore sharing one extension
+ID. The desktop downloadable ZIP embeds a separate retained desktop public key
+for a stable unpacked-extension ID. The Partner Center ZIP contains no manifest
+`key`; Microsoft assigns and preserves the store identity.
 
 The shared UI sends typed commands to the platform runtime. It does not call Microsoft Graph directly. Tokens and privileged network operations stay in the runtime layer.
 
@@ -45,6 +58,10 @@ Apps/OneDrop/
 │       └── 08/
 │           └── <message-id>/
 │               └── <original-file-name>
+├── settings/
+│   ├── account.json
+│   └── devices/
+│       └── <device-id>.json
 └── tombstones/
     └── 2026-08.json
 ```
@@ -121,6 +138,19 @@ Files up to 4 MiB use direct upload through the service worker. Larger files sta
 
 User-opened and user-saved downloads are treated as user-owned files. OneDrop stores only a registry that helps reopen known downloads later.
 
+## Device settings
+
+Each installation has an anonymous UUID and a corresponding
+`settings/devices/<device-id>.json` document containing its platform, display
+name, last-seen time, and device-local preferences. Runtime platform detection
+keeps desktop Edge, Android Edge, and iOS Edge records distinct even though they
+ship in one extension package.
+
+Removing another device from Settings deletes only that device-settings
+document. It does not delete messages, attachments, tombstones, archives, or
+any other data created by that device. The currently active device cannot
+delete its own record.
+
 ## Authentication and permissions
 
 Authentication uses Microsoft identity platform Authorization Code with PKCE. Setup details are in [authentication.md](authentication.md).
@@ -129,13 +159,15 @@ The delegated Graph permission is `Files.ReadWrite`. This is broader than the
 preview App Folder permission but avoids relying on OneDrive's broken
 `approot` recreation after the user deletes the `Apps` folder.
 
-Desktop permissions:
+The universal Edge package uses the permissions required across its desktop,
+Android, and iOS Edge entrypoints:
 
 ```text
-alarms, downloads, downloads.open, identity, sidePanel, storage
+alarms, downloads, downloads.open, identity, sidePanel, storage, tabs
 ```
 
-Android additionally uses `tabs` and host permissions for OneDrive download URLs:
+Its host permissions include Microsoft Graph, authentication, and OneDrive
+download URLs:
 
 ```text
 https://graph.microsoft.com/*
@@ -150,8 +182,7 @@ The project does not use `activeTab`, `scripting`, content scripts, or arbitrary
 
 ```text
 apps/
-  desktop-edge/       desktop WXT entrypoints and adapters
-  android-edge/       Android Edge entrypoints and adapters
+  edge/               universal WXT package with separate platform entrypoints
   ios/                Capacitor web entrypoint, Xcode project, Swift plugins
 
 packages/

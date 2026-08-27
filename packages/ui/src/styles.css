@@ -678,6 +678,55 @@ body {
   font-size: calc(10px * var(--onedrop-text-scale, 1));
   cursor: pointer;
 }
+.settings-device-swipe {
+  position: relative;
+  overflow: hidden;
+  border-bottom: 1px solid rgb(152 162 179 / 15%);
+}
+.settings-device-swipe:last-child {
+  border-bottom: 0;
+}
+.settings-device-swipe .settings-device-row {
+  position: relative;
+  z-index: 1;
+  border-bottom: 0;
+  background: #fff;
+  transition: transform 160ms ease-out;
+  touch-action: pan-y;
+}
+.settings-device-delete {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 5px !important;
+  place-items: center;
+  color: #d92d20 !important;
+  background: transparent !important;
+}
+.settings-device-delete svg,
+.settings-device-swipe-delete svg {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+}
+.settings-device-swipe-delete {
+  position: absolute;
+  z-index: 0;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  width: 58px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  color: #fff;
+  background: #d92d20;
+}
 .settings-disabled-action {
   width: 100%;
 }
@@ -763,6 +812,9 @@ html[data-theme="dark"] .settings-segments button.is-active {
   color: #8cbdff;
   background: #28313e;
 }
+html[data-theme="dark"] .settings-device-swipe .settings-device-row {
+  background: #171d26;
+}
 
 @media (prefers-color-scheme: dark) {
   html[data-theme="system"] .settings-view,
@@ -793,6 +845,9 @@ html[data-theme="dark"] .settings-segments button.is-active {
   html[data-theme="system"] .settings-segments button.is-active {
     color: #8cbdff;
     background: #28313e;
+  }
+  html[data-theme="system"] .settings-device-swipe .settings-device-row {
+    background: #171d26;
   }
 }
 

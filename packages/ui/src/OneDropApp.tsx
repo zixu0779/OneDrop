@@ -7,6 +7,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type RefObject,
   type ReactNode,
+  type TouchEvent as ReactTouchEvent,
   type WheelEvent as ReactWheelEvent,
   useEffect,
   useLayoutEffect,
@@ -386,6 +387,8 @@ export function App() {
     messageId: string;
     month: string;
   }>();
+  const [pendingDeleteDevice, setPendingDeleteDevice] =
+    useState<DeviceSettings>();
   const [activeNoticeIndex, setActiveNoticeIndex] = useState(0);
   const [noticeDragOffset, setNoticeDragOffset] = useState(0);
   const [isNoticeDragging, setIsNoticeDragging] = useState(false);
@@ -1235,7 +1238,11 @@ export function App() {
   }
 
   function platform(): DevicePlatform {
-    if (document.body.classList.contains("ios-surface")) return "ios";
+    if (
+      document.body.classList.contains("ios-surface") ||
+      document.body.classList.contains("ios-edge-surface")
+    )
+      return "ios";
     if (document.body.classList.contains("mobile-surface"))
       return "android-edge";
     return "desktop-edge";
@@ -1256,7 +1263,11 @@ export function App() {
   }
 
   function detectedDeviceName(): string {
-    if (document.body.classList.contains("ios-surface")) return "iOS";
+    if (
+      document.body.classList.contains("ios-surface") ||
+      document.body.classList.contains("ios-edge-surface")
+    )
+      return "iOS";
     const userAgent = navigator.userAgent;
     if (/Android/iu.test(userAgent)) return "Android";
     if (/Windows/iu.test(userAgent)) return "Windows";
@@ -1379,6 +1390,20 @@ export function App() {
         throw new Error("OneDrop received an unexpected settings response.");
       }
     });
+  }
+
+  async function deleteKnownDevice(deviceId: string) {
+    const response = await sendRequest({
+      type: "settings/delete-device",
+      deviceId,
+    });
+    if (!response.ok || response.type !== "settings/device-deleted") {
+      throw new Error("OneDrop received an unexpected settings response.");
+    }
+    setKnownDevices((items) =>
+      items.filter((item) => item.deviceId !== deviceId),
+    );
+    setPendingDeleteDevice(undefined);
   }
 
   async function checkArchiveTasks() {
@@ -2666,7 +2691,8 @@ export function App() {
   function handleComposerFocus() {
     if (
       document.body.classList.contains("mobile-surface") &&
-      !window.visualViewport
+      (!window.visualViewport ||
+        document.body.classList.contains("ios-edge-surface"))
     ) {
       setIsMobileKeyboardVisible(true);
     }
@@ -3082,6 +3108,7 @@ export function App() {
                     void saveDevicePreferences(preferences)
                   }
                   onCopy={(id) => void copySettingsFrom(id)}
+                  onDelete={(item) => setPendingDeleteDevice(item)}
                   onOpenProject={() =>
                     void sendRequest({ type: "app/open-project" })
                   }
@@ -3290,6 +3317,15 @@ export function App() {
           }
         />
       ) : null}
+      {pendingDeleteDevice ? (
+        <CenteredConfirmationDialog
+          confirmLabel="Delete device"
+          id="delete-device-confirmation"
+          message={`Remove “${pendingDeleteDevice.displayName}” from the device list? Its messages and files will not be deleted.`}
+          onCancel={() => setPendingDeleteDevice(undefined)}
+          onConfirm={() => void deleteKnownDevice(pendingDeleteDevice.deviceId)}
+        />
+      ) : null}
       {showDeletedDataCleanupConfirmation ? (
         <CenteredConfirmationDialog
           confirmLabel="Clean up"
@@ -3337,6 +3373,7 @@ function SettingsView({
   onBack,
   onChange,
   onCopy,
+  onDelete,
   onOpenProject,
   onRecycleChange,
   onRename,
@@ -3349,6 +3386,7 @@ function SettingsView({
   onBack: () => void;
   onChange: (preferences: DevicePreferences) => void;
   onCopy: (deviceId: string) => void;
+  onDelete: (device: DeviceSettings) => void;
   onOpenProject: () => void;
   onRecycleChange: (value: "disabled" | 3 | 7 | 10 | 30 | "forever") => void;
   onRename: (name: string) => void;
@@ -3605,17 +3643,12 @@ function SettingsView({
           {devices
             .filter((item) => item.deviceId !== device.deviceId)
             .map((item) => (
-              <div className="settings-device-row" key={item.deviceId}>
-                <span>
-                  <strong>{item.displayName}</strong>
-                  <small>
-                    {new Date(item.lastSeenAt).toLocaleDateString()}
-                  </small>
-                </span>
-                <button onClick={() => onCopy(item.deviceId)} type="button">
-                  Copy settings
-                </button>
-              </div>
+              <KnownDeviceRow
+                device={item}
+                key={item.deviceId}
+                onCopy={() => onCopy(item.deviceId)}
+                onDelete={() => onDelete(item)}
+              />
             ))}
         </SettingsSection>
         <SettingsSection title="About">
@@ -3638,6 +3671,74 @@ function SettingsView({
             <strong>{detectedPlatformLabel(device.platform)}</strong>
           </div>
         </SettingsSection>
+      </div>
+    </div>
+  );
+}
+
+function KnownDeviceRow({
+  device,
+  onCopy,
+  onDelete,
+}: {
+  device: DeviceSettings;
+  onCopy: () => void;
+  onDelete: () => void;
+}) {
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const touchStartXRef = useRef<number | undefined>(undefined);
+  const isMobile = document.body.classList.contains("mobile-surface");
+  const handleTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const start = touchStartXRef.current;
+    if (start === undefined) return;
+    const distance = event.touches[0]!.clientX - start;
+    setSwipeOffset(Math.max(-58, Math.min(0, distance)));
+  };
+  const handleTouchEnd = () => {
+    setSwipeOffset(swipeOffset < -28 ? -58 : 0);
+    touchStartXRef.current = undefined;
+  };
+  return (
+    <div className="settings-device-swipe">
+      {isMobile ? (
+        <button
+          aria-label={`Delete ${device.displayName}`}
+          className="settings-device-swipe-delete"
+          onClick={onDelete}
+          type="button"
+        >
+          <RecycleBinIcon />
+        </button>
+      ) : null}
+      <div
+        className="settings-device-row settings-known-device-row"
+        onTouchEnd={handleTouchEnd}
+        onTouchMove={handleTouchMove}
+        onTouchStart={(event) => {
+          touchStartXRef.current = event.touches[0]!.clientX;
+        }}
+        style={isMobile ? { transform: `translateX(${swipeOffset}px)` } : {}}
+      >
+        <span>
+          <strong>{device.displayName}</strong>
+          <small>{new Date(device.lastSeenAt).toLocaleDateString()}</small>
+        </span>
+        <span className="settings-device-actions">
+          <button onClick={onCopy} type="button">
+            Copy settings
+          </button>
+          {!isMobile ? (
+            <button
+              aria-label={`Delete ${device.displayName}`}
+              className="settings-device-delete"
+              onClick={onDelete}
+              title="Delete device"
+              type="button"
+            >
+              <RecycleBinIcon />
+            </button>
+          ) : null}
+        </span>
       </div>
     </div>
   );

@@ -68,9 +68,6 @@ jobs:
       - name: Build desktop Edge ZIP
         run: npm run zip
 
-      - name: Build Partner Center ZIP
-        run: npm run zip:store
-
       - name: Build Edge Mobile CRX
         env:
           ONEDROP_CHROMIUM_BINARY: /usr/bin/google-chrome
@@ -87,27 +84,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
-
-      - name: Prepare Partner Center release notes
-        if: github.event_name == 'release' || inputs.partner_center_mode != 'skip'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p .output/partner-center
-          gh release view "$RELEASE_TAG" --json body --jq .body > .output/partner-center/release-body.md
-
-      - name: Upload and submit Partner Center package
-        if: github.event_name == 'release' || inputs.partner_center_mode != 'skip'
-        env:
-          EDGE_ADDONS_PRODUCT_ID: ${{ secrets.EDGE_ADDONS_PRODUCT_ID }}
-          EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
-          EDGE_ADDONS_CLIENT_ID: ${{ secrets.EDGE_ADDONS_CLIENT_ID }}
-          EDGE_ADDONS_CERTIFICATION_NOTES: ${{ secrets.EDGE_ADDONS_CERTIFICATION_NOTES }}
-          EDGE_ADDONS_RELEASE_BODY_PATH: .output/partner-center/release-body.md
-          EDGE_ADDONS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.partner_center_mode == 'validate' && '1' || '0' }}
-        run: |
-          VERSION=$(node -p "require('./package.json').version")
-          EDGE_ADDONS_PACKAGE_PATH=".output/OneDrop-${VERSION}-edge-store.zip" npm run publish:edge-store
 
   ios:
     name: Native iOS LiveContainer package
@@ -145,3 +121,61 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+  partner-center:
+    name: Partner Center submission
+    if: github.event_name == 'release' || inputs.partner_center_mode != 'skip'
+    needs:
+      - edge
+      - ios
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout release source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          path: release-source
+
+      - name: Checkout current publishing automation
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: automation-source
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: release-source/package-lock.json
+
+      - name: Install release dependencies
+        working-directory: release-source
+        run: npm ci
+
+      - name: Build Partner Center ZIP
+        working-directory: release-source
+        run: |
+          test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
+          npm run zip:store
+
+      - name: Prepare Partner Center release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release-source/.output/partner-center
+          gh release view "$RELEASE_TAG" --json body --jq .body > release-source/.output/partner-center/release-body.md
+
+      - name: Upload and submit Partner Center package
+        env:
+          EDGE_ADDONS_PRODUCT_ID: ${{ secrets.EDGE_ADDONS_PRODUCT_ID }}
+          EDGE_ADDONS_API_KEY: ${{ secrets.EDGE_ADDONS_API_KEY }}
+          EDGE_ADDONS_CLIENT_ID: ${{ secrets.EDGE_ADDONS_CLIENT_ID }}
+          EDGE_ADDONS_CERTIFICATION_NOTES: ${{ secrets.EDGE_ADDONS_CERTIFICATION_NOTES }}
+          EDGE_ADDONS_RELEASE_BODY_PATH: release-source/.output/partner-center/release-body.md
+          EDGE_ADDONS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.partner_center_mode == 'validate' && '1' || '0' }}
+        run: |
+          VERSION=$(node -p "require('./release-source/package.json').version")
+          EDGE_ADDONS_PACKAGE_PATH="release-source/.output/OneDrop-${VERSION}-edge-store.zip" node automation-source/scripts/publish-edge-addons.mjs

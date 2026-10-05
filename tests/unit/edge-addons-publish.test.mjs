@@ -4,6 +4,7 @@ import {
   composeCertificationNotes,
   extractVersionNotes,
   isExpectedHttpStatus,
+  redactCertificationNotes,
 } from "../../scripts/publish-edge-addons.mjs";
 
 describe("Edge Add-ons certification notes", () => {
@@ -45,5 +46,15 @@ Unrelated release content.`;
     expect(isExpectedHttpStatus(200, [200, 202])).toBe(true);
     expect(isExpectedHttpStatus(202, [200, 202])).toBe(true);
     expect(isExpectedHttpStatus(500, [200, 202])).toBe(false);
+  });
+
+  it("redacts the test-account password from the visible preview", () => {
+    const notes =
+      "Test account:\nUsername: reviewer@example.com\nPassword: secret-value\n\nVERSION-SPECIFIC NOTES\n\n- Fixed publishing.";
+
+    expect(redactCertificationNotes(notes)).toBe(
+      "Test account:\nUsername: reviewer@example.com\nPassword: [REDACTED]\n\nVERSION-SPECIFIC NOTES\n\n- Fixed publishing.",
+    );
+    expect(notes).toContain("Password: secret-value");
   });
 });

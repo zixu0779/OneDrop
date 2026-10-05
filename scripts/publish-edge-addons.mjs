@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 
 const API_ROOT = "https://api.addons.microsoftedge.microsoft.com/v1";
@@ -40,6 +40,28 @@ export function extractVersionNotes(releaseBody) {
 
 export function composeCertificationNotes(fixedNotes, releaseBody) {
   return `${fixedNotes.trim()}\n\nVERSION-SPECIFIC NOTES\n\n${extractVersionNotes(releaseBody)}`;
+}
+
+export function redactCertificationNotes(certificationNotes) {
+  return certificationNotes.replace(
+    /^Password:\s*.*$/gim,
+    "Password: [REDACTED]",
+  );
+}
+
+async function writeCertificationNotesSummary(certificationNotes) {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  if (!summaryPath) return;
+
+  const preview = redactCertificationNotes(certificationNotes)
+    .split("\n")
+    .map((line) => `    ${line}`)
+    .join("\n");
+  await appendFile(
+    summaryPath,
+    `## Certification notes preview\n\nThe following matches the submitted certification notes, except that the test-account password is redacted.\n\n${preview}\n`,
+    "utf8",
+  );
 }
 
 function operationIdFrom(response) {
@@ -105,6 +127,7 @@ async function main() {
     readFile(releaseBodyPath, "utf8"),
   ]);
   const certificationNotes = composeCertificationNotes(fixedNotes, releaseBody);
+  await writeCertificationNotesSummary(certificationNotes);
 
   if (process.env.EDGE_ADDONS_DRY_RUN === "1") {
     console.log(

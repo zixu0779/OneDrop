@@ -30,6 +30,9 @@ vi.mock(
   "@onedrop/web-storage/infrastructure/indexed-db/pending-transfers",
   () => pendingTransferStore,
 );
+vi.mock("@onedrop/core/features/messages/month", () => ({
+  getUtcMonth: () => "2026-08",
+}));
 
 import {
   App,

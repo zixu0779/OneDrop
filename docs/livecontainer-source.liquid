@@ -3,12 +3,25 @@ permalink: /apps.json
 layout: null
 ---
 {%- assign source = site.data.apps -%}
-{%- assign app = source.apps.first -%}
+{
+  "name": {{ source.name | jsonify }},
+  "identifier": {{ source.identifier | jsonify }},
+  "apps": [
+{%- for app in source.apps -%}
+{%- assign is_beta = app.beta -%}
 {%- assign rows = "" | split: "," -%}
 {%- for release in site.github.releases -%}
-  {%- if release.draft or release.prerelease -%}{%- continue -%}{%- endif -%}
-  {%- assign version = release.tag_name | remove_first: "v" -%}
-  {%- assign ipa_name = "OneDrop-" | append: version | append: ".ipa" -%}
+  {%- if release.draft -%}{%- continue -%}{%- endif -%}
+  {%- assign prefix = release.tag_name | slice: 0, 10 -%}
+  {%- if is_beta -%}
+    {%- unless release.prerelease and prefix == "ios-beta-v" -%}{%- continue -%}{%- endunless -%}
+    {%- assign version = release.tag_name | remove_first: "ios-beta-v" -%}
+    {%- assign ipa_name = "OneDrop-Beta-" | append: version | append: ".ipa" -%}
+  {%- else -%}
+    {%- if release.prerelease or prefix == "ios-beta-v" -%}{%- continue -%}{%- endif -%}
+    {%- assign version = release.tag_name | remove_first: "v" -%}
+    {%- assign ipa_name = "OneDrop-" | append: version | append: ".ipa" -%}
+  {%- endif -%}
   {%- assign ipa = release.assets | where: "name", ipa_name | first -%}
   {%- unless ipa.state == "uploaded" and ipa.size > 0 -%}{%- continue -%}{%- endunless -%}
 
@@ -18,14 +31,13 @@ layout: null
     {%- for part in parts -%}{{ part | prepend: "0000000000" | slice: -10, 10 }}.{%- endfor -%}
   {%- endcapture -%}
   {%- capture row -%}
-    {{ order }}|{"version":{{ version | jsonify }},"date":{{ release.published_at | date_to_xmlschema | jsonify }},"size":{{ ipa.size | jsonify }},"downloadURL":{{ ipa.browser_download_url | jsonify }}}
+    {{ order }}|{"version":{{ version | jsonify }},{% if is_beta %}"buildNumber":{{ version | jsonify }},{% endif %}"date":{{ release.published_at | date_to_xmlschema | jsonify }},"size":{{ ipa.size | jsonify }},"downloadURL":{{ ipa.browser_download_url | jsonify }}}
   {%- endcapture -%}
   {%- assign rows = rows | push: row -%}
 {%- endfor -%}
-{
-  "name": {{ source.name | jsonify }},
-  "identifier": {{ source.identifier | jsonify }},
-  "apps": [{
+{%- if is_beta and rows.size == 0 -%}{%- continue -%}{%- endif -%}
+{%- unless forloop.first -%},{%- endunless -%}
+  {
     {% for field in app -%}
       {%- unless field[0] == "versions" -%}
         {{ field[0] | jsonify }}: {{ field[1] | jsonify }},
@@ -39,5 +51,7 @@ layout: null
         {% unless site.github.releases %}{{ app.versions.first | jsonify }}{% endunless %}
       {%- endfor -%}
     ]
-  }]
+  }
+{%- endfor -%}
+  ]
 }

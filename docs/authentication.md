@@ -21,7 +21,7 @@ The app registration must allow personal Microsoft accounts and must include the
 
 - Desktop and Android Edge builds use the exact `https://<extension-id>.chromiumapp.org/auth` URI shown by the build.
 - iOS Edge currently lacks the Identity API and uses the reachable SPA redirect `https://onedrop.sycamore.top/auth.html` with a temporary Edge tab.
-- iOS uses bundle ID `com.sycamore.onedrop` and redirect URI `msauth.com.sycamore.onedrop://auth`.
+- Stable iOS uses bundle ID `com.sycamore.onedrop`, and OneDrop Beta uses `com.sycamore.onedrop.beta`. Both use the registered redirect URI `msauth.com.sycamore.onedrop://auth` with separate Keychain services. Apple routes the callback to the app that started the authentication session. [ASWebAuthenticationSession](https://developer.apple.com/documentation/authenticationservices/aswebauthenticationsession)
 - Microsoft Graph delegated permission must include `Files.ReadWrite`.
 - Do not create or ship a client secret.
 

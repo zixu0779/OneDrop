@@ -129,6 +129,14 @@ npm run pack:ios
 The IPA is written to `.output/ios-native/onedrop-ios-livecontainer.ipa`.
 It is the native iOS package, separate from the iOS Edge CRX, and is not signed for direct installation; LiveContainer signs imported apps with its own active certificate.
 
+To build a side-by-side LiveContainer beta, use its independent three-part version:
+
+```bash
+npm run pack:ios -- --beta 1.0.0
+```
+
+The output is `.output/ios-beta/OneDrop-Beta-1.0.0.ipa`. To distribute a new beta, publish a GitHub **pre-release** tagged `ios-beta-v<version>` with an increasing numeric version, for example `ios-beta-v1.0.1`. The release workflow builds the IPA from the tagged source and adds it to the **OneDrop Beta** entry in the existing subscription.
+
 ### Checks
 
 Before submitting changes, run the checks that match the area you touched:

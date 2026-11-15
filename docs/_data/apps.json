@@ -16,6 +16,15 @@
           "downloadURL": "https://github.com/zixu0779/OneDrop/releases/download/v1.0.3/OneDrop-1.0.3.ipa"
         }
       ]
+    },
+    {
+      "name": "OneDrop Beta",
+      "beta": true,
+      "bundleIdentifier": "com.sycamore.onedrop.beta",
+      "developerName": "Sycamore",
+      "localizedDescription": "Test upcoming OneDrop changes alongside the stable app using your own OneDrive.",
+      "iconURL": "https://onedrop.sycamore.top/assets/onedrop-icon.png",
+      "versions": []
     }
   ]
 }

@@ -71,6 +71,8 @@ The guide covers the required iOS version, AltStore/SideStore prerequisites, and
 2. Confirm the source, expand **OneDrop**, and tap **Install**.
 3. Open **Apps** and launch OneDrop. For later releases, refresh the OneDrop source and select the new version.
 
+When a beta is available, the same source also lists **OneDrop Beta**. Install it alongside OneDrop to test upcoming changes. Each app updates from its own version history. Both apps access the OneDrive data of the account you sign into.
+
 You can also import the IPA manually:
 
 1. Download the `OneDrop-<version>.ipa` attachment from the GitHub Release.

@@ -117,7 +117,8 @@ export const iosPlatformBridge: PlatformBridge = {
   },
 
   appVersion() {
-    return appMetadata.version;
+    const betaVersion = import.meta.env.VITE_ONEDROP_IOS_BETA_VERSION;
+    return betaVersion ? `${betaVersion} Beta` : appMetadata.version;
   },
 
   async request(request) {

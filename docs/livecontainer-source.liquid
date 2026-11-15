@@ -1,0 +1,43 @@
+---
+permalink: /apps.json
+layout: null
+---
+{%- assign source = site.data.apps -%}
+{%- assign app = source.apps.first -%}
+{%- assign rows = "" | split: "," -%}
+{%- for release in site.github.releases -%}
+  {%- if release.draft or release.prerelease -%}{%- continue -%}{%- endif -%}
+  {%- assign version = release.tag_name | remove_first: "v" -%}
+  {%- assign ipa_name = "OneDrop-" | append: version | append: ".ipa" -%}
+  {%- assign ipa = release.assets | where: "name", ipa_name | first -%}
+  {%- unless ipa.state == "uploaded" and ipa.size > 0 -%}{%- continue -%}{%- endunless -%}
+
+  {%- comment -%}Sort numeric iOS version components so 1.10 precedes 1.9, including backfilled releases.{%- endcomment -%}
+  {%- assign parts = version | split: "." -%}
+  {%- capture order -%}
+    {%- for part in parts -%}{{ part | prepend: "0000000000" | slice: -10, 10 }}.{%- endfor -%}
+  {%- endcapture -%}
+  {%- capture row -%}
+    {{ order }}|{"version":{{ version | jsonify }},"date":{{ release.published_at | date_to_xmlschema | jsonify }},"size":{{ ipa.size | jsonify }},"downloadURL":{{ ipa.browser_download_url | jsonify }}}
+  {%- endcapture -%}
+  {%- assign rows = rows | push: row -%}
+{%- endfor -%}
+{
+  "name": {{ source.name | jsonify }},
+  "identifier": {{ source.identifier | jsonify }},
+  "apps": [{
+    {% for field in app -%}
+      {%- unless field[0] == "versions" -%}
+        {{ field[0] | jsonify }}: {{ field[1] | jsonify }},
+      {% endunless -%}
+    {%- endfor -%}
+    "versions": [
+      {%- assign rows = rows | sort | reverse -%}
+      {%- for row in rows -%}
+        {{ row | split: "|" | last }}{% unless forloop.last %},{% endunless %}
+      {%- else -%}
+        {% unless site.github.releases %}{{ app.versions.first | jsonify }}{% endunless %}
+      {%- endfor -%}
+    ]
+  }]
+}

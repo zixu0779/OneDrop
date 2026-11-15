@@ -112,15 +112,55 @@ jobs:
           npm run pack:ios
 
       - name: Stage iOS release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          IPA=.output/ios-native/onedrop-ios-livecontainer.ipa
+          stable=$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '(.isDraft or .isPrerelease) | not')
+          if [[ "$stable" == true ]]; then
+            unzip -p "$IPA" Payload/OneDrop.app/Info.plist > "$RUNNER_TEMP/OneDrop.plist"
+            test "$(plutil -extract CFBundleIdentifier raw "$RUNNER_TEMP/OneDrop.plist")" = com.sycamore.onedrop
+            test "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/OneDrop.plist")" = "$VERSION"
+            test "${RELEASE_TAG#v}" = "$VERSION"
+          fi
           mkdir -p release-assets
-          cp .output/ios-native/onedrop-ios-livecontainer.ipa "release-assets/OneDrop-${VERSION}.ipa"
+          cp "$IPA" "release-assets/OneDrop-${VERSION}.ipa"
 
       - name: Upload iOS package to release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
+
+  livecontainer-source:
+    name: Refresh LiveContainer subscription
+    needs: ios
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+      pages: write
+    steps:
+      - name: Rebuild the Pages source and verify the published IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)
+          if jq -e '.isDraft or .isPrerelease' <<< "$release" > /dev/null; then
+            exit 0
+          fi
+          version=${RELEASE_TAG#v}
+          asset=$(jq -ce --arg name "OneDrop-$version.ipa" '.assets[] | select(.name == $name and .state == "uploaded" and .size > 0)' <<< "$release")
+          gh api --method POST "repos/$GITHUB_REPOSITORY/pages/builds"
+          for attempt in {1..36}; do
+            if curl --fail --silent --show-error --max-time 10 "https://onedrop.sycamore.top/apps.json?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$attempt" |
+              jq -e --arg v "$version" --argjson ipa "$asset" 'any(.apps[].versions[]; .version == $v and .size == $ipa.size and .downloadURL == $ipa.url)' > /dev/null; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "The published subscription does not list the uploaded IPA." >&2
+          exit 1
 
   partner-center:
     name: Partner Center submission

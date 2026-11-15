@@ -65,7 +65,13 @@ The native iOS package in the Release is an unsigned IPA intended for import int
 There is currently no plan to publish the native iOS application on the App Store.
 
 Use the official [LiveContainer installation guide](https://livecontainer.github.io/docs/installation) to install LiveContainer and its supported sideloading setup first.
-The guide covers the required iOS version, AltStore/SideStore prerequisites, and the certificate/JIT-less setup. After LiveContainer is working:
+The guide covers the required iOS version, AltStore/SideStore prerequisites, and the certificate/JIT-less setup. After LiveContainer is working, subscribe to the OneDrop source:
+
+1. In LiveContainer, open **Sources**, tap **+**, and enter `https://onedrop.sycamore.top/apps.json`.
+2. Confirm the source, expand **OneDrop**, and tap **Install**.
+3. Open **Apps** and launch OneDrop. For later releases, refresh the OneDrop source and select the new version.
+
+You can also import the IPA manually:
 
 1. Download the `OneDrop-<version>.ipa` attachment from the GitHub Release.
 2. Open LiveContainer and use its **Add/Import IPA** action.

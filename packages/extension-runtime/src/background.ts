@@ -19,6 +19,7 @@ import {
 } from "@onedrop/onedrive/infrastructure/onedrive/settings";
 import { verifyAppFolder } from "@onedrop/onedrive/infrastructure/onedrive/app-folder";
 import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
+import { listHistoryMonths } from "@onedrop/onedrive/infrastructure/onedrive/month-list";
 import { getUtcMonth } from "@onedrop/core/features/messages/month";
 import {
   readHistoricalMonthDocument,
@@ -239,6 +240,12 @@ export default defineBackground(() => {
               ok: true,
               type: "messages/month",
               result: await readMonthDocument(getUtcMonth()),
+            };
+          case "messages/list-months":
+            return {
+              ok: true,
+              type: "messages/months",
+              months: await listHistoryMonths(await getCurrentAccessToken()),
             };
           case "messages/read-month":
             return {

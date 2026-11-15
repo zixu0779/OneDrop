@@ -12,6 +12,7 @@ import {
   readRawMonthArchive,
 } from "./month-archive";
 import { serializeMonthDocument } from "./month-serialization";
+import { listMonthEntries } from "./month-list";
 import { readMonthSnapshot } from "./month-reader";
 
 const STORAGE_KEY = "onedrop.archive.tasks.v1";
@@ -39,15 +40,10 @@ const childSchema = z.object({
   name: z.string().min(1),
   folder: z.object({}).passthrough().optional(),
 });
-const childrenPageSchema = z.object({
-  value: z.array(childSchema),
-  "@odata.nextLink": z.string().url().optional(),
-});
-
 export async function checkArchiveTasks(): Promise<ArchiveNotice[]> {
   const accessToken = await getOneDriveRuntime().getAccessToken();
   const store = await readStore();
-  const months = await listSourceMonths(accessToken);
+  const months = await listMonthEntries("messages", accessToken);
 
   for (const month of months) {
     const task = store[month];
@@ -307,27 +303,6 @@ async function cleanupSourceMonth(
   }
   if (generation !== schedulerGeneration) return;
   await writeTask({ ...task, cleanupPending: false });
-}
-
-async function listSourceMonths(accessToken: string): Promise<string[]> {
-  let url: string | undefined =
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/messages:/children?$select=id,name,folder&$top=200`;
-  const months: string[] = [];
-  while (url) {
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (response.status === 404) return [];
-    if (!response.ok) throw new Error(await readGraphError(response));
-    const page = childrenPageSchema.parse(await response.json());
-    months.push(
-      ...page.value
-        .filter((item) => item.folder && /^\d{4}-\d{2}$/u.test(item.name))
-        .map((item) => item.name),
-    );
-    url = page["@odata.nextLink"];
-  }
-  return months.sort().reverse();
 }
 
 async function readStore(): Promise<Record<string, ArchiveTask>> {

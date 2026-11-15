@@ -115,6 +115,8 @@ const defaultSendMessage = async (
           ],
         },
       };
+    case "messages/list-months":
+      return { ok: true, type: "messages/months", months: ["2026-07"] };
     case "messages/read-month":
       return {
         ok: true,
@@ -1008,6 +1010,120 @@ describe("side panel message composer", () => {
       month: "2026-07",
     });
     expect(timeline!.scrollTop).toBe(0);
+  });
+
+  it.each(["", "ios-edge-surface", "ios-surface"])(
+    "loads visible history across empty months on one mobile pull (%s)",
+    async (surface) => {
+      document.body.classList.add("mobile-surface");
+      if (surface) document.body.classList.add(surface);
+      const original = sendMessage.getMockImplementation()!;
+      sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+        if (request.type === "messages/read-current-month") {
+          return {
+            ok: true,
+            type: "messages/month",
+            result: { state: "missing", month: "2026-08" },
+          };
+        }
+        if (request.type === "messages/list-months") {
+          return {
+            ok: true,
+            type: "messages/months",
+            months: ["2026-08", "2026-07", "2024-08"],
+          };
+        }
+        if (request.type === "messages/read-month") {
+          return {
+            ok: true,
+            type: "messages/month",
+            result: {
+              state: "loaded",
+              month: request.month,
+              eTag: "old",
+              messages:
+                request.month === "2024-08"
+                  ? [
+                      createTextMessage(
+                        "older history",
+                        new Date("2024-08-10T00:00:00Z"),
+                      ),
+                    ]
+                  : [],
+            },
+          };
+        }
+        return original(request);
+      });
+      await screenForComposer();
+      expect(await screen.findByText("No messages yet")).toBeInTheDocument();
+      const timeline = document.querySelector<HTMLElement>(".message-scroll")!;
+      fireEvent.touchStart(timeline, { touches: [{ clientY: 20 }] });
+      fireEvent.touchMove(timeline, { touches: [{ clientY: 60 }] });
+      expect(await screen.findByText("older history")).toBeInTheDocument();
+      expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
+      expect(
+        sendMessage.mock.calls.filter(
+          ([r]) => r.type === "messages/read-month",
+        ),
+      ).toHaveLength(2);
+    },
+  );
+
+  it("retries history discovery on explicit mobile refresh while the timeline is empty", async () => {
+    document.body.classList.add("mobile-surface");
+    let listings = 0;
+    sendMessage.mockImplementation(async (request) => {
+      if (request.type === "messages/read-current-month") {
+        return {
+          ok: true,
+          type: "messages/month",
+          result: { state: "missing", month: "2026-08" },
+        };
+      }
+      if (request.type === "messages/list-months" && ++listings === 1) {
+        return { ok: false, error: "History request timed out" };
+      }
+      return defaultSendMessage(request);
+    });
+    await screenForComposer();
+    expect(await screen.findByText("No messages yet")).toBeInTheDocument();
+    expect(listings).toBe(0);
+    const refresh = screen.getByRole("button", {
+      name: "Refresh messages and files",
+    });
+    fireEvent.click(refresh);
+    expect(
+      await screen.findByText("History request timed out"),
+    ).toBeInTheDocument();
+    fireEvent.click(refresh);
+    expect(await screen.findByText("from July")).toBeInTheDocument();
+    expect(screen.queryByText("No messages yet")).not.toBeInTheDocument();
+  });
+
+  it("skips history discovery if mobile refresh finds current messages", async () => {
+    document.body.classList.add("mobile-surface");
+    let initial = true;
+    sendMessage.mockImplementation(async (request) => {
+      if (initial && request.type === "messages/read-current-month") {
+        initial = false;
+        return {
+          ok: true,
+          type: "messages/month",
+          result: { state: "missing", month: "2026-08" },
+        };
+      }
+      return defaultSendMessage(request);
+    });
+    await screenForComposer();
+    expect(await screen.findByText("No messages yet")).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Refresh messages and files" }),
+    );
+    expect(await screen.findByText("from this Edge")).toBeInTheDocument();
+    expect(sendMessage).not.toHaveBeenCalledWith({
+      type: "messages/list-months",
+    });
   });
 
   it("shows loading feedback before revealing the next local message batch", async () => {

@@ -4,6 +4,7 @@ import type {
   RuntimeRequest,
   RuntimeResponse,
 } from "@onedrop/core/contracts/runtime-messages";
+import { listHistoryMonths } from "@onedrop/onedrive/infrastructure/onedrive/month-list";
 import { getUtcMonth } from "@onedrop/core/features/messages/month";
 import { getPendingTransfer } from "@onedrop/web-storage/infrastructure/indexed-db/pending-transfers";
 import { deleteMonthCache } from "@onedrop/web-storage/infrastructure/indexed-db/sync-cache";
@@ -304,6 +305,12 @@ async function handleRequest(
           await accessToken(),
         ),
       );
+    case "messages/list-months":
+      return {
+        ok: true,
+        type: "messages/months",
+        months: await listHistoryMonths(await accessToken()),
+      };
     case "messages/read-month":
       return monthResponse(
         await readHistoricalMonthDocumentWithAccessToken(

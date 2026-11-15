@@ -51,6 +51,7 @@ export type RuntimeRequest =
   | { type: "onedrive/verify-app-folder" }
   | { type: "onedrive/open-app-folder" }
   | { type: "messages/read-current-month" }
+  | { type: "messages/list-months" }
   | { type: "messages/read-month"; month: string }
   | { type: "archives/check" }
   | { type: "archives/retry"; month: string }
@@ -190,6 +191,7 @@ export type RuntimeResponse =
       type: "messages/month";
       result: MonthReadResult;
     }
+  | { ok: true; type: "messages/months"; months: string[] }
   | { ok: true; type: "messages/deleted"; result: MonthReadResult }
   | { ok: true; type: "messages/corrupt-file-deleted" }
   | { ok: true; type: "messages/corrupt-file-location-opened" }

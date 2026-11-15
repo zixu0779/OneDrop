@@ -442,11 +442,11 @@ export function App() {
   const historyBlockedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const historyCursorRef = useRef<string | undefined>(undefined);
+  const historyGenerationRef = useRef(0);
   const reselectPendingIdRef = useRef<string | null>(null);
   const noticeDragStartYRef = useRef<number | null>(null);
   const noticeWheelLockedRef = useRef(false);
-  const androidHistoryPullStartYRef = useRef<number | null>(null);
+  const historyPullStartYRef = useRef<number | null>(null);
   const shouldStickToBottomRef = useRef(true);
   const preservedTimelineViewportRef = useRef<
     { scrollTop: number; scrollHeight: number } | undefined
@@ -482,6 +482,22 @@ export function App() {
         visibleMessageBatchCounts[monthResult.month] ?? 1,
       )
     : undefined;
+
+  const visibleHistory = historicalMonthResults.map((result) =>
+    withVisibleMessageBatches(
+      result,
+      visibleMessageBatchCounts[result.month] ?? 1,
+    ),
+  );
+
+  function hasVisibleMessages(result: MonthReadResult) {
+    return (
+      result.state === "loaded" &&
+      result.messages.some(
+        (message) => !optimisticallyDeletedMessageIds.has(message.id),
+      )
+    );
+  }
 
   function enqueueWrite<T>(operation: () => Promise<T>): Promise<T> {
     const queued = writeQueueRef.current.catch(() => undefined).then(operation);
@@ -563,6 +579,15 @@ export function App() {
     };
   }
 
+  function isMonthReadCurrent(month: string, token: MonthReadToken) {
+    return shouldApplyMonthRead(
+      token,
+      readRequestVersionsRef.current.get(month),
+      localOperationVersionsRef.current.get(month) ?? 0,
+      activeLocalWritesRef.current.get(month) ?? 0,
+    );
+  }
+
   function applySynchronizedSnapshot(
     result: MonthReadResult,
     token: MonthReadToken,
@@ -585,12 +610,7 @@ export function App() {
         forceScrollToBottomRef.current = true;
       }
     }
-    const canApplyDirectly = shouldApplyMonthRead(
-      token,
-      readRequestVersionsRef.current.get(result.month),
-      localOperationVersionsRef.current.get(result.month) ?? 0,
-      activeLocalWritesRef.current.get(result.month) ?? 0,
-    );
+    const canApplyDirectly = isMonthReadCurrent(result.month, token);
 
     if (result.month === getUtcMonth()) {
       if (canApplyDirectly) {
@@ -1160,7 +1180,7 @@ export function App() {
       : [];
     if (!preserveLoadedHistory) {
       setHistoricalMonthResults([]);
-      historyCursorRef.current = undefined;
+      historyGenerationRef.current++;
     }
     const devicePromise = sendRequest({ type: "device/id" });
     const folderPromise = sendRequest({ type: "onedrive/verify-app-folder" });
@@ -1204,25 +1224,23 @@ export function App() {
 
     lastSuccessfulSyncAtRef.current = Date.now();
     applySynchronizedSnapshot(monthResponse.result, currentMonthReadToken);
-    if (loadedHistoricalMonths.length > 0) {
-      const refreshedHistory = await Promise.all(
-        loadedHistoricalMonths.map(async (month) => {
-          const readToken = beginMonthRead(month);
-          const response = await sendRequest({
-            type: "messages/read-month",
-            month,
-          });
-          if (!response.ok || response.type !== "messages/month") {
-            throw new Error(
-              "OneDrop received an unexpected history synchronization response.",
-            );
-          }
-          return { result: response.result, readToken };
-        }),
-      );
-      for (const { result, readToken } of refreshedHistory) {
-        applySynchronizedSnapshot(result, readToken);
-      }
+    const refreshedHistory = await Promise.all(
+      loadedHistoricalMonths.map(async (month) => {
+        const readToken = beginMonthRead(month);
+        const response = await sendRequest({
+          type: "messages/read-month",
+          month,
+        });
+        if (!response.ok || response.type !== "messages/month") {
+          throw new Error(
+            "OneDrop received an unexpected history synchronization response.",
+          );
+        }
+        return { result: response.result, readToken };
+      }),
+    );
+    for (const { result, readToken } of refreshedHistory) {
+      applySynchronizedSnapshot(result, readToken);
     }
     if (runArchiveMaintenance) {
       void checkArchiveTasks();
@@ -1235,6 +1253,10 @@ export function App() {
       ]).catch(() => undefined);
     }
     lastSuccessfulSyncAtRef.current = Date.now();
+    return [
+      ...refreshedHistory.map(({ result }) => result),
+      monthResponse.result,
+    ];
   }
 
   function platform(): DevicePlatform {
@@ -1475,7 +1497,7 @@ export function App() {
       }
       setMonthResult(undefined);
       setHistoricalMonthResults([]);
-      historyCursorRef.current = undefined;
+      historyGenerationRef.current++;
 
       if (request.type === "auth/sign-in" && nextStatus.state === "signed-in") {
         await loadOneDriveState();
@@ -1513,8 +1535,19 @@ export function App() {
     setError(undefined);
     setDismissedNoticeKeys(new Set());
     try {
-      await loadOneDriveState(false);
+      const generation = historyGenerationRef.current;
+      const results = await loadOneDriveState(false);
       if (isRecycleBinOpen) await loadRecycleBin(true);
+      else if (
+        !isSettingsOpen &&
+        document.body.classList.contains("mobile-surface") &&
+        generation === historyGenerationRef.current &&
+        !pendingFiles.length &&
+        !pendingTexts.length &&
+        !results.some(hasVisibleMessages)
+      ) {
+        await loadPreviousMonth(results[0]);
+      }
       setAttachmentCheckVersion((version) => version + 1);
     } catch (cause) {
       setError(
@@ -1578,16 +1611,7 @@ export function App() {
         type: "messages/read-current-month",
       });
       if (!response.ok || response.type !== "messages/month") return;
-      if (
-        !shouldApplyMonthRead(
-          readToken,
-          readRequestVersionsRef.current.get(response.result.month),
-          localOperationVersionsRef.current.get(response.result.month) ?? 0,
-          activeLocalWritesRef.current.get(response.result.month) ?? 0,
-        )
-      ) {
-        return;
-      }
+      if (!isMonthReadCurrent(response.result.month, readToken)) return;
       const refreshedResult = response.result;
       if (refreshedResult.state !== "loaded") return;
       const refreshedMessage = refreshedResult.messages.find(
@@ -2146,23 +2170,22 @@ export function App() {
   function handleTimelineTouchStart(event: React.TouchEvent<HTMLDivElement>) {
     if (
       !document.body.classList.contains("mobile-surface") ||
-      (document.body.classList.contains("ios-surface") && !isSyncing) ||
       (timelineScrollRef.current?.scrollTop ?? 25) > 24
     ) {
-      androidHistoryPullStartYRef.current = null;
+      historyPullStartYRef.current = null;
       return;
     }
-    androidHistoryPullStartYRef.current = event.touches[0]?.clientY ?? null;
+    historyPullStartYRef.current = event.touches[0]?.clientY ?? null;
   }
 
   function handleTimelineTouchMove(event: React.TouchEvent<HTMLDivElement>) {
-    const startY = androidHistoryPullStartYRef.current;
+    const startY = historyPullStartYRef.current;
     if (startY === null || (timelineScrollRef.current?.scrollTop ?? 25) > 24) {
       return;
     }
     const currentY = event.touches[0]?.clientY;
     if (currentY === undefined || currentY - startY < 8) return;
-    androidHistoryPullStartYRef.current = null;
+    historyPullStartYRef.current = null;
     if (isSyncing) showHistoryLoadBlockedNotice();
     else void loadPreviousMonth();
   }
@@ -2185,8 +2208,10 @@ export function App() {
       : undefined;
   }
 
-  async function loadPreviousMonth() {
-    if (historyLoadingRef.current || !monthResult) return;
+  async function loadPreviousMonth(
+    oldestLoadedResult = historicalMonthResults[0] ?? monthResult,
+  ) {
+    if (historyLoadingRef.current || !oldestLoadedResult) return;
     if (historyBlockedTimerRef.current) {
       clearTimeout(historyBlockedTimerRef.current);
       historyBlockedTimerRef.current = null;
@@ -2194,6 +2219,7 @@ export function App() {
     setIsHistoryLoadBlocked(false);
     historyLoadingRef.current = true;
     shouldStickToBottomRef.current = false;
+    const generation = historyGenerationRef.current;
     const loadingStartedAt = Date.now();
     const timeline = timelineScrollRef.current;
     if (historyAnchorReleaseFrameRef.current !== undefined) {
@@ -2203,7 +2229,6 @@ export function App() {
     timeline?.style.setProperty("overflow-anchor", "none");
     setIsLoadingHistory(true);
     setError(undefined);
-    const oldestLoadedResult = historicalMonthResults[0] ?? monthResult;
     try {
       const visibleBatchCount =
         visibleMessageBatchCounts[oldestLoadedResult.month] ?? 1;
@@ -2230,18 +2255,28 @@ export function App() {
         }));
         return;
       }
-      const oldestMonth =
-        historyCursorRef.current ??
-        historicalMonthResults[0]?.month ??
-        monthResult.month;
-      const month = getPreviousMonth(oldestMonth);
-      const readToken = beginMonthRead(month);
-      const response = await sendRequest({
-        type: "messages/read-month",
-        month,
-      });
-      if (!response.ok || response.type !== "messages/month") {
-        throw new Error("OneDrop received an unexpected history response.");
+      const listing = await sendRequest({ type: "messages/list-months" });
+      if (!listing.ok || listing.type !== "messages/months") {
+        throw new Error("OneDrop received an unexpected history listing.");
+      }
+      let historyPage:
+        { result: MonthReadResult; token: MonthReadToken } | undefined;
+      for (const month of listing.months) {
+        if (generation !== historyGenerationRef.current) return;
+        if (month >= oldestLoadedResult.month) continue;
+        const token = beginMonthRead(month);
+        const response = await sendRequest({
+          type: "messages/read-month",
+          month,
+        });
+        if (!response.ok || response.type !== "messages/month") {
+          throw new Error("OneDrop received an unexpected history response.");
+        }
+        if (!isMonthReadCurrent(month, token)) return;
+        if (hasVisibleMessages(response.result)) {
+          historyPage = { result: response.result, token };
+          break;
+        }
       }
       const remainingLoadingTime =
         HISTORY_LOADING_MIN_MS - (Date.now() - loadingStartedAt);
@@ -2250,23 +2285,11 @@ export function App() {
           setTimeout(resolve, remainingLoadingTime),
         );
       }
-      if (
-        !shouldApplyMonthRead(
-          readToken,
-          readRequestVersionsRef.current.get(month),
-          localOperationVersionsRef.current.get(month) ?? 0,
-          activeLocalWritesRef.current.get(month) ?? 0,
-        )
-      ) {
-        historyViewportAnchorRef.current = undefined;
-        return;
-      }
-      historyCursorRef.current = month;
-      if (response.result.state !== "missing") {
+      if (historyPage && generation === historyGenerationRef.current) {
+        const { result, token } = historyPage;
+        if (!isMonthReadCurrent(result.month, token)) return;
         captureHistoryViewportAnchor();
-        setHistoricalMonthResults((results) => [response.result, ...results]);
-      } else {
-        historyViewportAnchorRef.current = undefined;
+        setHistoricalMonthResults((results) => [result, ...results]);
       }
     } catch (cause) {
       historyViewportAnchorRef.current = undefined;
@@ -3148,7 +3171,7 @@ export function App() {
                             : "Loading..."}
                         </span>
                       ) : null}
-                      {historicalMonthResults.map((result) => (
+                      {visibleHistory.map((result) => (
                         <MonthResult
                           attachmentCheckVersion={attachmentCheckVersion}
                           deviceId={deviceId}
@@ -3156,10 +3179,7 @@ export function App() {
                           hiddenMessageIds={optimisticallyDeletedMessageIds}
                           pendingFiles={[]}
                           pendingTexts={[]}
-                          result={withVisibleMessageBatches(
-                            result,
-                            visibleMessageBatchCounts[result.month] ?? 1,
-                          )}
+                          result={result}
                           refreshingUploadIds={refreshingUploadIds}
                           sendingTextIds={sendingTextIds}
                           showEmpty={false}
@@ -3190,6 +3210,7 @@ export function App() {
                           visibleCurrentTimeline?.pendingTexts ?? pendingTexts
                         }
                         result={visibleCurrentTimeline?.result ?? monthResult}
+                        showEmpty={!visibleHistory.some(hasVisibleMessages)}
                         refreshingUploadIds={refreshingUploadIds}
                         sendingTextIds={sendingTextIds}
                         unresponsiveUploadIds={unresponsiveUploadIds}
@@ -7160,12 +7181,6 @@ async function fileToBase64(file: File): Promise<string> {
     );
   }
   return btoa(binary);
-}
-
-function getPreviousMonth(month: string): string {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const date = new Date(Date.UTC(year!, monthNumber! - 2, 1));
-  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
 function getClientError(cause: unknown): string {

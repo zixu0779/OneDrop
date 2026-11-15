@@ -33,6 +33,7 @@ env:
 
 jobs:
   edge:
+    if: "!startsWith(github.event.release.tag_name || inputs.release_tag, 'ios-beta-v')"
     name: Edge release packages
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -106,26 +107,44 @@ jobs:
         run: npm ci
 
       - name: Build unsigned LiveContainer IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
           npm exec -- wxt prepare
-          npm run pack:ios
+          if [[ "$RELEASE_TAG" == ios-beta-v* ]]; then
+            gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '.isPrerelease and (.isDraft | not)' | grep -qx true
+            npm run pack:ios -- --beta "${RELEASE_TAG#ios-beta-v}"
+          else
+            npm run pack:ios
+          fi
 
       - name: Stage iOS release asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          IPA=.output/ios-native/onedrop-ios-livecontainer.ipa
-          stable=$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '(.isDraft or .isPrerelease) | not')
-          if [[ "$stable" == true ]]; then
-            unzip -p "$IPA" Payload/OneDrop.app/Info.plist > "$RUNNER_TEMP/OneDrop.plist"
-            test "$(plutil -extract CFBundleIdentifier raw "$RUNNER_TEMP/OneDrop.plist")" = com.sycamore.onedrop
-            test "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/OneDrop.plist")" = "$VERSION"
-            test "${RELEASE_TAG#v}" = "$VERSION"
-          fi
           mkdir -p release-assets
-          cp "$IPA" "release-assets/OneDrop-${VERSION}.ipa"
+          if [[ "$RELEASE_TAG" == ios-beta-v* ]]; then
+            VERSION=${RELEASE_TAG#ios-beta-v}
+            IPA=".output/ios-beta/OneDrop-Beta-$VERSION.ipa"
+            unzip -p "$IPA" Payload/OneDrop.app/Info.plist > "$RUNNER_TEMP/OneDrop.plist"
+            test "$(plutil -extract CFBundleIdentifier raw "$RUNNER_TEMP/OneDrop.plist")" = com.sycamore.onedrop.beta
+            test "$(plutil -extract CFBundleDisplayName raw "$RUNNER_TEMP/OneDrop.plist")" = "OneDrop Beta"
+            test "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/OneDrop.plist")" = "$VERSION"
+            test "$(plutil -extract CFBundleVersion raw "$RUNNER_TEMP/OneDrop.plist")" = "$VERSION"
+            cp "$IPA" release-assets/
+          else
+            VERSION=$(node -p "require('./package.json').version")
+            IPA=.output/ios-native/onedrop-ios-livecontainer.ipa
+            stable=$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '(.isDraft or .isPrerelease) | not')
+            if [[ "$stable" == true ]]; then
+              unzip -p "$IPA" Payload/OneDrop.app/Info.plist > "$RUNNER_TEMP/OneDrop.plist"
+              test "$(plutil -extract CFBundleIdentifier raw "$RUNNER_TEMP/OneDrop.plist")" = com.sycamore.onedrop
+              test "$(plutil -extract CFBundleShortVersionString raw "$RUNNER_TEMP/OneDrop.plist")" = "$VERSION"
+              test "${RELEASE_TAG#v}" = "$VERSION"
+            fi
+            cp "$IPA" "release-assets/OneDrop-${VERSION}.ipa"
+          fi
 
       - name: Upload iOS package to release
         env:
@@ -146,15 +165,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           release=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)
-          if jq -e '.isDraft or .isPrerelease' <<< "$release" > /dev/null; then
-            exit 0
+          if jq -e '.isDraft' <<< "$release" > /dev/null; then exit 0; fi
+          if [[ "$RELEASE_TAG" == ios-beta-v* ]]; then
+            jq -e '.isPrerelease' <<< "$release" > /dev/null
+            version=${RELEASE_TAG#ios-beta-v}
+            name="OneDrop-Beta-$version.ipa"
+            bundle=com.sycamore.onedrop.beta
+          else
+            if jq -e '.isPrerelease' <<< "$release" > /dev/null; then exit 0; fi
+            version=${RELEASE_TAG#v}
+            name="OneDrop-$version.ipa"
+            bundle=com.sycamore.onedrop
           fi
-          version=${RELEASE_TAG#v}
-          asset=$(jq -ce --arg name "OneDrop-$version.ipa" '.assets[] | select(.name == $name and .state == "uploaded" and .size > 0)' <<< "$release")
+          asset=$(jq -ce --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded" and .size > 0)' <<< "$release")
           gh api --method POST "repos/$GITHUB_REPOSITORY/pages/builds"
           for attempt in {1..36}; do
             if curl --fail --silent --show-error --max-time 10 "https://onedrop.sycamore.top/apps.json?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$attempt" |
-              jq -e --arg v "$version" --argjson ipa "$asset" 'any(.apps[].versions[]; .version == $v and .size == $ipa.size and .downloadURL == $ipa.url)' > /dev/null; then
+              jq -e --arg bundle "$bundle" --arg v "$version" --argjson ipa "$asset" 'any(.apps[] | select(.bundleIdentifier == $bundle) | .versions[]; .version == $v and .size == $ipa.size and .downloadURL == $ipa.url)' > /dev/null; then
               exit 0
             fi
             sleep 15

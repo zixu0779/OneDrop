@@ -14,7 +14,7 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         CAPPluginMethod(name: "signOut", returnType: CAPPluginReturnPromise)
     ]
 
-    private let keychainService = "com.sycamore.onedrop.microsoft-auth"
+    private let keychainService = Bundle.main.object(forInfoDictionaryKey: "OneDropAuthKeychainService") as? String ?? "com.sycamore.onedrop.microsoft-auth"
     private let keychainAccount = "primary"
     private let expirySkew: TimeInterval = 60
     private var authenticationSession: ASWebAuthenticationSession?
@@ -304,9 +304,8 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         return object
     }
 
-    private var callbackScheme: String {
-        "msauth.\(Bundle.main.bundleIdentifier ?? "com.sycamore.onedrop")"
-    }
+    // Both guest apps use the redirect registered for this Entra client.
+    private let callbackScheme = "msauth.com.sycamore.onedrop"
 
     private var redirectUri: String { "\(callbackScheme)://auth" }
     private var scopes: String {

@@ -1,0 +1,21 @@
+{
+  "name": "OneDrop",
+  "identifier": "com.sycamore.onedrop.source",
+  "apps": [
+    {
+      "name": "OneDrop",
+      "bundleIdentifier": "com.sycamore.onedrop",
+      "developerName": "Sycamore",
+      "localizedDescription": "Share text and files across your devices through your own OneDrive.",
+      "iconURL": "https://onedrop.sycamore.top/assets/onedrop-icon.png",
+      "versions": [
+        {
+          "version": "1.0.3",
+          "date": "2026-08-27T10:56:21Z",
+          "size": 3220783,
+          "downloadURL": "https://github.com/zixu0779/OneDrop/releases/download/v1.0.3/OneDrop-1.0.3.ipa"
+        }
+      ]
+    }
+  ]
+}

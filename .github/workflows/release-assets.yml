@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing GitHub release tag to receive the assets
+        description: Existing GitHub release tag to build
         required: true
         type: string
       partner_center_mode:
@@ -33,7 +33,9 @@ env:
 
 jobs:
   edge:
-    if: "!startsWith(github.event.release.tag_name || inputs.release_tag, 'ios-beta-v')"
+    if: >-
+      (github.event_name == 'release' || inputs.partner_center_mode == 'skip') &&
+      !startsWith(github.event.release.tag_name || inputs.release_tag, 'ios-beta-v')
     name: Edge release packages
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -87,6 +89,7 @@ jobs:
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
 
   ios:
+    if: github.event_name == 'release' || inputs.partner_center_mode == 'skip'
     name: Native iOS LiveContainer package
     runs-on: macos-latest
     timeout-minutes: 30
@@ -191,10 +194,12 @@ jobs:
 
   partner-center:
     name: Partner Center submission
-    if: github.event_name == 'release' || inputs.partner_center_mode != 'skip'
-    needs:
-      - edge
-      - ios
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.partner_center_mode == 'validate' || inputs.partner_center_mode == 'publish') &&
+      !startsWith(inputs.release_tag, 'ios-beta-v')
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -242,7 +247,7 @@ jobs:
           EDGE_ADDONS_CLIENT_ID: ${{ secrets.EDGE_ADDONS_CLIENT_ID }}
           EDGE_ADDONS_CERTIFICATION_NOTES: ${{ secrets.EDGE_ADDONS_CERTIFICATION_NOTES }}
           EDGE_ADDONS_RELEASE_BODY_PATH: release-source/.output/partner-center/release-body.md
-          EDGE_ADDONS_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.partner_center_mode == 'validate' && '1' || '0' }}
+          EDGE_ADDONS_DRY_RUN: ${{ inputs.partner_center_mode == 'publish' && '0' || '1' }}
         run: |
           VERSION=$(node -p "require('./release-source/package.json').version")
           EDGE_ADDONS_PACKAGE_PATH="release-source/.output/OneDrop-${VERSION}-edge-store.zip" node automation-source/scripts/publish-edge-addons.mjs

@@ -30,25 +30,27 @@ npm run zip:store
 
 The package is written to `.output/OneDrop-<version>-edge-store.zip`.
 
-### Automated Partner Center updates
+### Manual Partner Center updates
 
-Publishing a GitHub Release builds the key-free universal Edge package and,
-after package validation succeeds, submits it to Partner Center for
-certification. Add a short section like this to every GitHub Release body:
+Publishing a GitHub Release builds its downloadable packages and updates the LiveContainer source. The Edge Add-ons store has a separate release schedule.
+
+Before a store update, check the version currently published in Edge Add-ons and compare its tag with the candidate release using `git diff <last-store-tag> <candidate-tag>`. Review desktop Edge entry points, shared UI and runtime code, permissions and build configuration. Include desktop changes from any intervening GitHub releases. A native iOS-only fix can ship through GitHub and LiveContainer on its own.
+
+For a store update, add a short section to the candidate GitHub Release body covering the changes since the published store version:
 
 ```markdown
 ### Partner Center Notes
 
-- Unified the desktop, Android, and iOS Edge builds into one extension package.
-- Fixed keyboard positioning and device identification on iOS Edge.
-- Added device removal in Settings.
+- Fixed history loading when the current month has no messages.
 ```
 
-The workflow appends this section under `VERSION-SPECIFIC NOTES` after the
-fixed sign-in and test-account instructions stored in GitHub Actions secrets.
-Manual workflow runs skip Partner Center by default; `validate` checks the
-package and notes without contacting Partner Center, while `publish` performs
-the real submission.
+In GitHub Actions, open **Release assets → Run workflow**, select `main`, and enter the existing release tag. Choose the action with `partner_center_mode`:
+
+- `skip` (default) rebuilds the GitHub release assets and refreshes the LiveContainer source.
+- `validate` builds the store ZIP and checks the certification notes locally on the runner.
+- `publish` builds the store ZIP and submits it to Partner Center for certification.
+
+The two store actions leave GitHub release assets in place. The workflow appends the release-specific notes to the fixed certification instructions stored in GitHub Actions secrets. Tags beginning with `ios-beta-v` are reserved for the LiveContainer beta channel.
 
 ## Development
 

@@ -17,6 +17,8 @@ See [docs/architecture.md](docs/architecture.md) for the storage layout and sync
 
 ## Installation
 
+On iOS, open **Sources → +** in LiveContainer and add `https://onedrop.sycamore.top/apps.json`. Select **OneDrop** for the stable release or **OneDrop Beta** for the test channel. Refresh the source to find future updates.
+
 See [docs/installation.md](docs/installation.md) for platform-specific release and development installation instructions,
 including Desktop Edge, Android Edge Canary, iOS Edge TestFlight, and native iOS through LiveContainer.
 

@@ -2,6 +2,4 @@
 <resources>
     <string name="app_name">OneDrop</string>
     <string name="title_activity_main">OneDrop</string>
-    <string name="package_name">com.sycamore.onedrop</string>
-    <string name="custom_url_scheme">com.sycamore.onedrop</string>
 </resources>

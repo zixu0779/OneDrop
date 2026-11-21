@@ -28,11 +28,12 @@
   </head>
   <body>
     <h1>OneDrop Privacy Policy</h1>
-    <p><strong>Effective date:</strong> 17 August 2026</p>
+    <p><strong>Effective date:</strong> 21 November 2026</p>
     <p>
       OneDrop shares text and files between a user's own devices through the
       user's own OneDrive App Folder. OneDrop is provided without an application
-      server or advertising service.
+      server or advertising service. It is available as Edge extensions and
+      native Android and iOS apps.
     </p>
 
     <h2>Information OneDrop accesses</h2>
@@ -50,18 +51,20 @@
       Account information is used only to authenticate you and select your
       OneDrive App Folder. Messages and attachments are used only to synchronize
       the conversations and files you request. OneDrop uses Microsoft Graph over
-      HTTPS and does not sell, rent, broker, advertise against, or share your
-      content with third parties. OneDrop does not use your content for
-      analytics or model training.
+      HTTPS and does not sell, rent, broker, or advertise against your content.
+      OneDrop does not use your content for analytics or model training.
     </p>
 
     <h2>Local storage and downloads</h2>
     <p>
       Edge storage, IndexedDB, Cache Storage, and browser download records may
       contain preferences, synchronization metadata, temporary previews, and
-      identifiers for files you downloaded. These records support the extension
-      and are kept on your device. OneDrop does not delete user-owned local
-      files without an explicit action through the browser or the extension.
+      identifiers for files you downloaded. These records support the clients
+      and are kept on your device. Native apps also use WebView local storage
+      and app-owned download files. Exported copies are stored in the location
+      you choose; opening or sharing a file gives the selected app access to
+      that file. OneDrop does not automatically delete exported user-owned
+      copies.
     </p>
 
     <h2>Your controls</h2>
@@ -69,16 +72,19 @@
       You can sign out, revoke Microsoft consent in your Microsoft account
       settings, delete messages and attachments through OneDrop, and remove
       local extension data by removing the extension or clearing its site data.
-      Revoking consent prevents future cloud access; existing files remain in
-      your OneDrive until you delete them.
+      Native app data and private downloads can be removed through
+      operating-system app controls. Sign out clears the locally stored
+      authentication session. Revoking consent prevents future cloud access;
+      existing files remain in your OneDrive until you delete them.
     </p>
 
     <h2>Service providers and security</h2>
     <p>
       Microsoft Entra ID and Microsoft Graph provide authentication and OneDrive
-      access. No other service receives OneDrop message content or attachment
-      content. Authentication tokens are handled by the browser and extension
-      runtime and are not written into this repository or disclosed publicly.
+      access. OneDrop does not automatically send message or attachment content
+      to other cloud services. Edge authentication tokens are stored in
+      extension-local storage. Native iOS stores tokens in Keychain; native
+      Android encrypts token state using an Android Keystore key.
     </p>
 
     <h2>Changes and contact</h2>

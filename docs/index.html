@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="OneDrop keeps text and files moving between your Edge devices through your own OneDrive."
+      content="OneDrop keeps text and files moving between your devices through your own OneDrive."
     />
     <meta name="theme-color" content="#f6f8fb" />
     <link rel="icon" type="image/png" href="/assets/onedrop-icon.png" />
@@ -38,6 +38,9 @@
           BlinkMacSystemFont,
           "Segoe UI",
           sans-serif;
+      }
+      main {
+        overflow-x: clip;
       }
       a {
         color: inherit;
@@ -500,8 +503,8 @@
           <div class="eyebrow">Share between your own devices</div>
           <h1>Your devices.<br />One place to share.</h1>
           <p class="lead">
-            OneDrop moves text and files between your Edge devices through your
-            own OneDrive. No application server. No separate cloud to manage.
+            OneDrop moves text and files between your devices through your own
+            OneDrive. No application server. No separate cloud to manage.
           </p>
           <div class="actions">
             <a class="button" href="#platforms">Learn how to install</a
@@ -571,8 +574,8 @@
               <div class="icon transfer" aria-hidden="true"></div>
               <h3>Text and files</h3>
               <p>
-                Send a note, a link, or an attachment from one Edge installation
-                and pick it up on another.
+                Send a note, a link, or an attachment from one OneDrop
+                installation and pick it up on another.
               </p>
             </article>
             <article class="card">
@@ -598,11 +601,8 @@
         <div class="wrap band">
           <div class="section-head">
             <div class="eyebrow">Where it runs</div>
-            <h2>One project, three client targets.</h2>
-            <p>
-              Start with the Edge experience that fits the device in front of
-              you.
-            </p>
+            <h2>One project, five ways to connect.</h2>
+            <p>Choose the app or Edge extension that fits your device.</p>
           </div>
           <div class="platforms">
             <div class="platform">
@@ -610,34 +610,64 @@
               <small>Side Panel for everyday desktop workflows.</small>
               <a
                 class="platform-action"
-                href="https://microsoftedge.microsoft.com/addons/"
+                href="https://microsoftedge.microsoft.com/addons/detail/onedrop/omfponfedcemkidfmpkojmhfofgmfmgh"
                 target="_blank"
                 rel="noreferrer"
-                ><span class="platform-action-icon" aria-hidden="true">E</span>
+                ><span class="platform-action-icon" aria-hidden="true">↗</span>
                 Edge Add-ons</a
               >
             </div>
             <div class="platform">
               <h3>Android Edge</h3>
-              <small>Mobile layout for the Android Edge target.</small>
+              <small>Install the mobile extension in Edge Canary.</small>
               <a
                 class="platform-action"
-                href="https://microsoftedge.microsoft.com/addons/"
+                href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#android-edge"
                 target="_blank"
                 rel="noreferrer"
-                ><span class="platform-action-icon" aria-hidden="true">E</span>
-                Edge Add-ons</a
+                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                Installation guide</a
               >
             </div>
             <div class="platform">
-              <h3>iOS</h3>
-              <small
-                >Native client development target, with shared OneDrop domain
-                logic.</small
+              <h3>Native Android</h3>
+              <small>Install the signed APK on Android 7.0 or newer.</small>
+              <a
+                class="platform-action"
+                href="https://github.com/zixu0779/OneDrop/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                Download APK</a
               >
-              <a class="platform-action" href="downloads/onedrop.ipa" download
-                ><span class="platform-action-icon" aria-hidden="true">↓</span>
-                Download IPA</a
+            </div>
+            <div class="platform">
+              <h3>iOS Edge</h3>
+              <small>Install the mobile extension in Edge TestFlight.</small>
+              <a
+                class="platform-action"
+                href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#ios-edge"
+                target="_blank"
+                rel="noreferrer"
+                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                Installation guide</a
+              >
+            </div>
+            <div class="platform">
+              <h3>Native iOS</h3>
+              <small
+                >Install through the OneDrop source in LiveContainer.</small
+              >
+              <a
+                class="platform-action"
+                href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#native-ios-through-livecontainer"
+                target="_blank"
+                rel="noreferrer"
+                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                Installation guide</a
+              >
+              <a class="platform-action" href="apps.json"
+                >LiveContainer source</a
               >
             </div>
           </div>
@@ -649,9 +679,8 @@
             <div class="eyebrow">Get started</div>
             <h2>Bring your own Microsoft account.</h2>
             <p>
-              Install OneDrop from Microsoft Edge Add-ons when it is available,
-              sign in with Microsoft, and authorize access to the OneDrive App
-              Folder.
+              Install the OneDrop app or extension for your device, sign in with
+              Microsoft, and authorize access to the OneDrive App Folder.
             </p>
           </div>
         </div>

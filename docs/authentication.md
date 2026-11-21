@@ -42,3 +42,9 @@ A release build with a new stable extension ID needs its new redirect URI added 
 - `AADSTS50011`: the redirect URI in Entra does not exactly match the client.
 - Token endpoint CORS failure: check that the redirect URI is registered with the correct platform type.
 - Unconfigured UI: confirm `.env.local` exists, the variable name starts with `WXT_`, and the WXT process was restarted.
+
+## Native Android
+
+Android uses the shared Entra public client and `msauth.com.sycamore.onedrop://auth` redirect. This URI must be registered as a native/public-client redirect for that client. The implementation uses AppAuth authorization-code flow with S256 PKCE in an external browser. AppAuth verifies OAuth state and exchanges the code without a client secret. Access and refresh tokens are encrypted using an Android Keystore AES-GCM key, with app backup disabled.
+
+Android keeps its session in its own app sandbox. Login compatibility with the configured Entra tenant and browser requires a device login check.

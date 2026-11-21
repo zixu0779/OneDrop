@@ -14,6 +14,7 @@ export default defineConfig({
       "@onedrop/web-storage": resolve("packages/web-storage/src"),
       "@onedrop/platform": resolve("packages/platform/src"),
       "@onedrop/app-runtime": resolve("packages/app-runtime/src"),
+      "@onedrop/native-runtime": resolve("packages/native-runtime/src"),
       "@onedrop/ui": resolve("packages/ui/src"),
     },
   },

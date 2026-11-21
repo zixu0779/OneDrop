@@ -88,6 +88,49 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
 
+  android:
+    if: >-
+      (github.event_name == 'release' || inputs.partner_center_mode == 'skip') &&
+      !startsWith(github.event.release.tag_name || inputs.release_tag, 'ios-beta-v')
+    name: Native Android release package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Build signed Android APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$WXT_ONEDROP_ENTRA_CLIENT_ID"
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          export ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/onedrop-release.jks"
+          trap 'rm -f "$ANDROID_KEYSTORE_PATH"' EXIT
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$ANDROID_KEYSTORE_PATH"
+          npm run pack:android -- --release
+          VERSION=$(node -p "require('./package.json').version")
+          test "${RELEASE_TAG#v}" = "$VERSION"
+      - name: Upload Android package to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          gh release upload "$RELEASE_TAG" ".output/android/OneDrop-${VERSION}-android.apk" --clobber
+
   ios:
     if: github.event_name == 'release' || inputs.partner_center_mode == 'skip'
     name: Native iOS LiveContainer package

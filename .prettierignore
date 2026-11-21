@@ -10,3 +10,8 @@ ios/App/Pods
 apps/ios/native/App/App/capacitor.config.json
 apps/ios/native/App/App/public
 apps/ios/native/App/Pods
+apps/android/native/.gradle
+apps/android/native/build
+apps/android/native/app/build
+apps/android/native/capacitor-cordova-android-plugins
+apps/android/native/app/src/main/assets

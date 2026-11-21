@@ -25,6 +25,10 @@ type NativeDownloadPlugin = {
   copyText(options: { text: string }): Promise<void>;
   copyImage(options: { dataUrl: string }): Promise<void>;
   addListener(
+    eventName: "resume",
+    listener: () => void,
+  ): Promise<PluginListenerHandle>;
+  addListener(
     eventName: "progress",
     listener: (event: NativeDownloadProgress) => void,
   ): Promise<PluginListenerHandle>;

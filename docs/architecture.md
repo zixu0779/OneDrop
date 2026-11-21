@@ -10,7 +10,7 @@ OneDrive is the cloud source of truth. Local browser storage and IndexedDB hold 
 
 - Edge extension: one WXT, React, TypeScript, Manifest V3 package containing
   the desktop side panel plus separate Android tab and iOS Edge popup entrypoints.
-- Native iOS: the shared React UI inside Capacitor with native auth and platform adapters.
+- Native Android and iOS: the shared React UI and `packages/native-runtime` inside Capacitor, with platform-owned authentication, clipboard and file plugins.
 
 The Edge package has one manifest and one code build across desktop, Android,
 and iOS. At runtime the service worker selects the desktop side panel, Android

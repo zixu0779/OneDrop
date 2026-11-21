@@ -12,6 +12,7 @@ export const syncModeSchema = z.enum(["normal", "reduced", "manual"]);
 export const devicePlatformSchema = z.enum([
   "desktop-edge",
   "android-edge",
+  "android",
   "ios",
 ]);
 export const recycleBinSettingSchema = z.discriminatedUnion("mode", [
@@ -105,6 +106,6 @@ export function defaultDevicePreferences(): DevicePreferences {
 
 export function defaultDeviceDisplayName(platform: DevicePlatform): string {
   if (platform === "ios") return "iOS";
-  if (platform === "android-edge") return "Android";
+  if (platform === "android-edge" || platform === "android") return "Android";
   return "Desktop";
 }

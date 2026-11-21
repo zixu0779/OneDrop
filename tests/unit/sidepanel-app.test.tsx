@@ -219,6 +219,7 @@ const sendMessage = vi.fn(defaultSendMessage);
 describe("side panel message composer", () => {
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
     document.body.className = "";
     vi.restoreAllMocks();
   });
@@ -1695,6 +1696,69 @@ describe("side panel message composer", () => {
       type: "messages/send-text",
       text: "中文",
     });
+  });
+
+  it.each(["files", "items"])(
+    "uploads pasted clipboard images from %s once",
+    async (source) => {
+      const composer = await screenForComposer();
+      fireEvent.change(composer, { target: { value: "keep my draft" } });
+      vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:clipboard-image");
+      vi.stubGlobal(
+        "createImageBitmap",
+        vi.fn().mockResolvedValue({ width: 0, height: 0, close: vi.fn() }),
+      );
+      const file = new File(["clipboard image"], "image.png", {
+        type: "image/png",
+      });
+      const item = { kind: "file", type: "image/png", getAsFile: () => file };
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(event, "clipboardData", {
+        value: {
+          files: source === "files" ? [file] : [],
+          items: [item],
+          getData: () => "https://example.com/image.png",
+        },
+      });
+
+      fireEvent(composer, event);
+
+      expect(event.defaultPrevented).toBe(true);
+      await waitFor(() =>
+        expect(
+          sendMessage.mock.calls.filter(
+            ([request]) => request.type === "files/send",
+          ),
+        ).toHaveLength(1),
+      );
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "files/send",
+          file: expect.objectContaining({
+            name: "image.png",
+            mimeType: "image/png",
+          }),
+        }),
+      );
+      expect(composer).toHaveValue("keep my draft");
+    },
+  );
+
+  it("leaves ordinary text paste to the browser", async () => {
+    const composer = await screenForComposer();
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        files: [],
+        items: [{ kind: "string", type: "text/plain" }],
+        getData: () => "ordinary text",
+      },
+    });
+    fireEvent(composer, event);
+    expect(event.defaultPrevented).toBe(false);
+    expect(
+      sendMessage.mock.calls.some(([request]) => request.type === "files/send"),
+    ).toBe(false);
   });
 
   it("uploads a file dropped onto the desktop side panel", async () => {

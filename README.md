@@ -2,12 +2,12 @@
 
 OneDrop is a no-server app for sending text and files between your own devices through OneDrive.
 
-It uses the user's Microsoft account and OneDrive App Folder as the storage boundary. The project currently ships shared React clients for desktop Edge, Android Edge, and iOS.
+It uses the user's Microsoft account and OneDrive App Folder as the storage boundary. The project currently provides shared React clients for desktop Edge, Android Edge, native Android, and iOS.
 
 ## Architecture
 
 - Desktop and Mobile (Android & iOS) clients are Manifest V3 Edge extensions built with WXT.
-- Native iOS runs the shared React UI in Capacitor.
+- Native Android and iOS run the shared React UI and native runtime in Capacitor.
 - Microsoft Graph is the only cloud API.
 - Messages are stored as monthly JSON chunks with ETag-protected writes.
 - Files are stored separately in the OneDrive App Folder.
@@ -21,6 +21,8 @@ For native iOS (using [LiveContainer](https://github.com/LiveContainer/LiveConta
 
 See [docs/installation.md](docs/installation.md) for platform-specific release and development installation instructions,
 including Desktop Edge, Android Edge Canary, iOS Edge TestFlight, and native iOS through LiveContainer.
+
+Download the signed native Android APK from the [latest GitHub Release](https://github.com/zixu0779/OneDrop/releases/latest).
 
 ## Release packaging
 
@@ -140,6 +142,16 @@ npm run pack:ios -- --beta 1.0.0
 ```
 
 The output is `.output/ios-beta/OneDrop-Beta-1.0.0.ipa`. To distribute a new beta, publish a GitHub **pre-release** tagged `ios-beta-v<version>` with an increasing numeric version, for example `ios-beta-v1.0.1`. The release workflow builds the IPA from the tagged source and adds it to the **OneDrop Beta** entry in the existing subscription.
+
+### Native Android
+
+Install JDK 21 and Android SDK platform 36 with build-tools 35.0.0 (the Android Gradle plugin default). Set `JAVA_HOME` and `ANDROID_HOME`, then build:
+
+```bash
+npm run pack:android
+```
+
+The debug-signed APK is written to `.output/android/OneDrop-<version>-android-debug.apk`. For signed distribution, set the four `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` environment variables and run `npm run pack:android -- --release`. Use `npm run open:android` for Android Studio. See [installation instructions](docs/installation.md#native-android) for device setup and file handling.
 
 ### Checks
 

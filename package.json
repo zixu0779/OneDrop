@@ -1,6 +1,6 @@
 {
   "name": "onedrop",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "private": true,
   "type": "module",
   "description": "A serverless Microsoft Edge extension for sharing through a user's OneDrive.",
@@ -21,7 +21,11 @@
     "test:watch": "vitest",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "build:android": "wxt prepare && vite build --config vite.android.config.ts",
+    "sync:android": "npm run build:android && node scripts/sync-android.mjs",
+    "pack:android": "node scripts/pack-android-apk.mjs",
+    "open:android": "cap open android"
   },
   "dependencies": {
     "@capacitor/core": "^8.5.0",
@@ -32,6 +36,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.0",
     "@capacitor/cli": "^8.5.0",
     "@capacitor/ios": "^8.5.0",
     "@eslint/js": "10.0.1",

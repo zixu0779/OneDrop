@@ -1,7 +1,7 @@
 import type { MonthReadResult } from "@onedrop/core/contracts/runtime-messages";
-import type { IosMonthTimeline } from "./onedrive";
+import type { NativeMonthTimeline } from "./onedrive";
 
-export function iosDownloadId(driveItemId: string): number {
+export function nativeDownloadId(driveItemId: string): number {
   let hash = 0;
   for (const character of driveItemId) {
     hash = (Math.imul(hash, 31) + character.charCodeAt(0)) | 0;
@@ -9,7 +9,7 @@ export function iosDownloadId(driveItemId: string): number {
   return Math.abs(hash || 1);
 }
 
-export function iosImageMetadata(input: {
+export function nativeImageMetadata(input: {
   imageWidth?: number;
   imageHeight?: number;
   thumbHash?: string;
@@ -21,11 +21,13 @@ export function iosImageMetadata(input: {
   };
 }
 
-export function iosTimelineResult(timeline: IosMonthTimeline): MonthReadResult {
+export function nativeTimelineResult(
+  timeline: NativeMonthTimeline,
+): MonthReadResult {
   return {
     state: "loaded",
     month: timeline.month,
-    eTag: "ios-native",
+    eTag: "native",
     messages: timeline.messages,
   };
 }

@@ -5,12 +5,12 @@ const API_ROOT = "https://api.addons.microsoftedge.microsoft.com/v1";
 const POLL_INTERVAL_MS = 5_000;
 const MAX_POLL_ATTEMPTS = 60;
 
-function requireEnvironment(name) {
-  const value = process.env[name]?.trim();
-  if (!value) {
+function requireEnvironment(name, preserveWhitespace = false) {
+  const value = process.env[name];
+  if (!value?.trim()) {
     throw new Error(`Missing required environment variable: ${name}`);
   }
-  return value;
+  return preserveWhitespace ? value : value.trim();
 }
 
 export function extractVersionNotes(releaseBody) {
@@ -38,13 +38,61 @@ export function extractVersionNotes(releaseBody) {
   return notes;
 }
 
+function certificationCredential(fixedNotes, label) {
+  const pattern = new RegExp(`^[ \t]*${label}:[ \t]?([^\r\n]*)$`, "i");
+  const matches = fixedNotes
+    .split(/\r\n|\r|\n/u)
+    .map((line) => pattern.exec(line))
+    .filter(Boolean);
+  if (matches.length !== 1 || !matches[0][1].trim()) {
+    throw new Error(
+      `EDGE_ADDONS_CERTIFICATION_NOTES must contain exactly one non-empty ${label}: line.`,
+    );
+  }
+  return matches[0][1];
+}
+
 export function composeCertificationNotes(fixedNotes, releaseBody) {
-  return `${fixedNotes.trim()}\n\nVERSION-SPECIFIC NOTES\n\n${extractVersionNotes(releaseBody)}`;
+  const username = certificationCredential(fixedNotes, "Username");
+  const password = certificationCredential(fixedNotes, "Password");
+  return `ONEDROP CERTIFICATION INSTRUCTIONS
+
+OneDrop signs in through Microsoft Entra ID OAuth and does not require a separate OneDrop account or password. Messages and files are stored in the signed-in account's OneDrive.
+
+OPTION 1 — USE YOUR OWN MICROSOFT TEST ACCOUNT (RECOMMENDED)
+
+Use your own Microsoft test account with OneDrive already set up. Complete any Microsoft email-code, passkey, or other verification using that account's verification methods. OneDrop requires no developer approval or account provisioning.
+
+OPTION 2 — USE THE PROVIDED TEST ACCOUNT
+
+Username: ${username}
+Password: ${password}
+
+The provided test account uses password sign-in. If Microsoft defaults to email-code or passkey sign-in, select "Other ways to sign in" or "Sign in another way", then "Use your password" and enter the provided password.
+
+Although two-step verification is disabled for the provided test account, Microsoft may still require additional verification on a new device or network, or when it detects a sign-in risk. If you cannot complete that verification independently, use your own Microsoft test account as described in Option 1.
+
+TEST STEPS
+
+1. Install OneDrop in Microsoft Edge and open the extension.
+2. Select "Sign in with Microsoft".
+3. Use either account option above and complete Microsoft's verification and consent prompts.
+4. Wait for the message timeline to load. An empty timeline is normal for an account with no messages.
+5. Send a text message and upload a file. Confirm both complete successfully, then check file preview, download, and opening.
+6. Open OneDrop on a second device or in an independent Edge profile, and sign in with the same Microsoft account.
+7. Refresh or wait for synchronization. Confirm that the text and file arrive, then send a message or file back and verify receipt on the first client.
+8. Check message deletion, recycle-bin restoration, and settings. Before testing restoration, make sure the recycle bin is not disabled in Settings.
+
+On first use, OneDrop may need to initialize its app folder in OneDrive. Wait briefly, then reopen the extension if necessary.
+
+VERSION-SPECIFIC NOTES
+
+${extractVersionNotes(releaseBody)}`;
 }
 
 export function redactCertificationNotes(certificationNotes) {
   return certificationNotes.replace(
-    /^Password:\s*.*$/gim,
+    /^Password:[^\r\n]*$/gim,
     "Password: [REDACTED]",
   );
 }
@@ -118,7 +166,10 @@ async function main() {
   const productId = requireEnvironment("EDGE_ADDONS_PRODUCT_ID");
   const apiKey = requireEnvironment("EDGE_ADDONS_API_KEY");
   const clientId = requireEnvironment("EDGE_ADDONS_CLIENT_ID");
-  const fixedNotes = requireEnvironment("EDGE_ADDONS_CERTIFICATION_NOTES");
+  const fixedNotes = requireEnvironment(
+    "EDGE_ADDONS_CERTIFICATION_NOTES",
+    true,
+  );
   const packagePath = requireEnvironment("EDGE_ADDONS_PACKAGE_PATH");
   const releaseBodyPath = requireEnvironment("EDGE_ADDONS_RELEASE_BODY_PATH");
 

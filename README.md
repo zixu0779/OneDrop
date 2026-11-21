@@ -52,7 +52,7 @@ In GitHub Actions, open **Release assets → Run workflow**, select `main`, and 
 - `validate` builds the store ZIP and checks the certification notes locally on the runner.
 - `publish` builds the store ZIP and submits it to Partner Center for certification.
 
-The two store actions leave GitHub release assets in place. The workflow appends the release-specific notes to the fixed certification instructions stored in GitHub Actions secrets. Tags beginning with `ios-beta-v` are reserved for the LiveContainer beta channel.
+The two store actions leave GitHub release assets in place. The workflow generates the certification instructions from the script, reads only the test account’s `Username:` and `Password:` lines from the existing `EDGE_ADDONS_CERTIFICATION_NOTES` secret, and appends the release-specific notes. Tags beginning with `ios-beta-v` are reserved for the LiveContainer beta channel.
 
 ## Development
 

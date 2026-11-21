@@ -4,7 +4,7 @@
 
 OneDrop sends text and files between clients owned by the same user. It has no backend server, SaaS database, server-side queue, content scripts, or access to arbitrary websites.
 
-OneDrive is the cloud source of truth. Local browser storage and IndexedDB hold rebuildable indexes, caches, transfer state, settings, and authentication material.
+OneDrive is the cloud source of truth. Local storage and IndexedDB hold rebuildable indexes, caches, transfer state, and settings. Authentication tokens use platform-specific storage.
 
 ## Clients
 
@@ -27,16 +27,18 @@ for a stable unpacked-extension ID. The Partner Center ZIP contains no manifest
 
 The shared UI sends typed commands to the platform runtime. It does not call Microsoft Graph directly. Tokens and privileged network operations stay in the runtime layer.
 
-Manifest V3 service workers are ephemeral, so recoverable state must be persisted in IndexedDB or `browser.storage`.
+In the Edge extension, Manifest V3 service workers are ephemeral, so recoverable state must be persisted in IndexedDB or `browser.storage`.
 
 ## Local persistence
 
 - IndexedDB stores the message index, month ETags, transfer state, folder IDs, and download registry.
 - Cache Storage is reserved for bounded extension-owned preview data.
-- `browser.storage.local` stores small preferences and durable authentication tokens.
-- `browser.storage.session` is still read only to migrate or clear token data written by earlier validation builds.
+- In Edge, `browser.storage.local` stores small preferences and durable authentication tokens.
+- In Edge, `browser.storage.session` is still read only to migrate or clear token data written by earlier validation builds.
 
 The extension does not request `unlimitedStorage`; managed local data must remain bounded or rebuildable.
+
+Native apps use WebView local storage for preferences and download mappings. iOS stores authentication tokens in Keychain; Android encrypts token state using an Android Keystore key. Native downloads are held in app-owned storage, with platform actions to export or share them.
 
 ## OneDrive layout
 
@@ -112,11 +114,11 @@ Synchronization is pull-based:
 - when the UI opens or regains focus;
 - after a successful local send;
 - on explicit refresh;
-- through low-frequency best-effort `browser.alarms`.
+- in the Edge extension, through low-frequency best-effort `browser.alarms`.
 
 Readers enumerate `messages/<UTC YYYY-MM>/` with Graph pagination. Missing month directories are valid empty states. Cached chunks are reused when ETags match, and all remote JSON is schema-validated before it enters application state.
 
-There is no real-time delivery guarantee while Edge or the extension is inactive.
+There is no real-time delivery guarantee while the app, Edge, or the extension is inactive.
 
 ## Deleted Data
 
@@ -126,7 +128,7 @@ The recycle bin reads tombstones against the original unfiltered record. Restore
 
 Physical deletion is separate. After the retention period, or after a separately confirmed manual cleanup, OneDrop may remove the message metadata from source chunks and archives. For file messages it also verifies that no visible message still references the same DriveItem and that the file is inside the deterministic OneDrop attachment folder before deleting that folder.
 
-Cleanup is best-effort and conditional. If source data changed, is damaged, still conflicts, or cannot be verified safely, the tombstone remains and cleanup is retried later. User-downloaded files are outside extension-managed cleanup and are never removed by OneDrop.
+Cleanup is best-effort and conditional. If source data changed, is damaged, still conflicts, or cannot be verified safely, the tombstone remains and cleanup is retried later. Exported user-owned files are outside this cloud cleanup. Native app-owned downloads can be removed with app data.
 
 Purely local failed sends were never committed to OneDrive; confirming their removal deletes them from IndexedDB without a tombstone.
 
@@ -134,17 +136,16 @@ Purely local failed sends were never committed to OneDrive; confirming their rem
 
 A file send uploads the attachment first, then commits message metadata with ETag protection. If metadata commit fails, OneDrop reports failure and records the uploaded object for later orphan cleanup.
 
-Files up to 4 MiB use direct upload through the service worker. Larger files stay as Blobs in shared IndexedDB while the service worker uploads them through a Microsoft Graph upload session. The UI shows progress and supports cancellation.
+Files up to 4 MiB use direct upload. Larger files stay as Blobs in IndexedDB while the platform runtime uploads them through a Microsoft Graph upload session. The Edge runtime runs in a service worker; the native runtime runs with the app. The UI shows progress and supports cancellation.
 
-User-opened and user-saved downloads are treated as user-owned files. OneDrop stores only a registry that helps reopen known downloads later.
+Edge downloads use browser download records. Native downloads use app-owned storage and platform plugins to open, export, or share files; local mappings help reopen known downloads. Exported copies are user-owned.
 
 ## Device settings
 
 Each installation has an anonymous UUID and a corresponding
 `settings/devices/<device-id>.json` document containing its platform, display
 name, last-seen time, and device-local preferences. Runtime platform detection
-keeps desktop Edge, Android Edge, and iOS Edge records distinct even though they
-ship in one extension package.
+keeps desktop Edge, Android Edge, iOS Edge, native Android, and native iOS records distinct.
 
 Removing another device from Settings deletes only that device-settings
 document. It does not delete messages, attachments, tombstones, archives, or
@@ -183,6 +184,7 @@ The project does not use `activeTab`, `scripting`, content scripts, or arbitrary
 ```text
 apps/
   edge/               universal WXT package with separate platform entrypoints
+  android/            Capacitor web entrypoint, Gradle project, Java plugins
   ios/                Capacitor web entrypoint, Xcode project, Swift plugins
 
 packages/
@@ -192,10 +194,10 @@ packages/
   platform/           platform bridge contracts and shared browser adapter
   app-runtime/        auth, device, download, and settings services
   extension-runtime/  shared MV3 service-worker implementation
+  native-runtime/     shared Capacitor runtime and native plugin adapters
   ui/                 shared React application
 
 tests/                unit and integration tests
-e2e/                  packaged-extension browser tests
 ```
 
 Each app is a composition root. Shared behavior belongs in `packages/`. `core` must not depend on React, DOM APIs, WXT, Capacitor, IndexedDB, or Microsoft Graph response classes.

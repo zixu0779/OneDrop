@@ -31,10 +31,11 @@ A release build with a new stable extension ID needs its new redirect URI added 
 
 - Desktop Edge starts sign-in with `browser.identity.launchWebAuthFlow`.
 - Android Edge and iOS Edge can fall back to a temporary Edge tab for the same PKCE request when the identity window cannot be created.
-- iOS uses the native redirect flow.
-- Tokens are stored in `browser.storage.local`, private to the app or extension but not an operating-system credential vault.
+- Native iOS uses ASWebAuthenticationSession; native Android uses AppAuth in an external browser.
+- Edge tokens are stored in `browser.storage.local`, private to the extension but not an operating-system credential vault.
+- Native iOS tokens are stored in Keychain. Native Android token state is encrypted with an Android Keystore AES-GCM key and stored in private preferences.
 - OneDrop requests `offline_access` and refreshes access tokens on demand.
-- SPA refresh-token families expire after 24 hours; when that happens, OneDrop attempts silent authorization and otherwise asks the user to sign in again.
+- For the Edge SPA redirect flow, refresh-token families expire after 24 hours; when that happens, OneDrop attempts silent authorization and otherwise asks the user to sign in again.
 - Sign out clears local token storage but does not sign the user out of Microsoft in the browser.
 
 ## Troubleshooting

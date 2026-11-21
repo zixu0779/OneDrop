@@ -1,6 +1,6 @@
 # Installation
 
-OneDrop currently distributes development and release packages for Desktop Edge, Android Edge, iOS Edge, and native iOS through LiveContainer.
+OneDrop currently distributes development and release packages for Desktop Edge, Android Edge, native Android, iOS Edge, and native iOS through LiveContainer.
 The Desktop Edge extension is available from Microsoft Edge Add-ons; the other extension store listings are not available yet.
 
 ## Desktop Edge
@@ -41,6 +41,16 @@ The Android CRX requires the Android Edge Canary build with developer options en
 
 Keep using the same release signing identity when upgrading.
 A CRX generated with a different signing key is treated as a different extension.
+
+## Native Android
+
+Requires Android 7.0 (API 24) or newer and an installed browser for Microsoft sign-in.
+
+1. Download `OneDrop-<version>-android.apk` from the [latest GitHub Release](https://github.com/zixu0779/OneDrop/releases/latest).
+2. Open the APK and allow installation from the app used to open it when Android asks.
+3. Confirm installation, launch OneDrop, and select **Sign in with Microsoft**.
+
+Install a newer official APK over the existing app to update it.
 
 ## iOS Edge
 
@@ -83,13 +93,3 @@ You can also import the IPA manually:
 The IPA is unsigned so LiveContainer can apply its own active signing setup.
 With a free Apple Personal Team, the sideloading certificate normally needs to be refreshed periodically.
 OneDrop does not require JIT, but LiveContainer limitations may affect custom URL schemes, extensions, push notifications, or guest-app entitlements.
-
-## Native Android
-
-Download `OneDrop-<version>-android.apk` from the GitHub Release. Open it on Android 7.0 (API 24) or newer, allow installation from the app used to open the APK, and launch OneDrop. An installed system browser handles Microsoft sign-in.
-
-Use **Open** to preview a downloaded attachment in a compatible installed app, **Save as** to choose a persistent destination, or **Share file** to send the downloaded attachment to another app. Private downloads and the local login session are removed when the app is uninstalled.
-
-Official releases use a stable signing key so later official APKs can update the installed app. Earlier local test APKs used a different debug key. To switch from a debug build to the official release, uninstall the test build before installing the official APK, then sign in again. Export any private downloads you want to keep before uninstalling. Messages and files stored in OneDrive remain available after signing in.
-
-For local development, `npm run pack:android` produces `OneDrop-<version>-android-debug.apk`. Release packaging uses `npm run pack:android -- --release` and requires `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD`. Keep the signing key and passwords backed up securely. Android version codes derive from the package version as `major * 1000000 + minor * 1000 + patch`, with each component below 1000.

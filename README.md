@@ -20,7 +20,7 @@ See [docs/architecture.md](docs/architecture.md) for the storage layout and sync
 For native iOS (using [LiveContainer](https://github.com/LiveContainer/LiveContainer)), the source URL is `https://onedrop.sycamore.top/apps.json`.
 
 See [docs/installation.md](docs/installation.md) for platform-specific release and development installation instructions,
-including Desktop Edge, Android Edge Canary, iOS Edge TestFlight, and native iOS through LiveContainer.
+including Desktop Edge, Android Edge Canary, native Android, iOS Edge TestFlight, and native iOS through LiveContainer.
 
 Download the signed native Android APK from the [latest GitHub Release](https://github.com/zixu0779/OneDrop/releases/latest).
 
@@ -34,27 +34,7 @@ npm run zip:store
 
 The package is written to `.output/OneDrop-<version>-edge-store.zip`.
 
-### Manual Partner Center updates
-
-Publishing a GitHub Release builds its downloadable packages and updates the LiveContainer source. The Edge Add-ons store has a separate release schedule.
-
-Before a store update, check the version currently published in Edge Add-ons and compare its tag with the candidate release using `git diff <last-store-tag> <candidate-tag>`. Review desktop Edge entry points, shared UI and runtime code, permissions and build configuration. Include desktop changes from any intervening GitHub releases. A native iOS-only fix can ship through GitHub and LiveContainer on its own.
-
-For a store update, add a short section to the candidate GitHub Release body covering the changes since the published store version:
-
-```markdown
-### Partner Center Notes
-
-- Fixed history loading when the current month has no messages.
-```
-
-In GitHub Actions, open **Release assets → Run workflow**, select `main`, and enter the existing release tag. Choose the action with `partner_center_mode`:
-
-- `skip` (default) rebuilds the GitHub release assets and refreshes the LiveContainer source.
-- `validate` builds the store ZIP and checks the certification notes locally on the runner.
-- `publish` builds the store ZIP and submits it to Partner Center for certification.
-
-The two store actions leave GitHub release assets in place. The workflow generates the certification instructions from the script, reads only the test account’s `Username:` and `Password:` lines from the existing `EDGE_ADDONS_CERTIFICATION_NOTES` secret, and appends the release-specific notes. Tags beginning with `ios-beta-v` are reserved for the LiveContainer beta channel.
+See [the release guide](docs/releasing.md) for distribution and Partner Center updates.
 
 ## Development
 
@@ -92,15 +72,37 @@ The CRX is written to `.output/edge-mobile/edge-mv3.crx` and uses one signing id
 
 #### Android Edge
 
-Install or update Microsoft Edge Canary on the Android device. Open **Settings → About Microsoft Edge**, tap the Edge version number several times to enable **Developer options**, then open **Settings → Developer options**. Select **Extension install by CRX**, choose `.output/edge-mobile/edge-mv3.crx`, confirm the installation, and then open OneDrop from the extensions list or toolbar.
+1. Install or update Microsoft Edge Canary on Android.
+2. Open **Settings → About Microsoft Edge** and tap the version number several times.
+3. Open **Settings → Developer options → Extension install by CRX**.
+4. Choose `.output/edge-mobile/edge-mv3.crx`, confirm, and open OneDrop from the extensions list or toolbar.
 
 The regular stable Edge app may not expose this developer installation entry.
 
 #### iOS Edge
 
-Install the Microsoft Edge TestFlight build on the iOS device. Open **Extensions → Manage extensions**, tap the settings button in the upper-right corner, and enable **Developer mode**. Select **Load .crx Package**, choose `.output/edge-mobile/edge-mv3.crx`, confirm the installation, and then open OneDrop from the extensions list.
+1. Install the Microsoft Edge TestFlight build.
+2. Open **Extensions → Manage extensions** and tap the settings button in the upper-right corner.
+3. Enable **Developer mode** and select **Load .crx Package**.
+4. Choose `.output/edge-mobile/edge-mv3.crx`, confirm, and open OneDrop from the extensions list.
 
-The regular App Store Edge build does not expose this developer installation entry. This CRX is the iOS Edge extension package, separate from the native iOS application.
+The regular App Store Edge build does not expose this developer installation entry.
+
+This CRX is the iOS Edge extension package, separate from the native iOS application.
+
+### Native Android
+
+Install JDK 21 and Android SDK platform 36 with build-tools 35.0.0. Set `JAVA_HOME` and `ANDROID_HOME`, then build:
+
+```bash
+npm run pack:android
+```
+
+The debug APK is written to `.output/android/OneDrop-<version>-android-debug.apk`.
+
+Use `npm run open:android` to open the project in Android Studio.
+
+For signed distribution, see [the release guide](docs/releasing.md#native-android-signing).
 
 ### Native iOS
 
@@ -141,17 +143,7 @@ To build a side-by-side LiveContainer beta, use its independent three-part versi
 npm run pack:ios -- --beta 1.0.0
 ```
 
-The output is `.output/ios-beta/OneDrop-Beta-1.0.0.ipa`. To distribute a new beta, publish a GitHub **pre-release** tagged `ios-beta-v<version>` with an increasing numeric version, for example `ios-beta-v1.0.1`. The release workflow builds the IPA from the tagged source and adds it to the **OneDrop Beta** entry in the existing subscription.
-
-### Native Android
-
-Install JDK 21 and Android SDK platform 36 with build-tools 35.0.0 (the Android Gradle plugin default). Set `JAVA_HOME` and `ANDROID_HOME`, then build:
-
-```bash
-npm run pack:android
-```
-
-The debug-signed APK is written to `.output/android/OneDrop-<version>-android-debug.apk`. For signed distribution, set the four `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and `ANDROID_KEY_PASSWORD` environment variables and run `npm run pack:android -- --release`. Use `npm run open:android` for Android Studio. See [installation instructions](docs/installation.md#native-android) for device setup and file handling.
+The output is `.output/ios-beta/OneDrop-Beta-1.0.0.ipa`. See [the release guide](docs/releasing.md#ios-beta) to distribute a beta.
 
 ### Checks
 

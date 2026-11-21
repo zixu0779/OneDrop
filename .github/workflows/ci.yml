@@ -47,3 +47,24 @@ jobs:
 
       - name: Build iOS web target
         run: npm run build:ios
+
+  android:
+    name: Android
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Build Android APK
+        run: npm run pack:android
+      - name: Run Android unit tests
+        working-directory: apps/android/native
+        run: ./gradlew :app:testDebugUnitTest --no-daemon

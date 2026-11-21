@@ -11,6 +11,7 @@ export default tseslint.config(
       "dist/**",
       "apps/ios/native/App/App/public/**",
       "apps/ios/native/App/Pods/**",
+      "apps/android/native/**",
       "node_modules/**",
     ],
   },

@@ -1,3 +1,4 @@
+import { Capacitor } from "@capacitor/core";
 import type {
   AuthStatus,
   MonthReadResult,
@@ -56,12 +57,12 @@ import type {
   PlatformRuntimeEvent,
 } from "@onedrop/platform/platform/platform-bridge";
 import {
-  commitIosFileMessage,
-  deleteIosMessage,
-  getIosAttachmentDownloadUrl,
-  registerIosFileMessage,
-  sendIosTextMessage,
-  uploadIosFile,
+  commitNativeFileMessage,
+  deleteNativeMessage,
+  getNativeAttachmentDownloadUrl,
+  registerNativeFileMessage,
+  sendNativeTextMessage,
+  uploadNativeFile,
 } from "./onedrive";
 import {
   getNativeAuthConfiguration,
@@ -70,14 +71,15 @@ import {
 } from "./native-auth";
 import { nativeDownload } from "./native-download";
 import {
-  iosDownloadId,
-  iosImageMetadata,
-  iosTimelineResult,
+  nativeDownloadId,
+  nativeImageMetadata,
+  nativeTimelineResult,
 } from "./platform-values";
 import { appMetadata } from "@onedrop/core/config/app";
 
-const DEVICE_ID_KEY = "onedrop-ios-device-id";
-const DOWNLOAD_MAP_PREFIX = "onedrop.ios.download-map.";
+const nativePlatform = Capacitor.getPlatform();
+const DEVICE_ID_KEY = `onedrop-${nativePlatform}-device-id`;
+const DOWNLOAD_MAP_PREFIX = `onedrop.${nativePlatform}.download-map.`;
 const listeners = new Set<(event: PlatformRuntimeEvent) => void>();
 const uploads = new Map<string, AbortController>();
 
@@ -108,7 +110,13 @@ void nativeDownload.addListener("progress", (progress) => {
   emit({ type: "files/download-progress", ...progress });
 });
 
-export const iosPlatformBridge: PlatformBridge = {
+if (nativePlatform === "android") {
+  void nativeDownload.addListener("resume", () =>
+    window.dispatchEvent(new Event("focus")),
+  );
+}
+
+export const nativePlatformBridge: PlatformBridge = {
   capabilities: {
     showInFolder: true,
     saveAs: true,
@@ -168,11 +176,11 @@ export const iosPlatformBridge: PlatformBridge = {
   },
 
   async prepareAttachment() {
-    throw new Error("System file sharing is handled by the native iOS app.");
+    throw new Error("System file sharing is handled by the native app.");
   },
 
   async shareAttachment() {
-    throw new Error("System file sharing is handled by the native iOS app.");
+    throw new Error("System file sharing is handled by the native app.");
   },
 
   async copyText(text) {
@@ -337,7 +345,7 @@ async function handleRequest(
       await dismissArchiveNotice(request.month);
       return { ok: true, type: "archives/dismissed" };
     case "messages/delete":
-      await deleteIosMessage(request.month, request.messageId);
+      await deleteNativeMessage(request.month, request.messageId);
       void checkAttachmentCleanup(new Date(), true).catch(() => undefined);
       return {
         ok: true,
@@ -381,8 +389,8 @@ async function handleRequest(
       };
     case "messages/send-text":
       return monthResponse(
-        iosTimelineResult(
-          await sendIosTextMessage({
+        nativeTimelineResult(
+          await sendNativeTextMessage({
             id: request.messageId ?? crypto.randomUUID(),
             text: request.text,
             createdAt: request.createdAt ?? new Date().toISOString(),
@@ -409,8 +417,8 @@ async function handleRequest(
         type: "files/transfer",
         transfer: {
           state: "sent",
-          result: iosTimelineResult(
-            await commitIosFileMessage({
+          result: nativeTimelineResult(
+            await commitNativeFileMessage({
               id: request.messageId,
               attachment: request.attachment,
               createdAt: request.createdAt,
@@ -448,7 +456,7 @@ async function handleRequest(
       return {
         ok: true,
         type: "files/download-url",
-        url: await getIosAttachmentDownloadUrl(request.driveItemId),
+        url: await getNativeAttachmentDownloadUrl(request.driveItemId),
       };
     case "files/prepare-mobile-download":
     case "files/mobile-download-status":
@@ -537,7 +545,7 @@ async function sendFile(
   request: Extract<RuntimeRequest, { type: "files/send" }>,
 ): Promise<RuntimeResponse> {
   try {
-    await registerIosFileMessage({
+    await registerNativeFileMessage({
       id: request.messageId,
       ...request.file,
       createdAt: request.createdAt,
@@ -549,13 +557,13 @@ async function sendFile(
     if (!file) throw new Error("The original file is no longer available.");
     const controller = new AbortController();
     uploads.set(request.messageId, controller);
-    const attachment = await uploadIosFile({
+    const attachment = await uploadNativeFile({
       id: request.messageId,
       file,
       name: request.file.name,
       mimeType: request.file.mimeType,
       createdAt: request.createdAt,
-      ...iosImageMetadata(request.file),
+      ...nativeImageMetadata(request.file),
       signal: controller.signal,
       onProgress(
         uploadedBytes,
@@ -575,8 +583,8 @@ async function sendFile(
         });
       },
     });
-    const result = iosTimelineResult(
-      await commitIosFileMessage({
+    const result = nativeTimelineResult(
+      await commitNativeFileMessage({
         id: request.messageId,
         attachment,
         createdAt: request.createdAt,
@@ -611,7 +619,7 @@ async function ensureDownloaded(attachment: {
   });
   if (!status.exists) {
     await nativeDownload.download({
-      url: await getIosAttachmentDownloadUrl(attachment.driveItemId),
+      url: await getNativeAttachmentDownloadUrl(attachment.driveItemId),
       driveItemId: attachment.driveItemId,
       fileName: attachment.name,
     });
@@ -634,7 +642,7 @@ async function nativeDownloadStatus(
 }
 
 function rememberDownload(driveItemId: string): number {
-  const id = iosDownloadId(driveItemId);
+  const id = nativeDownloadId(driveItemId);
   localStorage.setItem(`${DOWNLOAD_MAP_PREFIX}${id}`, driveItemId);
   return id;
 }

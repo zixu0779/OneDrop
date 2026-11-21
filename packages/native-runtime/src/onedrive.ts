@@ -26,7 +26,7 @@ import { writeMessageTombstoneWithAccessToken } from "@onedrop/onedrive/infrastr
 import { enqueueTombstoneWrite } from "@onedrop/onedrive/infrastructure/onedrive/tombstone-write-coordinator";
 import { readAccountSettingsWithAccessToken } from "@onedrop/onedrive/infrastructure/onedrive/settings";
 import { nativeAuth } from "./native-auth";
-import { iosImageMetadata } from "./platform-values";
+import { nativeImageMetadata } from "./platform-values";
 
 const appFolderSchema = z.object({
   id: z.string().min(1),
@@ -38,7 +38,7 @@ const attachmentDownloadSchema = z.object({
   "@microsoft.graph.downloadUrl": z.string().url(),
 });
 
-export type IosMonthTimeline = {
+export type NativeMonthTimeline = {
   month: string;
   appFolderName: string;
   messages: Message[];
@@ -46,7 +46,7 @@ export type IosMonthTimeline = {
   synchronizedAt: string;
 };
 
-export async function readCurrentIosTimeline(): Promise<IosMonthTimeline> {
+export async function readCurrentNativeTimeline(): Promise<NativeMonthTimeline> {
   const { accessToken } = await nativeAuth.getAccessToken();
   const appFolder = await readAppFolder(accessToken);
   const month = getUtcMonth();
@@ -77,12 +77,12 @@ export async function readCurrentIosTimeline(): Promise<IosMonthTimeline> {
   };
 }
 
-export async function sendIosTextMessage(input: {
+export async function sendNativeTextMessage(input: {
   id: string;
   text: string;
   createdAt: string;
   senderDeviceId: string;
-}): Promise<IosMonthTimeline> {
+}): Promise<NativeMonthTimeline> {
   const { accessToken } = await nativeAuth.getAccessToken();
   const month = getUtcMonth(new Date(input.createdAt));
   const message = createTextMessage(
@@ -112,7 +112,7 @@ export async function sendIosTextMessage(input: {
   };
 }
 
-export async function registerIosFileMessage(input: {
+export async function registerNativeFileMessage(input: {
   id: string;
   name: string;
   mimeType: string;
@@ -122,7 +122,7 @@ export async function registerIosFileMessage(input: {
   imageWidth?: number;
   imageHeight?: number;
   thumbHash?: string;
-}): Promise<IosMonthTimeline> {
+}): Promise<NativeMonthTimeline> {
   const { accessToken } = await nativeAuth.getAccessToken();
   const month = getUtcMonth(new Date(input.createdAt));
   const message = createUploadingFileMessage(
@@ -130,7 +130,7 @@ export async function registerIosFileMessage(input: {
       name: input.name,
       size: input.size,
       mimeType: input.mimeType || "application/octet-stream",
-      ...iosImageMetadata(input),
+      ...nativeImageMetadata(input),
     },
     input.senderDeviceId,
     new Date(input.createdAt),
@@ -144,7 +144,7 @@ export async function registerIosFileMessage(input: {
   return resultToTimeline(month, result);
 }
 
-export async function uploadIosFile(input: {
+export async function uploadNativeFile(input: {
   id: string;
   file: Blob;
   name: string;
@@ -168,7 +168,7 @@ export async function uploadIosFile(input: {
     size: input.file.size,
     messageId: input.id,
     createdAt: input.createdAt,
-    ...iosImageMetadata(input),
+    ...nativeImageMetadata(input),
     signal: input.signal,
     ...(input.onProgress ? { onProgress: input.onProgress } : {}),
   };
@@ -197,12 +197,12 @@ export async function uploadIosFile(input: {
   );
 }
 
-export async function commitIosFileMessage(input: {
+export async function commitNativeFileMessage(input: {
   id: string;
   attachment: Attachment;
   createdAt: string;
   senderDeviceId: string;
-}): Promise<IosMonthTimeline> {
+}): Promise<NativeMonthTimeline> {
   const { accessToken } = await nativeAuth.getAccessToken();
   const month = getUtcMonth(new Date(input.createdAt));
   const message = createFileMessage(
@@ -219,7 +219,7 @@ export async function commitIosFileMessage(input: {
   return resultToTimeline(month, result);
 }
 
-export async function discardIosFilePlaceholder(
+export async function discardNativeFilePlaceholder(
   id: string,
   createdAt: string,
 ): Promise<void> {
@@ -231,7 +231,7 @@ export async function discardIosFilePlaceholder(
   );
 }
 
-export async function getIosAttachmentDownloadUrl(
+export async function getNativeAttachmentDownloadUrl(
   driveItemId: string,
 ): Promise<string> {
   const { accessToken } = await nativeAuth.getAccessToken();
@@ -247,7 +247,7 @@ export async function getIosAttachmentDownloadUrl(
   ];
 }
 
-export async function deleteIosMessage(
+export async function deleteNativeMessage(
   month: string,
   messageId: string,
 ): Promise<void> {
@@ -264,9 +264,9 @@ export async function deleteIosMessage(
   );
 }
 
-export async function readIosHistoricalTimeline(
+export async function readNativeHistoricalTimeline(
   month: string,
-): Promise<IosMonthTimeline> {
+): Promise<NativeMonthTimeline> {
   const { accessToken } = await nativeAuth.getAccessToken();
   const appFolder = await readAppFolder(accessToken);
   const archive = await readMonthArchive(month, accessToken).catch(
@@ -294,7 +294,7 @@ export async function readIosHistoricalTimeline(
 async function resultToTimeline(
   month: string,
   result: Awaited<ReturnType<typeof appendMessageWithAccessToken>>,
-): Promise<IosMonthTimeline> {
+): Promise<NativeMonthTimeline> {
   const { accessToken } = await nativeAuth.getAccessToken();
   const appFolder = await readAppFolder(accessToken);
   return {

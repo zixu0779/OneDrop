@@ -1,5 +1,6 @@
 import {
   type CSSProperties,
+  type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
   type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -1260,6 +1261,7 @@ export function App() {
   }
 
   function platform(): DevicePlatform {
+    if (document.body.classList.contains("android-surface")) return "android";
     if (
       document.body.classList.contains("ios-surface") ||
       document.body.classList.contains("ios-edge-surface")
@@ -2678,6 +2680,31 @@ export function App() {
     setPendingTexts(restored);
   }
 
+  function handleComposerPaste(
+    event: ReactClipboardEvent<HTMLTextAreaElement>,
+  ) {
+    let images = Array.from(event.clipboardData.files).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    if (images.length === 0) {
+      images = Array.from(event.clipboardData.items)
+        .filter(
+          (item) => item.kind === "file" && item.type.startsWith("image/"),
+        )
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null);
+    }
+    if (images.length === 0) return;
+    event.preventDefault();
+    void (async () => {
+      try {
+        for (const image of images) await selectFile(image);
+      } catch (cause) {
+        setError(getClientError(cause));
+      }
+    })();
+  }
+
   function handleComposerKeyDown(
     event: ReactKeyboardEvent<HTMLTextAreaElement>,
   ) {
@@ -3250,6 +3277,7 @@ export function App() {
                         onChange={(event) => setDraft(event.target.value)}
                         onFocus={handleComposerFocus}
                         onKeyDown={handleComposerKeyDown}
+                        onPaste={handleComposerPaste}
                         placeholder="Message"
                         ref={composerRef}
                         rows={1}
@@ -3378,7 +3406,11 @@ export function App() {
 
 function detectedPlatformLabel(platform: DevicePlatform): string {
   if (platform === "ios") return "iOS";
-  if (platform === "android-edge" || /Android/iu.test(navigator.userAgent))
+  if (
+    platform === "android" ||
+    platform === "android-edge" ||
+    /Android/iu.test(navigator.userAgent)
+  )
     return "Android";
   if (/Windows/iu.test(navigator.userAgent)) return "Windows";
   if (/Macintosh|Mac OS X/iu.test(navigator.userAgent)) return "macOS";
@@ -5718,7 +5750,9 @@ export function CommittedMessageItem({
                 role="menuitem"
                 type="button"
               >
-                Show in folder
+                {document.body.classList.contains("android-surface")
+                  ? "Share file"
+                  : "Show in folder"}
               </button>
             ) : null}
           </>

@@ -2,17 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import { createTextMessage } from "@onedrop/core/features/messages/create-text-message";
 import {
-  iosDownloadId,
-  iosImageMetadata,
-  iosTimelineResult,
-} from "../../apps/ios/web/platform-values";
+  nativeDownloadId,
+  nativeImageMetadata,
+  nativeTimelineResult,
+} from "../../packages/native-runtime/src/platform-values";
 
 describe("iOS platform values", () => {
   it("keeps native download identifiers stable and positive", () => {
-    expect(iosDownloadId("drive-item-a")).toBe(iosDownloadId("drive-item-a"));
-    expect(iosDownloadId("drive-item-a")).toBeGreaterThan(0);
-    expect(iosDownloadId("drive-item-a")).not.toBe(
-      iosDownloadId("drive-item-b"),
+    expect(nativeDownloadId("drive-item-a")).toBe(
+      nativeDownloadId("drive-item-a"),
+    );
+    expect(nativeDownloadId("drive-item-a")).toBeGreaterThan(0);
+    expect(nativeDownloadId("drive-item-a")).not.toBe(
+      nativeDownloadId("drive-item-b"),
     );
   });
 
@@ -24,7 +26,7 @@ describe("iOS platform values", () => {
       "0198a123-4567-7000-8000-000000000002",
     );
     expect(
-      iosTimelineResult({
+      nativeTimelineResult({
         month: "2026-08",
         appFolderName: "OneDrop",
         messages: [message],
@@ -34,14 +36,14 @@ describe("iOS platform values", () => {
     ).toEqual({
       state: "loaded",
       month: "2026-08",
-      eTag: "ios-native",
+      eTag: "native",
       messages: [message],
     });
   });
 
   it("preserves image metadata across the iOS transfer bridge", () => {
     expect(
-      iosImageMetadata({
+      nativeImageMetadata({
         imageWidth: 4032,
         imageHeight: 3024,
         thumbHash: "AQIDBA==",

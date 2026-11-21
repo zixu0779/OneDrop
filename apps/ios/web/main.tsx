@@ -5,7 +5,7 @@ import { App } from "@onedrop/ui/OneDropApp";
 import "@onedrop/ui/styles.css";
 import "@onedrop/ui/mobile.css";
 import { setPlatformBridge } from "@onedrop/platform/platform/platform-bridge";
-import { iosPlatformBridge } from "./ios-platform-bridge";
+import { nativePlatformBridge } from "@onedrop/native-runtime/native-platform-bridge";
 import {
   applyAppearance,
   cachedPreferences,
@@ -13,7 +13,7 @@ import {
 import "./styles.css";
 
 document.body.classList.add("mobile-surface", "ios-surface");
-setPlatformBridge(iosPlatformBridge);
+setPlatformBridge(nativePlatformBridge);
 const cached = cachedPreferences();
 applyAppearance(cached.appearance.theme, cached.appearance.textSize);
 

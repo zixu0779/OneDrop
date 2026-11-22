@@ -24,18 +24,6 @@ including Desktop Edge, Android Edge Canary, native Android, iOS Edge TestFlight
 
 Download the signed native Android APK from the [latest GitHub Release](https://github.com/zixu0779/OneDrop/releases/latest).
 
-## Release packaging
-
-Create the key-free universal Edge package for Partner Center:
-
-```bash
-npm run zip:store
-```
-
-The package is written to `.output/OneDrop-<version>-edge-store.zip`.
-
-See [the release guide](docs/releasing.md) for distribution and Partner Center updates.
-
 ## Development
 
 Install dependencies:
@@ -102,8 +90,6 @@ The debug APK is written to `.output/android/OneDrop-<version>-android-debug.apk
 
 Use `npm run open:android` to open the project in Android Studio.
 
-For signed distribution, see [the release guide](docs/releasing.md#native-android-signing).
-
 ### Native iOS
 
 Install Xcode, connect the iPhone, and wait until Xcode finishes device preparation.
@@ -143,7 +129,7 @@ To build a side-by-side LiveContainer beta, use its independent three-part versi
 npm run pack:ios -- --beta 1.0.0
 ```
 
-The output is `.output/ios-beta/OneDrop-Beta-1.0.0.ipa`. See [the release guide](docs/releasing.md#ios-beta) to distribute a beta.
+The output is `.output/ios-beta/OneDrop-Beta-1.0.0.ipa`.
 
 ### Checks
 

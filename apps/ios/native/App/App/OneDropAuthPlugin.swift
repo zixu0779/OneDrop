@@ -12,6 +12,10 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         CAPPluginMethod(name: "switchAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "removeAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resetAuthorization", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "prepareSignIn", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "commitSignIn", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "discardSignIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "signIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getAccessToken", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "signOut", returnType: CAPPluginReturnPromise)
@@ -23,6 +27,8 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
     private var authenticationSession: ASWebAuthenticationSession?
     private var generation = 0
     private var signingIn = false
+    private var authorizationAttempt: String?
+    private var candidate: (id: String, generation: Int, activeKey: String?, expected: String?, token: StoredToken)?
     private var refreshTasks: [String: (Int, Task<StoredToken, Error>)] = [:]
 
     @objc func status(_ call: CAPPluginCall) {
@@ -48,27 +54,75 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         }
     }
 
-    @objc func signIn(_ call: CAPPluginCall) {
+    @objc func prepareSignIn(_ call: CAPPluginCall) { authorize(call, deferred: true) }
+    @objc func signIn(_ call: CAPPluginCall) { authorize(call, deferred: false) }
+
+    private func authorize(_ call: CAPPluginCall, deferred: Bool) {
         perform(call) {
-            guard !self.signingIn else { throw AuthError.sessionChanged }
-            self.signingIn = true
-            self.generation += 1
+            guard !self.signingIn, self.candidate == nil else { throw AuthError.sessionChanged }
+            guard let id = deferred ? call.getString("attemptId") : UUID().uuidString, !id.isEmpty else { throw AuthError.sessionChanged }
             let generation = self.generation
-            defer { if generation == self.generation { self.signingIn = false } }
-            let configuration = try self.configuration(from: call)
-            let token = try await self.acquireToken(configuration: configuration)
-            guard generation == self.generation else { throw AuthError.sessionChanged }
-            let key = self.accountKey(token)
-            let expected = call.getString("reauthenticateKey")
-            guard !key.isEmpty, expected == nil || expected == key else { throw AuthError.microsoft("Sign in with the selected Microsoft account.") }
-            var accounts = try self.readAccounts()
-            guard accounts.tokens[key] != nil || accounts.tokens.count < 3 else { throw AuthError.microsoft("You can keep up to three accounts.") }
-            accounts.tokens[key] = token
-            accounts.activeKey = key
-            accounts.lastUsed[key] = Date().timeIntervalSince1970 * 1000
-            accounts.required[key] = false
-            try self.storeAccounts(accounts)
-            return self.signedInResult(token)
+            let activeKey = try self.readAccounts().activeKey
+            self.signingIn = true
+            self.authorizationAttempt = id
+            defer { if self.authorizationAttempt == id { self.signingIn = false } }
+            do {
+                let token = try await self.acquireToken(configuration: self.configuration(from: call), attempt: id)
+                guard self.authorizationAttempt == id, generation == self.generation,
+                      try self.readAccounts().activeKey == activeKey else { throw AuthError.sessionChanged }
+                self.candidate = (id, generation, activeKey, call.getString("reauthenticateKey"), token)
+                if deferred { return ["candidateId": id] }
+                return try self.commitCandidate(id)
+            } catch {
+                if self.authorizationAttempt == id {
+                    self.candidate = nil
+                    self.authorizationAttempt = nil
+                    self.signingIn = false
+                }
+                throw error
+            }
+        }
+    }
+    @MainActor private func commitCandidate(_ id: String) throws -> [String: Any] {
+        guard let candidate, candidate.id == id, authorizationAttempt == id,
+              candidate.generation == generation else { throw AuthError.sessionChanged }
+        var accounts = try readAccounts()
+        guard accounts.activeKey == candidate.activeKey else { throw AuthError.sessionChanged }
+        let key = accountKey(candidate.token)
+        guard !key.isEmpty, candidate.expected == nil || candidate.expected == key else { throw AuthError.microsoft("Sign in with the selected Microsoft account.") }
+        guard accounts.tokens[key] != nil || accounts.tokens.count < 3 else { throw AuthError.microsoft("You can keep up to three accounts.") }
+        accounts.tokens[key] = candidate.token
+        accounts.activeKey = key
+        accounts.lastUsed[key] = Date().timeIntervalSince1970 * 1000
+        accounts.required[key] = false
+        try storeAccounts(accounts)
+        generation += 1
+        self.candidate = nil
+        authorizationAttempt = nil
+        signingIn = false
+        return signedInResult(candidate.token)
+    }
+    @objc func commitSignIn(_ call: CAPPluginCall) {
+        perform(call) { try self.commitCandidate(call.getString("candidateId") ?? "") }
+    }
+    @objc func resetAuthorization(_ call: CAPPluginCall) {
+        perform(call) {
+            self.candidate = nil
+            self.authorizationAttempt = nil
+            self.signingIn = false
+            self.authenticationSession?.cancel()
+            return [:]
+        }
+    }
+    @objc func discardSignIn(_ call: CAPPluginCall) {
+        perform(call) {
+            if self.authorizationAttempt == call.getString("attemptId") {
+                self.candidate = nil
+                self.authorizationAttempt = nil
+                self.signingIn = false
+                self.authenticationSession?.cancel()
+            }
+            return [:]
         }
     }
 
@@ -117,7 +171,7 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         return AuthConfiguration(clientId: clientId, authority: authority)
     }
 
-    private func acquireToken(configuration: AuthConfiguration) async throws -> StoredToken {
+    @MainActor private func acquireToken(configuration: AuthConfiguration, attempt: String) async throws -> StoredToken {
         let verifier = randomBase64Url(byteCount: 32)
         let challenge = Data(SHA256.hash(data: Data(verifier.utf8))).base64UrlEncoded
         let state = randomBase64Url(byteCount: 24)
@@ -137,7 +191,8 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
             throw AuthError.invalidConfiguration("Microsoft authorization URL could not be created.")
         }
 
-        let callback = try await authenticate(url: authorizationUrl)
+        let callback = try await authenticate(url: authorizationUrl, attempt: attempt)
+        guard authorizationAttempt == attempt else { throw AuthError.sessionChanged }
         guard let callbackComponents = URLComponents(url: callback, resolvingAgainstBaseURL: false) else {
             throw AuthError.invalidCallback
         }
@@ -163,14 +218,15 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         return response.stored(previousRefreshToken: nil, previousIdToken: nil)
     }
 
-    private func authenticate(url: URL) async throws -> URL {
+    @MainActor private func authenticate(url: URL, attempt: String) async throws -> URL {
         try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.main.async {
+            do {
+                guard self.authorizationAttempt == attempt else { continuation.resume(throwing: AuthError.sessionChanged); return }
                 let session = ASWebAuthenticationSession(
                     url: url,
                     callbackURLScheme: self.callbackScheme
                 ) { callback, error in
-                    self.authenticationSession = nil
+                    if self.authorizationAttempt == attempt { self.authenticationSession = nil }
                     if let callback {
                         continuation.resume(returning: callback)
                     } else if let error {
@@ -285,6 +341,8 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
             var accounts = try self.readAccounts()
             guard let key = call.getString("accountKey"), let token = accounts.tokens[key] else { throw AuthError.signInRequired }
             self.generation += 1
+            self.candidate = nil
+            self.authorizationAttempt = nil
             self.signingIn = false
             self.authenticationSession?.cancel()
             accounts.activeKey = key
@@ -302,6 +360,10 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         }
     }
     @MainActor private func forgetAccount(_ key: String) throws {
+        candidate = nil
+        authorizationAttempt = nil
+        signingIn = false
+        authenticationSession?.cancel()
         var accounts = try readAccounts()
         let wasActive = accounts.activeKey == key
         accounts.tokens.removeValue(forKey: key)

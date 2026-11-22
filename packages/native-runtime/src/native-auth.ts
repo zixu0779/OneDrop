@@ -19,6 +19,15 @@ export type NativeAuthStatus = {
 };
 
 type NativeAuthPlugin = {
+  resetAuthorization(): Promise<void>;
+  prepareSignIn(options: {
+    clientId: string;
+    authority?: string;
+    reauthenticateKey?: string;
+    attemptId: string;
+  }): Promise<{ candidateId: string }>;
+  commitSignIn(options: { candidateId: string }): Promise<NativeAuthStatus>;
+  discardSignIn(options: { attemptId: string }): Promise<void>;
   listAccounts(): Promise<LocalAccounts>;
   switchAccount(options: { accountKey: string }): Promise<NativeAuthStatus>;
   removeAccount(options: { accountKey: string }): Promise<void>;
@@ -41,6 +50,10 @@ export async function restartNativeAccount(): Promise<never> {
   return new Promise(() => {});
 }
 export const nativeAuth: NativeAuthPlugin = {
+  resetAuthorization: () => nativeAuthPlugin.resetAuthorization(),
+  prepareSignIn: (options) => nativeAuthPlugin.prepareSignIn(options),
+  commitSignIn: (options) => nativeAuthPlugin.commitSignIn(options),
+  discardSignIn: (options) => nativeAuthPlugin.discardSignIn(options),
   listAccounts: () => nativeAuthPlugin.listAccounts(),
   switchAccount: async (options) => {
     await nativeAuthPlugin.switchAccount(options);

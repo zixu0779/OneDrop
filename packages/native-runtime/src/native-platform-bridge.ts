@@ -174,16 +174,50 @@ export const nativePlatformBridge: PlatformBridge = {
           if (request.type === "accounts/remove")
             return await handleRequest(request);
           changingAccount = true;
-          await pauseAccountTransfers([...uploads.keys()]);
-          for (const upload of uploads.values()) upload.abort();
-          await Promise.all(
-            [...activeDownloads].map((driveItemId) =>
-              nativeDownload.cancel({ driveItemId }),
-            ),
-          );
-          await Promise.allSettled([...pendingRequests]);
-          await pauseArchiveTasks();
-          await pauseAttachmentCleanup();
+          const drain = async () => {
+            await pauseAccountTransfers([...uploads.keys()]);
+            for (const upload of uploads.values()) upload.abort();
+            const results = await Promise.allSettled([
+              ...[...activeDownloads].map((driveItemId) =>
+                nativeDownload.cancel({ driveItemId }),
+              ),
+              Promise.allSettled([...pendingRequests]),
+              pauseArchiveTasks(),
+              pauseAttachmentCleanup(),
+            ]);
+            const failure = results.find(
+              (result) => result.status === "rejected",
+            );
+            if (failure?.status === "rejected") throw failure.reason;
+          };
+          if (
+            request.type === "accounts/add" ||
+            request.type === "auth/sign-in"
+          ) {
+            const attemptId = crypto.randomUUID();
+            const authorization = nativeAuthPlugin.prepareSignIn({
+              ...getNativeAuthConfiguration(),
+              ...(request.type === "accounts/add" && request.reauthenticateKey
+                ? { reauthenticateKey: request.reauthenticateKey }
+                : {}),
+              attemptId,
+            });
+            const draining = drain();
+            try {
+              const [candidate] = await Promise.all([authorization, draining]);
+              assertAccountSession();
+              await nativeAuthPlugin.commitSignIn(candidate);
+              return await restartNativeAccount();
+            } catch (cause) {
+              try {
+                await nativeAuthPlugin.discardSignIn({ attemptId });
+              } finally {
+                await draining.catch(() => undefined);
+              }
+              throw cause;
+            }
+          }
+          await drain();
           return await handleRequest(request);
         } finally {
           const resume = changingAccount;

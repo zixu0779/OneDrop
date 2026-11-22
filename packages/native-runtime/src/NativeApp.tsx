@@ -16,6 +16,7 @@ export async function mountNativeApp(element: HTMLElement): Promise<void> {
   const root = ReactDOM.createRoot(element);
   root.render(<AppLoading />);
   try {
+    await nativeAuthPlugin.resetAuthorization();
     const status = await nativeAuthPlugin.status();
     if (status.state === "signed-in" && !status.accountKey)
       throw new Error("Account identity is unavailable.");

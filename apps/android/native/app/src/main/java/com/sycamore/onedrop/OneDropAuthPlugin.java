@@ -32,6 +32,11 @@ public class OneDropAuthPlugin extends Plugin {
   private AuthState state;
   private boolean signingIn;
   private volatile int generation;
+  private String authorizationAttempt;
+  private AuthState candidate;
+  private String candidateOwner;
+  private String candidateExpected;
+  private int candidateGeneration;
 
   @Override
   public void load() {
@@ -100,7 +105,7 @@ public class OneDropAuthPlugin extends Plugin {
       updated.getJSONObject("lastUsed").put(key, System.currentTimeMillis());
       store.write(updated.toString());
       accounts = updated;
-      generation++; signingIn = false; state = null;
+      generation++; invalidateAuthorization(); state = null;
       call.resolve(signedIn(state()));
     } catch (Exception error) { call.reject("This account could not be selected."); }
   }
@@ -115,6 +120,7 @@ public class OneDropAuthPlugin extends Plugin {
   }
 
   private void forgetAccount(String key) throws Exception {
+      invalidateAuthorization();
       JSONObject saved = new JSONObject(accounts().toString());
       boolean wasActive = key.equals(saved.optString("activeKey"));
       saved.getJSONObject("tokens").remove(key);
@@ -144,8 +150,13 @@ public class OneDropAuthPlugin extends Plugin {
   }
 
   @PluginMethod
-  public synchronized void signIn(PluginCall call) {
-    if (signingIn) {
+  public synchronized void signIn(PluginCall call) { startSignIn(call, false); }
+
+  @PluginMethod
+  public synchronized void prepareSignIn(PluginCall call) { startSignIn(call, true); }
+
+  private void startSignIn(PluginCall call, boolean deferred) {
+    if (signingIn || candidate != null) {
       call.reject("Sign-in is already in progress.");
       return;
     }
@@ -162,7 +173,12 @@ public class OneDropAuthPlugin extends Plugin {
     }
     try {
       signingIn = true;
-      call.getData().put("_authGeneration", ++generation);
+      authorizationAttempt = deferred ? call.getString("attemptId") : java.util.UUID.randomUUID().toString();
+      if (authorizationAttempt == null || authorizationAttempt.isEmpty()) throw new IllegalArgumentException();
+      call.getData().put("_authAttempt", authorizationAttempt);
+      call.getData().put("_authGeneration", generation);
+      call.getData().put("_deferred", deferred);
+      call.getData().put("_originalActive", accounts().optString("activeKey", ""));
       AuthorizationServiceConfiguration config =
           new AuthorizationServiceConfiguration(
               Uri.parse(authority + "/oauth2/v2.0/authorize"),
@@ -177,7 +193,7 @@ public class OneDropAuthPlugin extends Plugin {
       startActivityForResult(
           call, service.getAuthorizationRequestIntent(request), "authorizationResult");
     } catch (Exception error) {
-      signingIn = false;
+      invalidateAuthorization();
       call.reject("A browser is required to sign in.", error);
     }
   }
@@ -186,19 +202,19 @@ public class OneDropAuthPlugin extends Plugin {
   private synchronized void authorizationResult(PluginCall call, ActivityResult result) {
     if (call == null) return;
     int currentGeneration = call.getInt("_authGeneration", -1);
-    if (currentGeneration != generation) {
+    if (currentGeneration != generation || authorizationAttempt == null || !authorizationAttempt.equals(call.getString("_authAttempt"))) {
       call.reject("Sign-in was cancelled.");
       return;
     }
     if (result.getData() == null) {
-      signingIn = false;
+      invalidateAuthorization();
       call.reject("Sign-in was cancelled.");
       return;
     }
     AuthorizationResponse response = AuthorizationResponse.fromIntent(result.getData());
     AuthorizationException error = AuthorizationException.fromIntent(result.getData());
     if (response == null || error != null) {
-      signingIn = false;
+      invalidateAuthorization();
       call.reject(error == null ? "Sign-in was cancelled." : "Microsoft sign-in failed.", error);
       return;
     }
@@ -207,35 +223,76 @@ public class OneDropAuthPlugin extends Plugin {
         response.createTokenExchangeRequest(),
         (tokens, failure) -> {
           synchronized (OneDropAuthPlugin.this) {
-            if (currentGeneration != generation) {
+            if (currentGeneration != generation || authorizationAttempt == null || !authorizationAttempt.equals(call.getString("_authAttempt"))) {
               call.reject("Sign-in was cancelled.");
               return;
             }
             signingIn = false;
             if (tokens == null || failure != null) {
+              invalidateAuthorization();
               call.reject("Microsoft could not complete sign-in.", failure);
               return;
             }
             try {
               next.update(tokens, null);
-              String key = accountKey(next);
-              String expected = call.getString("reauthenticateKey", "");
-              if (!expected.isEmpty() && !expected.equals(key)) { call.reject("Sign in with the selected Microsoft account."); return; }
-              if (!accounts().getJSONObject("tokens").has(key) && accounts().getJSONObject("tokens").length() >= 3) { call.reject("You can keep up to three accounts."); return; }
-              JSONObject updated = new JSONObject(accounts().toString());
-              updated.put("activeKey", key);
-              updated.getJSONObject("lastUsed").put(key, System.currentTimeMillis());
-              updated.getJSONObject("required").put(key, false);
-              updated.getJSONObject("tokens").put(key, next.jsonSerialize());
-              store.write(updated.toString());
-              accounts = updated;
-              state = next;
-              call.resolve(signedIn(next));
+              candidate = next;
+              candidateGeneration = currentGeneration;
+              candidateOwner = call.getString("_originalActive", "");
+              candidateExpected = call.getString("reauthenticateKey", "");
+              if (call.getBoolean("_deferred", false)) call.resolve(new JSObject().put("candidateId", authorizationAttempt));
+              else call.resolve(commitCandidate(authorizationAttempt));
             } catch (Exception exception) {
+              if (call.getString("_authAttempt", "").equals(authorizationAttempt)) invalidateAuthorization();
               call.reject("The secure session could not be saved.", exception);
             }
           }
         });
+  }
+
+  private JSObject commitCandidate(String id) throws Exception {
+    if (candidate == null || id == null || !id.equals(authorizationAttempt)
+        || candidateGeneration != generation || !candidateOwner.equals(accounts().optString("activeKey", "")))
+      throw new IllegalStateException("The Microsoft session changed.");
+    String key = accountKey(candidate);
+    if (!candidateExpected.isEmpty() && !candidateExpected.equals(key)) throw new IllegalStateException("Sign in with the selected Microsoft account.");
+    if (!accounts().getJSONObject("tokens").has(key) && accounts().getJSONObject("tokens").length() >= 3) throw new IllegalStateException("You can keep up to three accounts.");
+    JSONObject updated = new JSONObject(accounts().toString());
+    updated.put("activeKey", key);
+    updated.getJSONObject("lastUsed").put(key, System.currentTimeMillis());
+    updated.getJSONObject("required").put(key, false);
+    updated.getJSONObject("tokens").put(key, candidate.jsonSerialize());
+    JSObject result = signedIn(candidate);
+    store.write(updated.toString());
+    accounts = updated;
+    state = candidate;
+    generation++;
+    invalidateAuthorization();
+    return result;
+  }
+
+  private void invalidateAuthorization() {
+    authorizationAttempt = null;
+    candidate = null;
+    signingIn = false;
+  }
+
+  // Called only when a new WebView mounts; do not disturb the saved active session.
+  @PluginMethod
+  public synchronized void resetAuthorization(PluginCall call) {
+    invalidateAuthorization();
+    call.resolve();
+  }
+
+  @PluginMethod
+  public synchronized void commitSignIn(PluginCall call) {
+    try { call.resolve(commitCandidate(call.getString("candidateId"))); }
+    catch (Exception error) { call.reject(error.getMessage()); }
+  }
+
+  @PluginMethod
+  public synchronized void discardSignIn(PluginCall call) {
+    if (authorizationAttempt != null && authorizationAttempt.equals(call.getString("attemptId"))) invalidateAuthorization();
+    call.resolve();
   }
 
   @PluginMethod
@@ -366,6 +423,7 @@ public class OneDropAuthPlugin extends Plugin {
 
   @Override
   protected void handleOnDestroy() {
+    synchronized (this) { invalidateAuthorization(); generation++; }
     service.dispose();
   }
 }

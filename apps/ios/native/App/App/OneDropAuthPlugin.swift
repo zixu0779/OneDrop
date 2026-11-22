@@ -8,6 +8,9 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
     let identifier = "OneDropAuthPlugin"
     let jsName = "OneDropAuth"
     let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "listAccounts", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "switchAccount", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "removeAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "signIn", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getAccessToken", returnType: CAPPluginReturnPromise),
@@ -18,9 +21,13 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
     private let keychainAccount = "primary"
     private let expirySkew: TimeInterval = 60
     private var authenticationSession: ASWebAuthenticationSession?
+    private var generation = 0
+    private var signingIn = false
+    private var refreshTasks: [String: (Int, Task<StoredToken, Error>)] = [:]
 
     @objc func status(_ call: CAPPluginCall) {
         perform(call) {
+            let generation = self.generation
             guard let token = try self.readToken() else {
                 return self.signedOutResult()
             }
@@ -29,17 +36,38 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
                 let usable = try await self.usableToken(token)
                 return self.signedInResult(usable)
             } catch AuthError.signInRequired {
-                try self.removeToken()
-                return self.signedOutResult()
+                guard generation == self.generation else { throw AuthError.sessionChanged }
+                var accounts = try self.readAccounts()
+                accounts.required[self.accountKey(token)] = true
+                try self.storeAccounts(accounts)
+                return self.signedInResult(token)
+            } catch {
+                guard generation == self.generation else { throw AuthError.sessionChanged }
+                return self.signedInResult(token)
             }
         }
     }
 
     @objc func signIn(_ call: CAPPluginCall) {
         perform(call) {
+            guard !self.signingIn else { throw AuthError.sessionChanged }
+            self.signingIn = true
+            self.generation += 1
+            let generation = self.generation
+            defer { if generation == self.generation { self.signingIn = false } }
             let configuration = try self.configuration(from: call)
             let token = try await self.acquireToken(configuration: configuration)
-            try self.storeToken(token)
+            guard generation == self.generation else { throw AuthError.sessionChanged }
+            let key = self.accountKey(token)
+            let expected = call.getString("reauthenticateKey")
+            guard !key.isEmpty, expected == nil || expected == key else { throw AuthError.microsoft("Sign in with the selected Microsoft account.") }
+            var accounts = try self.readAccounts()
+            guard accounts.tokens[key] != nil || accounts.tokens.count < 3 else { throw AuthError.microsoft("You can keep up to three accounts.") }
+            accounts.tokens[key] = token
+            accounts.activeKey = key
+            accounts.lastUsed[key] = Date().timeIntervalSince1970 * 1000
+            accounts.required[key] = false
+            try self.storeAccounts(accounts)
             return self.signedInResult(token)
         }
     }
@@ -50,14 +78,14 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
                 throw AuthError.signInRequired
             }
             let token = try await self.usableToken(stored)
-            return ["accessToken": token.accessToken]
+            return ["accessToken": token.accessToken, "accountKey": self.accountKey(token)]
         }
     }
 
     @objc func signOut(_ call: CAPPluginCall) {
         perform(call) {
-            try self.removeToken()
-            return self.signedOutResult()
+            if let key = try self.readAccounts().activeKey { try self.forgetAccount(key) }
+            return try self.readToken().map { self.signedInResult($0) } ?? self.signedOutResult()
         }
     }
 
@@ -68,8 +96,8 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         return ASPresentationAnchor()
     }
 
-    private func perform(_ call: CAPPluginCall, operation: @escaping () async throws -> [String: Any]) {
-        Task {
+    private func perform(_ call: CAPPluginCall, operation: @escaping @MainActor () async throws -> [String: Any]) {
+        Task { @MainActor in
             do {
                 let result = try await operation()
                 call.resolve(result)
@@ -162,10 +190,21 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         }
     }
 
-    private func usableToken(_ token: StoredToken) async throws -> StoredToken {
+    @MainActor private func usableToken(_ token: StoredToken) async throws -> StoredToken {
+        let generation = self.generation
         if token.expiresAt > Date().addingTimeInterval(expirySkew) {
             return token
         }
+        let key = accountKey(token)
+        if try readAccounts().required[key] == true { throw AuthError.signInRequired }
+        if let (ownerGeneration, task) = refreshTasks[key], ownerGeneration == generation { return try await task.value }
+        let task = Task { @MainActor in try await self.refreshStoredToken(token, generation: generation) }
+        refreshTasks[key] = (generation, task)
+        defer { if refreshTasks[key]?.0 == generation { refreshTasks.removeValue(forKey: key) } }
+        return try await task.value
+    }
+
+    @MainActor private func refreshStoredToken(_ token: StoredToken, generation: Int) async throws -> StoredToken {
         guard let refreshToken = token.refreshToken else {
             throw AuthError.signInRequired
         }
@@ -186,6 +225,8 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
                 previousIdToken: token.idToken,
                 configuration: configuration
             )
+            guard generation == self.generation else { throw AuthError.sessionChanged }
+            guard accountKey(refreshed) == accountKey(token) else { throw AuthError.sessionChanged }
             try storeToken(refreshed)
             return refreshed
         } catch let error as TokenEndpointError where error.requiresSignIn {
@@ -227,7 +268,66 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         }
     }
 
+    @objc func listAccounts(_ call: CAPPluginCall) {
+        perform(call) {
+            let accounts = try self.readAccounts()
+            let rows: [[String: Any]] = accounts.tokens.map { key, token in
+                let claims = self.idTokenClaims(token.idToken)
+                return ["key": key, "displayName": claims["name"] as? String ?? "", "username": claims["preferred_username"] as? String ?? "", "lastUsedAt": accounts.lastUsed[key] ?? 0, "signInRequired": accounts.required[key] ?? false]
+            }
+            var result: [String: Any] = ["accounts": rows]
+            if let key = accounts.activeKey { result["activeKey"] = key }
+            return result
+        }
+    }
+    @objc func switchAccount(_ call: CAPPluginCall) {
+        perform(call) {
+            var accounts = try self.readAccounts()
+            guard let key = call.getString("accountKey"), let token = accounts.tokens[key] else { throw AuthError.signInRequired }
+            self.generation += 1
+            self.signingIn = false
+            self.authenticationSession?.cancel()
+            accounts.activeKey = key
+            accounts.lastUsed[key] = Date().timeIntervalSince1970 * 1000
+            try self.storeAccounts(accounts)
+            return self.signedInResult(token)
+        }
+    }
+    @objc func removeAccount(_ call: CAPPluginCall) {
+        perform(call) {
+            guard let key = call.getString("accountKey") else { throw AuthError.signInRequired }
+            guard try self.readAccounts().activeKey != key else { throw AuthError.sessionChanged }
+            try self.forgetAccount(key)
+            return [:]
+        }
+    }
+    @MainActor private func forgetAccount(_ key: String) throws {
+        var accounts = try readAccounts()
+        let wasActive = accounts.activeKey == key
+        accounts.tokens.removeValue(forKey: key)
+        accounts.lastUsed.removeValue(forKey: key)
+        accounts.required.removeValue(forKey: key)
+        if wasActive { accounts.activeKey = accounts.tokens.keys.max { (accounts.lastUsed[$0] ?? 0) < (accounts.lastUsed[$1] ?? 0) } }
+        try storeAccounts(accounts)
+        if wasActive {
+            generation += 1
+            signingIn = false
+            authenticationSession?.cancel()
+        }
+    }
     private func readToken() throws -> StoredToken? {
+        let accounts = try readAccounts()
+        return accounts.activeKey.flatMap { accounts.tokens[$0] }
+    }
+    private func storeToken(_ token: StoredToken) throws {
+        var accounts = try readAccounts()
+        let key = accountKey(token)
+        guard accounts.tokens[key] != nil else { throw AuthError.sessionChanged }
+        accounts.tokens[key] = token
+        accounts.required[key] = false
+        try storeAccounts(accounts)
+    }
+    private func readAccounts() throws -> AccountStore {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -237,15 +337,19 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         ]
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return nil }
+        if status == errSecItemNotFound { return AccountStore() }
         guard status == errSecSuccess, let data = result as? Data else {
             throw AuthError.keychain(status)
         }
-        return try JSONDecoder().decode(StoredToken.self, from: data)
+        if let accounts = try? JSONDecoder().decode(AccountStore.self, from: data) { return accounts }
+        let legacy = try JSONDecoder().decode(StoredToken.self, from: data)
+        let key = accountKey(legacy)
+        guard !key.isEmpty else { throw AuthError.invalidTokenResponse }
+        return AccountStore(activeKey: key, tokens: [key: legacy], lastUsed: [key: Date().timeIntervalSince1970 * 1000])
     }
 
-    private func storeToken(_ token: StoredToken) throws {
-        let data = try JSONEncoder().encode(token)
+    private func storeAccounts(_ accounts: AccountStore) throws {
+        let data = try JSONEncoder().encode(accounts)
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
@@ -266,25 +370,23 @@ final class OneDropAuthPlugin: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationP
         }
     }
 
-    private func removeToken() throws {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: keychainAccount
-        ]
-        let status = SecItemDelete(query as CFDictionary)
-        if status != errSecSuccess && status != errSecItemNotFound {
-            throw AuthError.keychain(status)
-        }
-    }
-
     private func signedOutResult() -> [String: Any] {
         ["state": "signed-out", "redirectUri": redirectUri]
+    }
+
+    private func accountKey(_ token: StoredToken) -> String {
+        let claims = idTokenClaims(token.idToken)
+        guard let issuer = claims["iss"] as? String, !issuer.isEmpty,
+              let subject = claims["sub"] as? String, !subject.isEmpty,
+              let data = try? JSONSerialization.data(withJSONObject: [issuer, subject], options: [.withoutEscapingSlashes]),
+              let value = String(data: data, encoding: .utf8) else { return "" }
+        return value
     }
 
     private func signedInResult(_ token: StoredToken) -> [String: Any] {
         let claims = idTokenClaims(token.idToken)
         return [
+            "accountKey": accountKey(token),
             "state": "signed-in",
             "redirectUri": redirectUri,
             "expiresAt": ISO8601DateFormatter().string(from: token.expiresAt),
@@ -395,6 +497,7 @@ private enum AuthError: LocalizedError {
     case keychain(OSStatus)
     case microsoft(String)
     case signInRequired
+    case sessionChanged
 
     var errorDescription: String? {
         switch self {
@@ -404,6 +507,7 @@ private enum AuthError: LocalizedError {
         case .invalidTokenResponse: "Microsoft returned an invalid token response."
         case let .keychain(status): "The secure session store failed (\(status))."
         case let .microsoft(message): message
+        case .sessionChanged: "The Microsoft account changed. Try again."
         case .signInRequired: "Your Microsoft session ended. Sign in again to continue."
         }
     }
@@ -424,4 +528,11 @@ private extension Data {
         base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
         self.init(base64Encoded: base64)
     }
+}
+
+private struct AccountStore: Codable {
+    var activeKey: String? = nil
+    var tokens: [String: StoredToken] = [:]
+    var lastUsed: [String: Double] = [:]
+    var required: [String: Bool] = [:]
 }

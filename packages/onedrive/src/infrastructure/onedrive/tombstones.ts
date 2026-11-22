@@ -1,3 +1,4 @@
+import { readGraphContent } from "../graph/graph-content";
 import { z } from "zod";
 
 import { oneDropConfig } from "@onedrop/core/config/onedrop";
@@ -19,9 +20,7 @@ export async function readTombstoneIds(
   month: string,
   accessToken: string,
 ): Promise<Set<string>> {
-  const response = await fetch(tombstoneContentUrl(month), {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const response = await readGraphContent(tombstoneItemUrl(month), accessToken);
   if (response.status === 404) return new Set();
   if (!response.ok) {
     throw new Error(
@@ -130,9 +129,9 @@ export async function listMessageTombstonesWithAccessToken(
   while (true) {
     for (const item of page.value) {
       if (!/^\d{4}-\d{2}\.json$/u.test(item.name)) continue;
-      const response = await fetch(
-        `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}/content`,
-        { headers: { Authorization: `Bearer ${accessToken}` } },
+      const response = await readGraphContent(
+        `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}`,
+        accessToken,
       );
       if (!response.ok) {
         throw new Error(
@@ -208,9 +207,9 @@ async function readTombstoneDocument(
     );
   }
   const item = itemSchema.parse(await metadata.json());
-  const content = await fetch(
-    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}/content`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+  const content = await readGraphContent(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}`,
+    accessToken,
   );
   if (!content.ok) {
     throw new Error(

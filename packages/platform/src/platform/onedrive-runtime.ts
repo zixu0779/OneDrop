@@ -1,3 +1,7 @@
+import {
+  accountStorageKey,
+  currentAccountScope,
+} from "@onedrop/app-runtime/features/auth/account-context";
 type StoredValues = Record<string, unknown>;
 
 export type OneDriveRuntime = {
@@ -26,17 +30,24 @@ export function getOneDriveRuntime(): OneDriveRuntime {
     },
     storage: {
       async get(key) {
-        return ((await browser.storage.local.get(key)) as StoredValues)[key];
+        return (
+          (await browser.storage.local.get(
+            accountStorageKey(key),
+          )) as StoredValues
+        )[accountStorageKey(key)];
       },
       async set(key, value) {
-        await browser.storage.local.set({ [key]: value });
+        await browser.storage.local.set({ [accountStorageKey(key)]: value });
       },
       async remove(key) {
-        await browser.storage.local.remove(key);
+        await browser.storage.local.remove(accountStorageKey(key));
       },
     },
     async emit(message) {
-      await browser.runtime.sendMessage(message);
+      await browser.runtime.sendMessage({
+        ...(message as object),
+        accountScope: currentAccountScope(),
+      });
     },
   };
 }

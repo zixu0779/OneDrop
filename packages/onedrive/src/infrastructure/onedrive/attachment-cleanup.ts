@@ -1,3 +1,4 @@
+import { readGraphContent } from "../graph/graph-content";
 import { z } from "zod";
 
 import { oneDropConfig } from "@onedrop/core/config/onedrop";
@@ -374,9 +375,9 @@ async function damagedFilesContainMessage(
   accessToken: string,
 ): Promise<boolean> {
   for (const file of files) {
-    const response = await fetch(
-      `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(file.itemId)}/content`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+    const response = await readGraphContent(
+      `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(file.itemId)}`,
+      accessToken,
     );
     if (!response.ok) {
       throw new Error(
@@ -408,9 +409,9 @@ async function removeTombstone(
     const item = z
       .object({ id: z.string().min(1), eTag: z.string().min(1) })
       .parse(await metadata.json());
-    const content = await fetch(
-      `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}/content`,
-      { headers: { Authorization: `Bearer ${accessToken}` } },
+    const content = await readGraphContent(
+      `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}`,
+      accessToken,
     );
     if (!content.ok) {
       throw new Error(
@@ -557,9 +558,9 @@ async function listTombstones(
     const page = childrenPageSchema.parse(await response.json());
     for (const item of page.value) {
       if (!/^\d{4}-\d{2}\.json$/u.test(item.name ?? "")) continue;
-      const content = await fetch(
-        `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}/content`,
-        { headers: { Authorization: `Bearer ${accessToken}` } },
+      const content = await readGraphContent(
+        `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}`,
+        accessToken,
       );
       if (!content.ok) {
         throw new Error(
@@ -597,4 +598,9 @@ function assertCurrentGeneration(generation: number): void {
   if (generation !== cleanupGeneration) {
     throw new Error("Attachment cleanup was reset.");
   }
+}
+
+export async function pauseAttachmentCleanup(): Promise<void> {
+  cleanupGeneration += 1;
+  await runningCheck?.catch(() => undefined);
 }

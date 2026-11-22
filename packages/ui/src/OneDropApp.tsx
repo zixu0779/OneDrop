@@ -1,3 +1,22 @@
+import { useAccountAvatar } from "./useAccountAvatar";
+import { LoadingSpinner as LoadingIcon } from "./LoadingSpinner";
+import {
+  trackAccountWork,
+  persistPausedResponse,
+} from "@onedrop/app-runtime/features/auth/account-work";
+import {
+  deletePendingMessage,
+  claimPausedTransfer,
+  claimPausedText,
+} from "@onedrop/web-storage/infrastructure/indexed-db/account-data";
+import { EditIcon, SignOutIcon } from "./AccountIcons";
+import { AccountSwitcher } from "./AccountSwitcher";
+import {
+  readDraft,
+  saveDraft,
+  saveSharedAppearance,
+  sharedAppearance,
+} from "@onedrop/app-runtime/features/settings/settings-cache";
 import {
   type CSSProperties,
   type ClipboardEvent as ReactClipboardEvent,
@@ -44,7 +63,6 @@ import {
 import {
   cacheSettings,
   cachedPreferences,
-  clearCachedSettings,
   readCachedAccountSettings,
   readCachedDeviceSettings,
 } from "@onedrop/app-runtime/features/settings/settings-cache";
@@ -83,6 +101,7 @@ import {
 } from "@onedrop/platform/platform/platform-bridge";
 
 export type PendingFile = {
+  pausedForAccountChange?: boolean;
   id: string;
   createdAt: string;
   file?: File;
@@ -100,6 +119,7 @@ export type PendingFile = {
 };
 
 export type PendingText = {
+  pausedForAccountChange?: boolean;
   id: string;
   createdAt: string;
   text: string;
@@ -130,6 +150,7 @@ async function sendRequest(request: RuntimeRequest): Promise<RuntimeResponse> {
   const response = await getPlatformBridge().request(request);
 
   if (!response.ok) {
+    await persistPausedResponse(request, response);
     throw new Error(response.error);
   }
 
@@ -316,6 +337,7 @@ function mergeCurrentMonthSnapshots(
 }
 
 export function App() {
+  const accountAvatar = useAccountAvatar(sendRequest);
   const [status, setStatus] = useState<AuthStatus>();
   const [error, setError] = useState<string>();
   const [isWorking, setIsWorking] = useState(false);
@@ -332,7 +354,8 @@ export function App() {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isHistoryLoadBlocked, setIsHistoryLoadBlocked] = useState(false);
   const [deviceId, setDeviceId] = useState<string>();
-  const [draft, setDraft] = useState("");
+  const [draft, setDraft] = useState(readDraft);
+  useEffect(() => saveDraft(draft), [draft]);
   const [isAccountOpen, setIsAccountOpen] = useState(false);
   const [isAccountSwitcherOpen, setIsAccountSwitcherOpen] = useState(false);
   const [isTimelineScrolling, setIsTimelineScrolling] = useState(false);
@@ -388,6 +411,22 @@ export function App() {
     messageId: string;
     month: string;
   }>();
+  const [preparingFileCount, setPreparingFileCount] = useState(0);
+  const workingRef = useRef(false);
+  const [isFolderOpening, setIsFolderOpening] = useState(false);
+  const folderOpeningRef = useRef(false);
+  const [settingsOperation, setSettingsOperation] = useState<string>();
+  const settingsOperationRef = useRef(false);
+  const [settingsError, setSettingsError] = useState<string>();
+  const [settingsLoadError, setSettingsLoadError] = useState<string>();
+  const [isSettingsLoading, setIsSettingsLoading] = useState(false);
+  const settingsLoadingRef = useRef(false);
+  const deletingIdsRef = useRef(new Set<string>());
+  const restoringIdsRef = useRef(new Set<string>());
+  const cleanupRef = useRef(false);
+  const [isDeletingDevice, setIsDeletingDevice] = useState(false);
+  const [deleteDeviceError, setDeleteDeviceError] = useState<string>();
+  const deleteDeviceInFlightRef = useRef(false);
   const [pendingDeleteDevice, setPendingDeleteDevice] =
     useState<DeviceSettings>();
   const [activeNoticeIndex, setActiveNoticeIndex] = useState(0);
@@ -1080,6 +1119,7 @@ export function App() {
   useEffect(() => {
     const reconcileWhenOnline = () => {
       for (const pending of pendingFiles) {
+        if (pending.pausedForAccountChange) continue;
         if (pending.status === "committing" && pending.attachment) {
           void retryFileCommit(pending);
         } else if (pending.status === "upload-failed") {
@@ -1171,6 +1211,18 @@ export function App() {
     }
   }
 
+  useEffect(() => {
+    const resume = () => {
+      if (status?.state === "signed-in")
+        void loadOneDriveState().catch((cause) =>
+          setError(getClientError(cause)),
+        );
+    };
+    window.addEventListener("onedrop-account-work-resume", resume);
+    return () =>
+      window.removeEventListener("onedrop-account-work-resume", resume);
+  });
+
   async function loadOneDriveState(
     restoreTransfers = true,
     runArchiveMaintenance = true,
@@ -1249,8 +1301,8 @@ export function App() {
     }
     if (restoreTransfers) {
       void Promise.all([
-        restorePendingFiles(monthResponse.result),
-        restorePendingTexts(monthResponse.result),
+        restorePendingFiles(monthResponse.result, true),
+        restorePendingTexts(monthResponse.result, true),
       ]).catch(() => undefined);
     }
     lastSuccessfulSyncAtRef.current = Date.now();
@@ -1273,17 +1325,37 @@ export function App() {
   }
 
   async function loadSettings() {
-    const response = await sendRequest({
-      type: "settings/read",
-      platform: platform(),
-      deviceName: detectedDeviceName(),
-    });
-    if (!response.ok || response.type !== "settings/snapshot")
-      throw new Error("OneDrop received an unexpected settings response.");
-    setAccountSettings(response.snapshot.account);
-    setDeviceSettings(response.snapshot.device);
-    setKnownDevices(response.snapshot.devices);
-    cacheSettings(response.snapshot.account, response.snapshot.device);
+    if (settingsLoadingRef.current) return;
+    settingsLoadingRef.current = true;
+    setIsSettingsLoading(true);
+    setSettingsLoadError(undefined);
+    try {
+      void accountAvatar.load();
+      const response = await sendRequest({
+        type: "settings/read",
+        platform: platform(),
+        deviceName: detectedDeviceName(),
+      });
+      if (!response.ok || response.type !== "settings/snapshot")
+        throw new Error("OneDrop received an unexpected settings response.");
+      setAccountSettings(response.snapshot.account);
+      setDeviceSettings({
+        ...response.snapshot.device,
+        preferences: {
+          ...response.snapshot.device.preferences,
+          appearance: sharedAppearance(
+            response.snapshot.device.preferences.appearance,
+          ),
+        },
+      });
+      setKnownDevices(response.snapshot.devices);
+      cacheSettings(response.snapshot.account, response.snapshot.device);
+    } catch (cause) {
+      setSettingsLoadError(getClientError(cause));
+    } finally {
+      settingsLoadingRef.current = false;
+      setIsSettingsLoading(false);
+    }
   }
 
   function detectedDeviceName(): string {
@@ -1301,6 +1373,8 @@ export function App() {
   }
 
   async function saveDevicePreferences(preferences: DevicePreferences) {
+    if (settingsOperationRef.current) return;
+    saveSharedAppearance(preferences.appearance);
     if (!deviceSettings) return;
     const next = {
       ...deviceSettings,
@@ -1322,6 +1396,7 @@ export function App() {
   async function saveRecycleBinSetting(
     value: "disabled" | 3 | 7 | 10 | 30 | "forever",
   ) {
+    if (settingsOperationRef.current) return;
     const next: AccountSettings = {
       schemaVersion: 1,
       recycleBin:
@@ -1350,6 +1425,7 @@ export function App() {
   function enqueueSettingsWrite(operation: () => Promise<void>) {
     const revision = ++settingsWriteRevisionRef.current;
     setIsSettingsSaving(true);
+    setSettingsError(undefined);
     const queued = settingsWriteQueueRef.current
       .catch(() => undefined)
       .then(operation);
@@ -1357,7 +1433,7 @@ export function App() {
       .then(
         () => undefined,
         (cause) => {
-          setError(
+          setSettingsError(
             cause instanceof Error
               ? cause.message
               : "Settings could not be saved.",
@@ -1370,30 +1446,55 @@ export function App() {
       });
   }
 
+  async function runSettingsAction(
+    key: string,
+    operation: () => Promise<void>,
+  ) {
+    if (settingsOperationRef.current) return;
+    settingsOperationRef.current = true;
+    setSettingsOperation(key);
+    setSettingsError(undefined);
+    try {
+      await settingsWriteQueueRef.current;
+      await operation();
+      setSettingsError(undefined);
+    } catch (cause) {
+      setSettingsError(getClientError(cause));
+    } finally {
+      settingsOperationRef.current = false;
+      setSettingsOperation(undefined);
+    }
+  }
+
   async function resetCurrentDeviceSettings() {
-    const response = await sendRequest({
-      type: "settings/reset-device",
-      platform: platform(),
+    await runSettingsAction("reset", async () => {
+      const response = await sendRequest({
+        type: "settings/reset-device",
+        platform: platform(),
+      });
+      if (!response.ok || response.type !== "settings/device")
+        throw new Error("OneDrop received an unexpected settings response.");
+      setDeviceSettings(response.device);
+      cacheSettings(accountSettings, response.device);
     });
-    if (!response.ok || response.type !== "settings/device")
-      throw new Error("OneDrop received an unexpected settings response.");
-    setDeviceSettings(response.device);
-    cacheSettings(accountSettings, response.device);
   }
 
   async function copySettingsFrom(sourceDeviceId: string) {
-    const response = await sendRequest({
-      type: "settings/copy-device",
-      sourceDeviceId,
-      platform: platform(),
+    await runSettingsAction(`copy:${sourceDeviceId}`, async () => {
+      const response = await sendRequest({
+        type: "settings/copy-device",
+        sourceDeviceId,
+        platform: platform(),
+      });
+      if (!response.ok || response.type !== "settings/device")
+        throw new Error("OneDrop received an unexpected settings response.");
+      setDeviceSettings(response.device);
+      cacheSettings(accountSettings, response.device);
     });
-    if (!response.ok || response.type !== "settings/device")
-      throw new Error("OneDrop received an unexpected settings response.");
-    setDeviceSettings(response.device);
-    cacheSettings(accountSettings, response.device);
   }
 
   function renameCurrentDevice(displayName: string) {
+    if (settingsOperationRef.current) return;
     if (!deviceSettings || !displayName.trim()) return;
     const next = {
       ...deviceSettings,
@@ -1417,17 +1518,31 @@ export function App() {
   }
 
   async function deleteKnownDevice(deviceId: string) {
-    const response = await sendRequest({
-      type: "settings/delete-device",
-      deviceId,
-    });
-    if (!response.ok || response.type !== "settings/device-deleted") {
-      throw new Error("OneDrop received an unexpected settings response.");
+    if (deleteDeviceInFlightRef.current) return;
+    deleteDeviceInFlightRef.current = true;
+    setIsDeletingDevice(true);
+    setDeleteDeviceError(undefined);
+    try {
+      const response = await sendRequest({
+        type: "settings/delete-device",
+        deviceId,
+      });
+      if (!response.ok || response.type !== "settings/device-deleted")
+        throw new Error("OneDrop received an unexpected settings response.");
+      setKnownDevices((items) =>
+        items.filter((item) => item.deviceId !== deviceId),
+      );
+      setPendingDeleteDevice(undefined);
+    } catch (cause) {
+      setDeleteDeviceError(
+        cause instanceof Error
+          ? cause.message
+          : "The device could not be deleted. Try again.",
+      );
+    } finally {
+      deleteDeviceInFlightRef.current = false;
+      setIsDeletingDevice(false);
     }
-    setKnownDevices((items) =>
-      items.filter((item) => item.deviceId !== deviceId),
-    );
-    setPendingDeleteDevice(undefined);
   }
 
   async function checkArchiveTasks() {
@@ -1484,6 +1599,8 @@ export function App() {
   }
 
   async function run(request: RuntimeRequest) {
+    if (workingRef.current) return;
+    workingRef.current = true;
     setIsWorking(true);
     setError(undefined);
 
@@ -1491,7 +1608,6 @@ export function App() {
       const nextStatus = await sendAuthRequest(request);
       setStatus(nextStatus);
       if (request.type === "auth/sign-out") {
-        clearCachedSettings();
         setAccountSettings(readCachedAccountSettings());
         setDeviceSettings(undefined);
         setKnownDevices([]);
@@ -1509,11 +1625,14 @@ export function App() {
         cause instanceof Error ? cause.message : "Authentication failed",
       );
     } finally {
+      workingRef.current = false;
       setIsWorking(false);
     }
   }
 
   async function retryLoad() {
+    if (workingRef.current) return;
+    workingRef.current = true;
     setIsWorking(true);
     setError(undefined);
 
@@ -1526,6 +1645,7 @@ export function App() {
           : "OneDrive synchronization failed",
       );
     } finally {
+      workingRef.current = false;
       setIsWorking(false);
     }
   }
@@ -1648,19 +1768,27 @@ export function App() {
   }
 
   async function openOneDropFolder() {
-    setIsAccountOpen(false);
+    if (folderOpeningRef.current) return;
+    folderOpeningRef.current = true;
+    setIsFolderOpening(true);
     setError(undefined);
     try {
       const response = await sendRequest({ type: "onedrive/open-app-folder" });
       if (!response.ok || response.type !== "onedrive/app-folder-opened") {
         throw new Error("OneDrop could not open its OneDrive folder.");
       }
+      setIsAccountOpen(false);
     } catch (cause) {
       setError(getClientError(cause));
+    } finally {
+      folderOpeningRef.current = false;
+      setIsFolderOpening(false);
     }
   }
 
   async function cleanDeletedData() {
+    if (cleanupRef.current) return;
+    cleanupRef.current = true;
     setShowDeletedDataCleanupConfirmation(false);
     setIsAccountOpen(false);
     setDeletedDataCleanupNotice(undefined);
@@ -1679,6 +1807,7 @@ export function App() {
         error: getClientError(cause),
       });
     } finally {
+      cleanupRef.current = false;
       setIsDeletedDataCleanupRunning(false);
     }
   }
@@ -1752,7 +1881,9 @@ export function App() {
   }
 
   async function restoreRecycleBinMessage(item: DeletedMessageItem) {
-    if (isDeletedDataCleanupRunning) return;
+    if (cleanupRef.current || restoringIdsRef.current.has(item.message.id))
+      return;
+    restoringIdsRef.current.add(item.message.id);
     const messageId = item.message.id;
     const finishLocalWrite = beginLocalWrite(item.originalMonth);
     setRestoringDeletedMessageIds((current) => new Set(current).add(messageId));
@@ -1776,9 +1907,10 @@ export function App() {
         current.filter((deleted) => deleted.message.id !== messageId),
       );
     } catch (cause) {
-      setError(getClientError(cause));
       await loadRecycleBin(true);
+      setError(getClientError(cause));
     } finally {
+      restoringIdsRef.current.delete(messageId);
       finishLocalWrite();
       setRestoringDeletedMessageIds((current) => {
         const next = new Set(current);
@@ -1915,13 +2047,19 @@ export function App() {
     void sendPendingText(pending);
   }
 
-  async function sendPendingText(pending: PendingText) {
+  async function sendPendingText(
+    pending: PendingText,
+    resumeAccountWork = false,
+  ) {
     if (activePendingTextWriteIdsRef.current.has(pending.id)) return;
     const finishLocalWrite = beginLocalWrite(getUtcMonth());
+    const finishAccountWork = trackAccountWork("text", pending.id);
     activePendingTextWriteIdsRef.current.add(pending.id);
     setSendingTextIds((ids) => new Set(ids).add(pending.id));
     setError(undefined);
-    const sentAt = new Date().toISOString();
+    const sentAt = resumeAccountWork
+      ? pending.createdAt
+      : new Date().toISOString();
     try {
       setPendingTexts((items) =>
         items.map((item) => {
@@ -1968,6 +2106,7 @@ export function App() {
       );
     } finally {
       finishLocalWrite();
+      finishAccountWork();
       activePendingTextWriteIdsRef.current.delete(pending.id);
       setSendingTextIds((ids) => {
         const next = new Set(ids);
@@ -1978,7 +2117,8 @@ export function App() {
   }
 
   async function deleteTimelineMessage(messageId: string, month: string) {
-    if (deletingMessageIds.has(messageId)) return;
+    if (deletingIdsRef.current.has(messageId)) return;
+    deletingIdsRef.current.add(messageId);
     setDeletingMessageIds((ids) => new Set(ids).add(messageId));
     const cloudResult =
       month === getUtcMonth()
@@ -2051,24 +2191,15 @@ export function App() {
     }
     setPendingTexts((items) => items.filter((item) => item.id !== messageId));
     setPendingFiles((items) => items.filter((item) => item.id !== messageId));
-    if (isLocalOnlyPending) {
-      await Promise.all([
-        deletePendingText(messageId),
-        deletePendingTransfer(messageId),
-      ]);
-      if (removedPendingFile?.previewUrl) {
-        URL.revokeObjectURL(removedPendingFile.previewUrl);
-      }
-      setDeletingMessageIds((ids) => {
-        const next = new Set(ids);
-        next.delete(messageId);
-        return next;
-      });
-      return;
-    }
     setError(undefined);
     const finishLocalWrite = beginLocalWrite(month);
     try {
+      if (isLocalOnlyPending) {
+        await deletePendingMessage(messageId);
+        if (removedPendingFile?.previewUrl)
+          URL.revokeObjectURL(removedPendingFile.previewUrl);
+        return;
+      }
       const response = await sendRequest({
         type: "messages/delete",
         messageId,
@@ -2078,10 +2209,7 @@ export function App() {
         throw new Error("OneDrop received an unexpected delete response.");
       }
       applyWriteSnapshot(response.result, messageId);
-      await Promise.all([
-        deletePendingText(messageId),
-        deletePendingTransfer(messageId),
-      ]);
+      await deletePendingMessage(messageId);
       if (removedPendingFile?.previewUrl) {
         URL.revokeObjectURL(removedPendingFile.previewUrl);
       }
@@ -2118,8 +2246,21 @@ export function App() {
           );
         }
       }
+      if (removedPendingText)
+        setPendingTexts((items) =>
+          items.some((item) => item.id === messageId)
+            ? items
+            : [...items, removedPendingText],
+        );
+      if (removedPendingFile)
+        setPendingFiles((items) =>
+          items.some((item) => item.id === messageId)
+            ? items
+            : [...items, removedPendingFile],
+        );
       setError(getClientError(cause));
     } finally {
+      deletingIdsRef.current.delete(messageId);
       finishLocalWrite();
       setDeletingMessageIds((ids) => {
         const next = new Set(ids);
@@ -2319,46 +2460,57 @@ export function App() {
   }
 
   async function selectFile(file: File) {
-    const reselectId = reselectPendingIdRef.current;
-    reselectPendingIdRef.current = null;
-    const existing = reselectId
-      ? pendingFiles.find((item) => item.id === reselectId)
-      : undefined;
-    const isImage = file.type.startsWith("image/");
-    const imageMetadata = isImage
-      ? await readLocalImageMetadata(file)
-      : undefined;
-    const pending: PendingFile = {
-      id: existing?.id ?? crypto.randomUUID(),
-      createdAt: existing?.createdAt ?? new Date().toISOString(),
-      file,
-      isImage,
-      ...(imageMetadata ?? {}),
-      ...(isImage ? { previewUrl: URL.createObjectURL(file) } : {}),
-      status: "uploading",
-    };
-    if (existing?.previewUrl) URL.revokeObjectURL(existing.previewUrl);
-    await putPendingTransfer({
-      id: pending.id,
-      createdAt: pending.createdAt,
-      name: file.name,
-      mimeType: file.type || "application/octet-stream",
-      size: file.size,
-      lastModified: file.lastModified,
-      blob: file,
-      isImage: pending.isImage,
-      ...(pending.imageWidth ? { imageWidth: pending.imageWidth } : {}),
-      ...(pending.imageHeight ? { imageHeight: pending.imageHeight } : {}),
-      ...(pending.thumbHash ? { thumbHash: pending.thumbHash } : {}),
-      status: "uploading",
-    });
-    setPendingFiles((items) => [
-      ...items.filter((item) => item.id !== pending.id),
-      pending,
-    ]);
-    forceScrollToBottomRef.current = true;
-    setScrollRevision((revision) => revision + 1);
-    await uploadPendingFile(pending);
+    setPreparingFileCount((count) => count + 1);
+    let pending: PendingFile | undefined;
+    try {
+      const reselectId = reselectPendingIdRef.current;
+      reselectPendingIdRef.current = null;
+      const existing = reselectId
+        ? pendingFiles.find((item) => item.id === reselectId)
+        : undefined;
+      const isImage = file.type.startsWith("image/");
+      const imageMetadata = isImage
+        ? await readLocalImageMetadata(file)
+        : undefined;
+      pending = {
+        id: existing?.id ?? crypto.randomUUID(),
+        createdAt: existing?.createdAt ?? new Date().toISOString(),
+        file,
+        isImage,
+        ...(imageMetadata ?? {}),
+        ...(isImage ? { previewUrl: URL.createObjectURL(file) } : {}),
+        status: "uploading",
+      };
+      await putPendingTransfer({
+        id: pending.id,
+        createdAt: pending.createdAt,
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+        size: file.size,
+        lastModified: file.lastModified,
+        blob: file,
+        isImage: pending.isImage,
+        ...(pending.imageWidth ? { imageWidth: pending.imageWidth } : {}),
+        ...(pending.imageHeight ? { imageHeight: pending.imageHeight } : {}),
+        ...(pending.thumbHash ? { thumbHash: pending.thumbHash } : {}),
+        status: "uploading",
+      });
+      if (existing?.previewUrl) URL.revokeObjectURL(existing.previewUrl);
+      const prepared = pending;
+      setPendingFiles((items) => [
+        ...items.filter((item) => item.id !== prepared.id),
+        prepared,
+      ]);
+      forceScrollToBottomRef.current = true;
+      setScrollRevision((revision) => revision + 1);
+    } catch (cause) {
+      if (pending?.previewUrl) URL.revokeObjectURL(pending.previewUrl);
+      setError(getClientError(cause));
+      return;
+    } finally {
+      setPreparingFileCount((count) => count - 1);
+    }
+    if (pending) await uploadPendingFile(pending);
   }
 
   function canAcceptDesktopFileDrop(event: ReactDragEvent<HTMLElement>) {
@@ -2402,20 +2554,26 @@ export function App() {
     })();
   }
 
-  async function uploadPendingFile(pending: PendingFile) {
+  async function uploadPendingFile(
+    pending: PendingFile,
+    resumeAccountWork = false,
+  ) {
     if (!pending.file) {
       reselectPendingIdRef.current = pending.id;
       fileInputRef.current?.click();
       return;
     }
 
-    const isResend = pending.status !== "uploading";
+    if (resumeAccountWork && cancelledUploadIdsRef.current.has(pending.id))
+      return;
+    const isResend = !resumeAccountWork && pending.status !== "uploading";
     const transferCreatedAt = isResend
       ? new Date().toISOString()
       : pending.createdAt;
     cancelledUploadIdsRef.current.delete(pending.id);
     updatePending(pending.id, {
       status: "uploading",
+      pausedForAccountChange: false,
       progress: 0,
       progressTarget: 0,
     });
@@ -2429,6 +2587,7 @@ export function App() {
       return;
     }
 
+    const finishAccountWork = trackAccountWork("file", pending.id);
     try {
       let base64: string | undefined;
       try {
@@ -2477,7 +2636,7 @@ export function App() {
           },
           messageId: pending.id,
           createdAt: transferCreatedAt,
-          ...(isResend ? { reuseExisting: true } : {}),
+          ...(isResend || resumeAccountWork ? { reuseExisting: true } : {}),
         });
         handleFileTransferResponse(pending.id, response);
       } finally {
@@ -2488,6 +2647,8 @@ export function App() {
         status: "upload-failed",
         error: getClientError(cause),
       });
+    } finally {
+      finishAccountWork();
     }
   }
 
@@ -2495,6 +2656,7 @@ export function App() {
     cancelledUploadIdsRef.current.add(messageId);
     updatePending(messageId, {
       status: "cancelled",
+      pausedForAccountChange: false,
       error: "Upload cancelled.",
       progress: 0,
       progressTarget: 0,
@@ -2585,7 +2747,39 @@ export function App() {
     });
   }
 
-  async function restorePendingFiles(result: MonthReadResult) {
+  async function pausedWorkState(
+    id: string,
+    createdAt: string,
+    result: MonthReadResult,
+    file: boolean,
+  ): Promise<"resume" | "complete" | "defer"> {
+    let remote = result;
+    const month = getUtcMonth(new Date(createdAt));
+    if (month !== result.month) {
+      const response = await sendRequest({
+        type: "messages/read-month",
+        month,
+      });
+      if (!response.ok || response.type !== "messages/month") return "defer";
+      remote = response.result;
+    }
+    if (remote.corruptFiles?.length || remote.messageConflicts?.length)
+      return "defer";
+    if (
+      remote.state === "loaded" &&
+      remote.messages.some(
+        (message) =>
+          message.id === id && (!file || message.type !== "file-uploading"),
+      )
+    )
+      return "complete";
+    return "resume";
+  }
+
+  async function restorePendingFiles(
+    result: MonthReadResult,
+    resumeAccountWork = false,
+  ) {
     const committedIds = new Set(
       result.state === "loaded"
         ? result.messages
@@ -2624,6 +2818,9 @@ export function App() {
       restored.push({
         id: record.id,
         createdAt: record.createdAt,
+        ...(record.pausedForAccountChange
+          ? { pausedForAccountChange: true }
+          : {}),
         file,
         isImage: record.isImage,
         ...(record.imageWidth ? { imageWidth: record.imageWidth } : {}),
@@ -2642,7 +2839,23 @@ export function App() {
       return restored;
     });
     for (const pending of restored) {
-      if (pending.status === "committing" && pending.attachment) {
+      const record = records.find((record) => record.id === pending.id);
+      if (record?.pausedForAccountChange) {
+        if (resumeAccountWork && pending.status !== "cancelled") {
+          const state = await pausedWorkState(
+            pending.id,
+            pending.createdAt,
+            result,
+            true,
+          );
+          if (state === "complete") removePending(pending.id);
+          else if (
+            state === "resume" &&
+            (await claimPausedTransfer(pending.id))
+          )
+            void uploadPendingFile(pending, true);
+        }
+      } else if (pending.status === "committing" && pending.attachment) {
         void retryFileCommit(pending);
       } else if (pending.status === "upload-failed") {
         void discardPendingPlaceholder(pending.id);
@@ -2650,7 +2863,10 @@ export function App() {
     }
   }
 
-  async function restorePendingTexts(result: MonthReadResult) {
+  async function restorePendingTexts(
+    result: MonthReadResult,
+    resumeAccountWork = false,
+  ) {
     const committedIds = new Set(
       result.state === "loaded"
         ? result.messages.map((message) => message.id)
@@ -2678,6 +2894,24 @@ export function App() {
       restored.push({ ...record, status, ...(error ? { error } : {}) });
     }
     setPendingTexts(restored);
+    if (resumeAccountWork)
+      for (const pending of restored) {
+        if (pending.pausedForAccountChange) {
+          const state = await pausedWorkState(
+            pending.id,
+            pending.createdAt,
+            result,
+            false,
+          );
+          if (state === "complete") {
+            await deletePendingText(pending.id);
+            setPendingTexts((items) =>
+              items.filter((item) => item.id !== pending.id),
+            );
+          } else if (state === "resume" && (await claimPausedText(pending.id)))
+            void sendPendingText(pending, true);
+        }
+      }
   }
 
   function handleComposerPaste(
@@ -2749,6 +2983,7 @@ export function App() {
   }
 
   const showUnifiedLoader =
+    !isSettingsOpen &&
     !error &&
     (!status || (status.state === "signed-in" && monthResult === undefined));
 
@@ -2787,8 +3022,15 @@ export function App() {
             onClick={() => void run({ type: "auth/sign-in" })}
             type="button"
           >
-            {isWorking ? "Opening Microsoft…" : "Sign in with Microsoft"}
+            {isWorking ? (
+              <>
+                <LoadingIcon /> Opening Microsoft…
+              </>
+            ) : (
+              "Sign in with Microsoft"
+            )}
           </button>
+          <AccountSwitcher hideWhenEmpty />
         </section>
       ) : null}
 
@@ -2812,12 +3054,38 @@ export function App() {
                 type="button"
               >
                 <span className="account-avatar" aria-hidden="true">
-                  {getAccountInitial(status)}
+                  {accountAvatar.avatar.dataUrl ? (
+                    <img src={accountAvatar.avatar.dataUrl} alt="" />
+                  ) : (
+                    getAccountInitial(status)
+                  )}
                 </span>
                 <span className="account-email">
                   {status.account.username ?? "Microsoft account"}
                 </span>
               </button>
+              {deletingMessageIds.size > 0 || preparingFileCount > 0 ? (
+                <FloatingErrorTooltip
+                  className="account-refresh-tooltip"
+                  message={
+                    preparingFileCount > 0
+                      ? "Preparing files…"
+                      : "Deleting messages…"
+                  }
+                >
+                  <span
+                    className="account-cleanup-status"
+                    role="status"
+                    aria-label={
+                      preparingFileCount > 0
+                        ? "Preparing files"
+                        : "Deleting messages"
+                    }
+                  >
+                    <LoadingIcon />
+                  </span>
+                </FloatingErrorTooltip>
+              ) : null}
               {isDeletedDataCleanupRunning && !isRecycleBinOpen ? (
                 <FloatingErrorTooltip
                   className="account-cleanup-tooltip"
@@ -2850,7 +3118,11 @@ export function App() {
                 <div className="account-popover">
                   <div className="account-popover-current">
                     <span className="account-popover-avatar" aria-hidden="true">
-                      {getAccountInitial(status)}
+                      {accountAvatar.avatar.dataUrl ? (
+                        <img src={accountAvatar.avatar.dataUrl} alt="" />
+                      ) : (
+                        getAccountInitial(status)
+                      )}
                     </span>
                     <span className="account-popover-identity">
                       <strong>
@@ -2883,33 +3155,17 @@ export function App() {
                     </span>
                   </div>
 
-                  {isAccountSwitcherOpen ? (
-                    <div className="account-switcher">
-                      <span className="account-section-label">
-                        Switch account
-                      </span>
-                      <p className="account-switcher-empty">
-                        No other signed-in accounts
-                      </p>
-                      <button
-                        className="account-menu-action"
-                        disabled
-                        type="button"
-                      >
-                        <AddAccountIcon />
-                        <span>Add account</span>
-                      </button>
-                    </div>
-                  ) : null}
+                  {isAccountSwitcherOpen ? <AccountSwitcher /> : null}
 
                   <div className="account-menu-section">
                     <button
                       className="account-menu-action"
-                      disabled={isWorking}
+                      disabled={isFolderOpening}
+                      aria-busy={isFolderOpening}
                       onClick={() => void openOneDropFolder()}
                       type="button"
                     >
-                      <FolderIcon />
+                      {isFolderOpening ? <LoadingIcon /> : <FolderIcon />}
                       <span>Open OneDrive folder</span>
                     </button>
                     {accountSettings.recycleBin.mode !== "disabled" ? (
@@ -2926,16 +3182,15 @@ export function App() {
                       </button>
                     ) : null}
                   </div>
-
                   <div className="account-menu-section account-menu-footer">
                     <button
-                      className="account-menu-action account-popover-signout"
-                      disabled={isWorking || isSyncing}
+                      className="account-menu-action"
+                      disabled={isWorking}
                       onClick={() => void run({ type: "auth/sign-out" })}
                       type="button"
                     >
-                      <SignOutIcon />
-                      <span>Sign out…</span>
+                      {isWorking ? <LoadingIcon /> : <SignOutIcon />}
+                      <span>Sign out</span>
                     </button>
                   </div>
                 </div>
@@ -3147,12 +3402,50 @@ export function App() {
               }
               className="conversation"
             >
-              {isSettingsOpen && deviceSettings ? (
+              {isSettingsOpen && !deviceSettings ? (
+                <div className="settings-view">
+                  <header className="settings-header">
+                    <button
+                      className="recycle-bin-back"
+                      aria-label="Back to messages"
+                      onClick={() => setIsSettingsOpen(false)}
+                      type="button"
+                    >
+                      <BackIcon />
+                    </button>
+                    <strong>Settings</strong>
+                  </header>
+                  <div
+                    className="settings-load-state"
+                    role={settingsLoadError ? "alert" : "status"}
+                  >
+                    {isSettingsLoading ? (
+                      <>
+                        <LoadingIcon /> Loading settings…
+                      </>
+                    ) : (
+                      <>
+                        {settingsLoadError ?? "Settings could not be loaded."}
+                        <button
+                          onClick={() => void loadSettings()}
+                          type="button"
+                        >
+                          Retry
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              ) : isSettingsOpen && deviceSettings ? (
                 <SettingsView
                   account={accountSettings}
+                  avatar={accountAvatar}
+                  accountInitial={getAccountInitial(status)}
                   device={deviceSettings}
                   devices={knownDevices}
                   isSaving={isSettingsSaving}
+                  operation={settingsOperation}
+                  operationError={settingsError ?? settingsLoadError}
                   onBack={() => setIsSettingsOpen(false)}
                   onChange={(preferences) =>
                     void saveDevicePreferences(preferences)
@@ -3160,7 +3453,9 @@ export function App() {
                   onCopy={(id) => void copySettingsFrom(id)}
                   onDelete={(item) => setPendingDeleteDevice(item)}
                   onOpenProject={() =>
-                    void sendRequest({ type: "app/open-project" })
+                    void runSettingsAction("project", async () => {
+                      await sendRequest({ type: "app/open-project" });
+                    })
                   }
                   onRecycleChange={(value) => void saveRecycleBinSetting(value)}
                   onRename={renameCurrentDevice}
@@ -3333,7 +3628,7 @@ export function App() {
               onClick={() => void retryLoad()}
               type="button"
             >
-              Retry
+              {isWorking ? <LoadingIcon /> : null} Retry
             </button>
           ) : null}
         </div>
@@ -3369,9 +3664,15 @@ export function App() {
       {pendingDeleteDevice ? (
         <CenteredConfirmationDialog
           confirmLabel="Delete device"
+          busy={isDeletingDevice}
+          error={deleteDeviceError}
           id="delete-device-confirmation"
           message={`Remove “${pendingDeleteDevice.displayName}” from the device list? Its messages and files will not be deleted.`}
-          onCancel={() => setPendingDeleteDevice(undefined)}
+          onCancel={() => {
+            if (deleteDeviceInFlightRef.current) return;
+            setDeleteDeviceError(undefined);
+            setPendingDeleteDevice(undefined);
+          }}
           onConfirm={() => void deleteKnownDevice(pendingDeleteDevice.deviceId)}
         />
       ) : null}
@@ -3419,10 +3720,14 @@ function detectedPlatformLabel(platform: DevicePlatform): string {
 }
 
 function SettingsView({
+  avatar,
+  accountInitial,
   account,
   device,
   devices,
   isSaving,
+  operation,
+  operationError,
   onBack,
   onChange,
   onCopy,
@@ -3432,10 +3737,14 @@ function SettingsView({
   onRename,
   onReset,
 }: {
+  avatar: ReturnType<typeof useAccountAvatar>;
+  accountInitial: string;
   account: AccountSettings;
   device: DeviceSettings;
   devices: DeviceSettings[];
   isSaving: boolean;
+  operation?: string | undefined;
+  operationError?: string | undefined;
   onBack: () => void;
   onChange: (preferences: DevicePreferences) => void;
   onCopy: (deviceId: string) => void;
@@ -3494,8 +3803,21 @@ function SettingsView({
           <BackIcon />
         </button>
         <strong>Settings</strong>
-        <span className="settings-saving">{isSaving ? "Saving…" : ""}</span>
+        <span className="settings-saving" role="status">
+          {isSaving ? (
+            <>
+              <LoadingIcon /> Saving…
+            </>
+          ) : (
+            ""
+          )}
+        </span>
       </header>
+      {operationError ? (
+        <p className="settings-operation-error" role="alert">
+          {operationError}
+        </p>
+      ) : null}
       <div
         className={`settings-scroll${isSettingsScrolling ? " is-scrolling" : ""}`}
         onMouseMove={(event) => {
@@ -3508,211 +3830,277 @@ function SettingsView({
         onScroll={revealSettingsScrollbar}
         onWheel={revealSettingsScrollbar}
       >
-        <SettingsSection title="Appearance">
-          <SettingsRow label="Theme">
-            <SegmentedControl
-              options={["system", "light", "dark"]}
-              value={p.appearance.theme}
-              onChange={(theme) =>
-                patch({
-                  appearance: {
-                    ...p.appearance,
-                    theme: theme as typeof p.appearance.theme,
-                  },
-                })
-              }
-            />
-          </SettingsRow>
-          <div className="settings-text-size">
-            <span>Text size</span>
-            <input
-              aria-label="Text size"
-              max="4"
-              min="0"
-              onChange={(event) =>
-                patch({
-                  appearance: {
-                    ...p.appearance,
-                    textSize: sizes[Number(event.target.value)]!,
-                  },
-                })
-              }
-              step="1"
-              type="range"
-              value={sizes.indexOf(p.appearance.textSize)}
-            />
-            <div
-              className="settings-text-preview"
-              style={{
-                fontSize: `${[12, 13.5, 15, 16.5, 18][sizes.indexOf(p.appearance.textSize)]}px`,
-              }}
-            >
-              <small>Preview</small>
-              <span>OneDrop message preview</span>
-            </div>
-          </div>
-        </SettingsSection>
-        <SettingsSection title="Messages">
-          <SettingsToggle
-            checked={p.messages.enterToSend}
-            label="Enter to send"
-            onChange={(enterToSend) =>
-              patch({ messages: { ...p.messages, enterToSend } })
-            }
-          />
-          <SettingsToggle
-            checked={p.messages.autoScrollForNewMessages}
-            label="Scroll for new messages"
-            onChange={(autoScrollForNewMessages) =>
-              patch({ messages: { ...p.messages, autoScrollForNewMessages } })
-            }
-          />
-          <SettingsToggle
-            checked={p.messages.detectLinks}
-            label="Detect and enable links"
-            onChange={(detectLinks) =>
-              patch({ messages: { ...p.messages, detectLinks } })
-            }
-          />
-        </SettingsSection>
-        <SettingsSection title="Synchronization">
-          <SettingsRow label="Automatic sync">
-            <SegmentedControl
-              options={["normal", "reduced", "manual"]}
-              labels={["Normal", "Reduced", "Manual only"]}
-              value={p.sync.mode}
-              onChange={(mode) =>
-                patch({ sync: { mode: mode as typeof p.sync.mode } })
-              }
-            />
-          </SettingsRow>
-        </SettingsSection>
-        <SettingsSection title="Image previews">
-          <SettingsToggle
-            checked={p.previews.loadAutomatically}
-            label="Load automatically"
-            onChange={(loadAutomatically) =>
-              patch({ previews: { ...p.previews, loadAutomatically } })
-            }
-          />
-          <SettingsToggle
-            checked={p.previews.wifiOnly}
-            disabled
-            label="Wi-Fi only"
-            onChange={() => undefined}
-          />
-          <button className="settings-disabled-action" disabled type="button">
-            Clear preview cache <small>Coming later</small>
-          </button>
-        </SettingsSection>
-        {device.platform === "desktop-edge" ? (
-          <SettingsSection title="Downloads">
-            <SettingsRow label="Default path">
+        <SettingsSection title="Account">
+          <div className="settings-avatar-row" aria-busy={avatar.busy}>
+            <span className="settings-avatar-preview" aria-hidden="true">
+              {avatar.avatar.dataUrl ? (
+                <img src={avatar.avatar.dataUrl} alt="" />
+              ) : (
+                accountInitial
+              )}
+            </span>
+            <div className="settings-avatar-controls">
+              <label className="settings-avatar-picker">
+                <span>{avatar.busy ? <LoadingIcon /> : null}Choose image</span>
+                <input
+                  aria-label="Choose account image"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp"
+                  disabled={avatar.busy}
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0];
+                    event.currentTarget.value = "";
+                    if (file) void avatar.choose(file);
+                  }}
+                />
+              </label>
               <button
-                className="settings-inline-disabled"
-                disabled
+                disabled={avatar.busy || !avatar.avatar.dataUrl}
+                onClick={() => void avatar.reset()}
                 type="button"
               >
-                Downloads <small>Coming later</small>
+                Restore default
               </button>
+              <small>
+                {avatar.busy
+                  ? "Saving…"
+                  : "Synced with this account · PNG, JPEG or WebP, up to 5 MB"}
+              </small>
+            </div>
+          </div>
+          {avatar.error ? (
+            <p className="settings-avatar-error" role="alert">
+              {avatar.error}{" "}
+              <button
+                disabled={avatar.busy}
+                onClick={() =>
+                  void (avatar.retry ? avatar.retry() : avatar.load())
+                }
+                type="button"
+              >
+                Retry
+              </button>
+            </p>
+          ) : null}
+        </SettingsSection>
+        <fieldset disabled={!!operation} className="settings-preferences-group">
+          <SettingsSection title="Appearance">
+            <SettingsRow label="Theme">
+              <SegmentedControl
+                options={["system", "light", "dark"]}
+                value={p.appearance.theme}
+                onChange={(theme) =>
+                  patch({
+                    appearance: {
+                      ...p.appearance,
+                      theme: theme as typeof p.appearance.theme,
+                    },
+                  })
+                }
+              />
+            </SettingsRow>
+            <div className="settings-text-size">
+              <span>Text size</span>
+              <input
+                aria-label="Text size"
+                max="4"
+                min="0"
+                onChange={(event) =>
+                  patch({
+                    appearance: {
+                      ...p.appearance,
+                      textSize: sizes[Number(event.target.value)]!,
+                    },
+                  })
+                }
+                step="1"
+                type="range"
+                value={sizes.indexOf(p.appearance.textSize)}
+              />
+              <div
+                className="settings-text-preview"
+                style={{
+                  fontSize: `${[12, 13.5, 15, 16.5, 18][sizes.indexOf(p.appearance.textSize)]}px`,
+                }}
+              >
+                <small>Preview</small>
+                <span>OneDrop message preview</span>
+              </div>
+            </div>
+          </SettingsSection>
+          <SettingsSection title="Messages">
+            <SettingsToggle
+              checked={p.messages.enterToSend}
+              label="Enter to send"
+              onChange={(enterToSend) =>
+                patch({ messages: { ...p.messages, enterToSend } })
+              }
+            />
+            <SettingsToggle
+              checked={p.messages.autoScrollForNewMessages}
+              label="Scroll for new messages"
+              onChange={(autoScrollForNewMessages) =>
+                patch({ messages: { ...p.messages, autoScrollForNewMessages } })
+              }
+            />
+            <SettingsToggle
+              checked={p.messages.detectLinks}
+              label="Detect and enable links"
+              onChange={(detectLinks) =>
+                patch({ messages: { ...p.messages, detectLinks } })
+              }
+            />
+          </SettingsSection>
+          <SettingsSection title="Synchronization">
+            <SettingsRow label="Automatic sync">
+              <SegmentedControl
+                options={["normal", "reduced", "manual"]}
+                labels={["Normal", "Reduced", "Manual only"]}
+                value={p.sync.mode}
+                onChange={(mode) =>
+                  patch({ sync: { mode: mode as typeof p.sync.mode } })
+                }
+              />
             </SettingsRow>
           </SettingsSection>
-        ) : null}
-        <SettingsSection title="Recycle bin">
-          <SettingsRow label="Keep deleted items">
-            <select
-              onChange={(event) => {
-                const value = event.target.value;
-                onRecycleChange(
-                  value === "disabled" || value === "forever"
-                    ? value
-                    : (Number(value) as 3 | 7 | 10 | 30),
-                );
-              }}
-              value={recycleValue}
-            >
-              <option value="disabled">Off</option>
-              <option value="3">3 days</option>
-              <option value="7">7 days</option>
-              <option value="10">10 days</option>
-              <option value="30">30 days</option>
-              <option value="forever">Permanent</option>
-            </select>
-          </SettingsRow>
-        </SettingsSection>
-        <SettingsSection title="Devices">
-          <div className="settings-device-row">
-            <span className="settings-device-copy">
-              {isRenaming ? (
-                <input
-                  aria-label="Device name"
-                  autoFocus
-                  maxLength={120}
-                  onChange={(event) => setDeviceNameDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" && deviceNameDraft.trim()) {
-                      onRename(deviceNameDraft);
-                      setIsRenaming(false);
-                    } else if (event.key === "Escape") {
-                      setDeviceNameDraft(device.displayName);
-                      setIsRenaming(false);
-                    }
-                  }}
-                  value={deviceNameDraft}
-                />
-              ) : (
-                <span className="settings-device-name">
-                  <strong>{device.displayName}</strong>
-                  <button
-                    aria-label="Rename this device"
-                    className="settings-device-edit"
-                    onClick={() => setIsRenaming(true)}
-                    type="button"
-                  >
-                    <EditIcon />
-                  </button>
-                </span>
-              )}
-              <small>Current device</small>
-            </span>
-            <span className="settings-device-actions">
-              {isRenaming ? (
+          <SettingsSection title="Image previews">
+            <SettingsToggle
+              checked={p.previews.loadAutomatically}
+              label="Load automatically"
+              onChange={(loadAutomatically) =>
+                patch({ previews: { ...p.previews, loadAutomatically } })
+              }
+            />
+            <SettingsToggle
+              checked={p.previews.wifiOnly}
+              disabled
+              label="Wi-Fi only"
+              onChange={() => undefined}
+            />
+            <button className="settings-disabled-action" disabled type="button">
+              Clear preview cache <small>Coming later</small>
+            </button>
+          </SettingsSection>
+          {device.platform === "desktop-edge" ? (
+            <SettingsSection title="Downloads">
+              <SettingsRow label="Default path">
                 <button
-                  disabled={!deviceNameDraft.trim()}
-                  onClick={() => {
-                    onRename(deviceNameDraft);
-                    setIsRenaming(false);
-                  }}
+                  className="settings-inline-disabled"
+                  disabled
                   type="button"
                 >
-                  Save
+                  Downloads <small>Coming later</small>
                 </button>
-              ) : null}
-              <button onClick={onReset} type="button">
-                Reset to defaults
-              </button>
-            </span>
-          </div>
-          {devices
-            .filter((item) => item.deviceId !== device.deviceId)
-            .map((item) => (
-              <KnownDeviceRow
-                device={item}
-                key={item.deviceId}
-                onCopy={() => onCopy(item.deviceId)}
-                onDelete={() => onDelete(item)}
-              />
-            ))}
-        </SettingsSection>
+              </SettingsRow>
+            </SettingsSection>
+          ) : null}
+          <SettingsSection title="Recycle bin">
+            <SettingsRow label="Keep deleted items">
+              <select
+                onChange={(event) => {
+                  const value = event.target.value;
+                  onRecycleChange(
+                    value === "disabled" || value === "forever"
+                      ? value
+                      : (Number(value) as 3 | 7 | 10 | 30),
+                  );
+                }}
+                value={recycleValue}
+              >
+                <option value="disabled">Off</option>
+                <option value="3">3 days</option>
+                <option value="7">7 days</option>
+                <option value="10">10 days</option>
+                <option value="30">30 days</option>
+                <option value="forever">Permanent</option>
+              </select>
+            </SettingsRow>
+          </SettingsSection>
+          <SettingsSection title="Devices">
+            <div className="settings-device-row">
+              <span className="settings-device-copy">
+                {isRenaming ? (
+                  <input
+                    aria-label="Device name"
+                    autoFocus
+                    maxLength={120}
+                    onChange={(event) => setDeviceNameDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && deviceNameDraft.trim()) {
+                        onRename(deviceNameDraft);
+                        setIsRenaming(false);
+                      } else if (event.key === "Escape") {
+                        setDeviceNameDraft(device.displayName);
+                        setIsRenaming(false);
+                      }
+                    }}
+                    value={deviceNameDraft}
+                  />
+                ) : (
+                  <span className="settings-device-name">
+                    <strong>{device.displayName}</strong>
+                    <button
+                      aria-label="Rename this device"
+                      className="settings-device-edit"
+                      onClick={() => setIsRenaming(true)}
+                      type="button"
+                    >
+                      <EditIcon />
+                    </button>
+                  </span>
+                )}
+                <small>Current device</small>
+              </span>
+              <span className="settings-device-actions">
+                {isRenaming ? (
+                  <button
+                    disabled={!deviceNameDraft.trim()}
+                    onClick={() => {
+                      onRename(deviceNameDraft);
+                      setIsRenaming(false);
+                    }}
+                    type="button"
+                  >
+                    Save
+                  </button>
+                ) : null}
+                <button
+                  onClick={onReset}
+                  disabled={!!operation}
+                  aria-busy={operation === "reset"}
+                  type="button"
+                >
+                  {operation === "reset" ? <LoadingIcon /> : null} Reset to
+                  defaults
+                </button>
+              </span>
+            </div>
+            {devices
+              .filter((item) => item.deviceId !== device.deviceId)
+              .map((item) => (
+                <KnownDeviceRow
+                  device={item}
+                  busy={!!operation}
+                  copying={operation === `copy:${item.deviceId}`}
+                  key={item.deviceId}
+                  onCopy={() => onCopy(item.deviceId)}
+                  onDelete={() => onDelete(item)}
+                />
+              ))}
+          </SettingsSection>
+        </fieldset>
         <SettingsSection title="About">
           <button
             className="settings-about settings-about-link"
+            disabled={!!operation}
+            aria-busy={operation === "project"}
             onClick={onOpenProject}
             type="button"
           >
             <strong>{appMetadata.name}</strong>
             <span>
-              GitHub <ExternalLinkIcon />
+              GitHub{" "}
+              {operation === "project" ? <LoadingIcon /> : <ExternalLinkIcon />}
             </span>
           </button>
           <div className="settings-about">
@@ -3730,11 +4118,15 @@ function SettingsView({
 }
 
 function KnownDeviceRow({
+  busy,
+  copying,
   device,
   onCopy,
   onDelete,
 }: {
   device: DeviceSettings;
+  busy: boolean;
+  copying: boolean;
   onCopy: () => void;
   onDelete: () => void;
 }) {
@@ -3777,8 +4169,13 @@ function KnownDeviceRow({
           <small>{new Date(device.lastSeenAt).toLocaleDateString()}</small>
         </span>
         <span className="settings-device-actions">
-          <button onClick={onCopy} type="button">
-            Copy settings
+          <button
+            onClick={onCopy}
+            disabled={busy}
+            aria-busy={copying}
+            type="button"
+          >
+            {copying ? <LoadingIcon /> : null} Copy settings
           </button>
           {!isMobile ? (
             <button
@@ -4767,6 +5164,7 @@ function PendingTextItem({
   onDelete: (messageId: string) => void;
   onResend: (item: PendingText) => void;
 }) {
+  const [copyError, setCopyError] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [lineLayout, setLineLayout] = useState<"one" | "two" | "many">("many");
   const [forcedBreakAt, setForcedBreakAt] = useState<number>();
@@ -4776,8 +5174,13 @@ function PendingTextItem({
   const textRef = useRef<HTMLParagraphElement>(null);
 
   async function copyText() {
-    await navigator.clipboard.writeText(item.text);
-    setIsMenuOpen(false);
+    try {
+      await navigator.clipboard.writeText(item.text);
+      setCopyError(false);
+      setIsMenuOpen(false);
+    } catch {
+      setCopyError(true);
+    }
   }
 
   useLayoutEffect(() => {
@@ -4923,6 +5326,11 @@ function PendingTextItem({
           </>
         </span>
       )}
+      {copyError ? (
+        <span className="pending-text-error">
+          <AttachmentError message="Couldn’t copy this text. Try again." />
+        </span>
+      ) : null}
       {!isSending && item.status === "send-failed" ? (
         <span className="pending-text-error">
           <AttachmentError message="Send failed" />
@@ -5085,7 +5493,12 @@ export function CommittedMessageItem({
   onDelete?: () => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const [isAttachmentWorking, setIsAttachmentWorking] = useState(false);
+  const [isAttachmentWorking, setAttachmentWorking] = useState(false);
+  const attachmentWorkingRef = useRef(false);
+  function setIsAttachmentWorking(value: boolean) {
+    attachmentWorkingRef.current = value;
+    setAttachmentWorking(value);
+  }
   const [attachmentOperationError, setAttachmentOperationError] =
     useState<string>();
   const [localDownloadId, setLocalDownloadId] = useState<number | null>();
@@ -5205,8 +5618,12 @@ export function CommittedMessageItem({
 
   async function copyText() {
     if (message.type !== "text") return;
-    await getPlatformBridge().copyText(message.text);
-    setIsMenuOpen(false);
+    try {
+      await getPlatformBridge().copyText(message.text);
+      setIsMenuOpen(false);
+    } catch {
+      setAttachmentOperationError("Couldn’t copy this text. Try again.");
+    }
   }
 
   async function markLocalAttachmentMissing() {
@@ -5392,7 +5809,11 @@ export function CommittedMessageItem({
     saveAs: boolean,
     source: "control" | "bubble" = "control",
   ) {
-    if (message.type !== "file" || isAttachmentWorking || isCloudMissing) {
+    if (
+      message.type !== "file" ||
+      attachmentWorkingRef.current ||
+      isCloudMissing
+    ) {
       return;
     }
     if (platformCapabilities.systemFileShare) {
@@ -5475,7 +5896,11 @@ export function CommittedMessageItem({
   }
 
   async function openAttachmentInOneDrive() {
-    if (message.type !== "file" || isAttachmentWorking || isCloudMissing)
+    if (
+      message.type !== "file" ||
+      attachmentWorkingRef.current ||
+      isCloudMissing
+    )
       return;
     setIsAttachmentWorking(true);
     setIsMenuOpen(false);
@@ -5498,7 +5923,7 @@ export function CommittedMessageItem({
     if (
       message.type !== "file" ||
       typeof localDownloadId !== "number" ||
-      isAttachmentWorking
+      attachmentWorkingRef.current
     )
       return;
     setIsAttachmentWorking(true);
@@ -5528,13 +5953,16 @@ export function CommittedMessageItem({
   }
 
   async function copyImage() {
-    if (!imagePreviewDataUrl) return;
+    if (!imagePreviewDataUrl || attachmentWorkingRef.current) return;
+    setIsAttachmentWorking(true);
     setIsMenuOpen(false);
     try {
       const pngBlob = await imageDataUrlToPngBlob(imagePreviewDataUrl);
       await getPlatformBridge().copyImage(await blobToDataUrl(pngBlob));
     } catch {
       setAttachmentOperationError("Couldn’t copy this image.");
+    } finally {
+      setIsAttachmentWorking(false);
     }
   }
 
@@ -5977,12 +6405,16 @@ function CenteredDeletedDataCleanupNotice({
 
 function CenteredConfirmationDialog({
   confirmLabel,
+  busy = false,
+  error,
   id,
   message,
   onCancel,
   onConfirm,
 }: {
   confirmLabel: string;
+  busy?: boolean;
+  error?: string | undefined;
   id: string;
   message: string;
   onCancel: () => void;
@@ -5993,7 +6425,8 @@ function CenteredConfirmationDialog({
       aria-labelledby={id}
       aria-modal="true"
       className="operation-dialog-backdrop"
-      onClick={onCancel}
+      onClick={busy ? undefined : onCancel}
+      aria-busy={busy}
       role="dialog"
     >
       <div
@@ -6001,15 +6434,19 @@ function CenteredConfirmationDialog({
         onClick={(event) => event.stopPropagation()}
       >
         <p id={id}>{message}</p>
+        {error ? <p role="alert">{error}</p> : null}
         <div className="operation-dialog-actions">
-          <button autoFocus onClick={onCancel} type="button">
+          <button autoFocus disabled={busy} onClick={onCancel} type="button">
             Cancel
           </button>
           <button
             className="operation-dialog-danger"
+            disabled={busy}
+            aria-busy={busy}
             onClick={onConfirm}
             type="button"
           >
+            {busy ? <LoadingIcon /> : null}
             {confirmLabel}
           </button>
         </div>
@@ -6970,27 +7407,10 @@ function SettingsIcon() {
   );
 }
 
-function EditIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20">
-      <path d="m12.8 4.2 3 3M4.5 15.5l.7-3.4 7.9-7.9a1.4 1.4 0 0 1 2 0l.7.7a1.4 1.4 0 0 1 0 2l-7.9 7.9-3.4.7Z" />
-    </svg>
-  );
-}
-
 function ExternalLinkIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
       <path d="M11 4h5v5m0-5-7 7M8 6H5.5A1.5 1.5 0 0 0 4 7.5v7A1.5 1.5 0 0 0 5.5 16h7a1.5 1.5 0 0 0 1.5-1.5V12" />
-    </svg>
-  );
-}
-
-function AddAccountIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20">
-      <circle cx="7.5" cy="7" r="2.7" />
-      <path d="M2.8 15c.7-2.5 2.3-3.8 4.7-3.8s4 1.3 4.7 3.8M15 5v5m-2.5-2.5h5" />
     </svg>
   );
 }
@@ -7038,14 +7458,6 @@ function MessageIcon() {
   );
 }
 
-function SignOutIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20">
-      <path d="M8.3 3.5H4.7a1.5 1.5 0 0 0-1.5 1.5v10a1.5 1.5 0 0 0 1.5 1.5h3.6M11.2 6.2 15 10l-3.8 3.8M6.8 10H15" />
-    </svg>
-  );
-}
-
 function CloseIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20">
@@ -7062,10 +7474,6 @@ function MoreIcon() {
       <circle cx="13" cy="9" r="1.15" />
     </svg>
   );
-}
-
-function LoadingIcon() {
-  return <span className="loading-spinner" aria-hidden="true" />;
 }
 
 const MESSAGE_LINK_PATTERN = /(?:https?:\/\/|www\.)[^\s<]+/giu;
@@ -7223,16 +7631,22 @@ function getClientError(cause: unknown): string {
 
 function RedirectUri({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
-
+  const [copyFailed, setCopyFailed] = useState(false);
   async function copy() {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setCopyFailed(false);
+    } catch {
+      setCopyFailed(true);
+    }
   }
 
   return (
     <div className="redirect">
       <span>Redirect URI</span>
       <code>{value}</code>
+      {copyFailed ? <span role="alert">Couldn’t copy. Try again.</span> : null}
       <button onClick={() => void copy()} type="button">
         {copied ? "Copied" : "Copy"}
       </button>

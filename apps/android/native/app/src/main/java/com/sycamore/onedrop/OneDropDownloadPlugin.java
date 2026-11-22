@@ -64,6 +64,19 @@ public class OneDropDownloadPlugin extends Plugin {
   }
 
   @PluginMethod
+  public void previousDownloads(PluginCall call) {
+    try {
+      org.json.JSONArray files = new org.json.JSONArray();
+      for (String id : getContext().getSharedPreferences("downloads", Context.MODE_PRIVATE).getAll().keySet()) {
+        if (id.matches("[0-9a-f]{64}:.*")) continue;
+        File file = stored(id);
+        if (file != null) files.put(new JSObject().put("id", id).put("name", file.getName()));
+      }
+      call.resolve(new JSObject().put("files", files));
+    } catch (Exception error) { call.reject("Previous downloads could not be listed.", error); }
+  }
+
+  @PluginMethod
   public void download(PluginCall call) {
     final String id;
     final String name;
@@ -127,6 +140,8 @@ public class OneDropDownloadPlugin extends Plugin {
             if (total >= 0 && total != received)
               throw new IllegalStateException("The download was incomplete.");
             File previous = stored(id);
+            synchronized (OneDropDownloadPlugin.this) {
+            if (cancelled.get()) throw new IllegalStateException("Download cancelled.");
             File file = new File(folder, name);
             if (!partial.renameTo(file))
               throw new IllegalStateException("The download could not be saved.");
@@ -138,6 +153,7 @@ public class OneDropDownloadPlugin extends Plugin {
               throw new IllegalStateException("The download could not be saved.");
             }
             if (previous != null && !previous.equals(file)) previous.delete();
+            }
             notifyListeners(
                 "progress",
                 new JSObject()
@@ -153,6 +169,27 @@ public class OneDropDownloadPlugin extends Plugin {
             downloads.remove(id, cancelled);
           }
         });
+  }
+
+  @PluginMethod
+  public synchronized void removeAccount(PluginCall call) {
+    try {
+      String scope = required(call, "scope");
+      if (!scope.matches("[0-9a-f]{64}")) throw new IllegalArgumentException();
+      String prefix = scope + ":";
+      for (Map.Entry<String, AtomicBoolean> task : downloads.entrySet()) if (task.getKey().startsWith(prefix)) task.getValue().set(true);
+      android.content.SharedPreferences registry = getContext().getSharedPreferences("downloads", Context.MODE_PRIVATE);
+      android.content.SharedPreferences.Editor edit = registry.edit();
+      for (String id : registry.getAll().keySet()) if (id.startsWith(prefix)) {
+        File folder = directory(id);
+        File[] files = folder.listFiles();
+        if (files != null) for (File file : files) if (!file.delete()) throw new IllegalStateException();
+        if (folder.exists() && !folder.delete()) throw new IllegalStateException();
+        edit.remove(id);
+      }
+      if (!edit.commit()) throw new IllegalStateException();
+      call.resolve();
+    } catch (Exception error) { call.reject("Account downloads could not be removed."); }
   }
 
   @PluginMethod
@@ -232,6 +269,36 @@ public class OneDropDownloadPlugin extends Plugin {
     }
   }
 
+  private File localExportFile(PluginCall call) {
+    String id = required(call, "exportId");
+    if (!id.matches("[0-9a-f-]{36}")) throw new IllegalArgumentException("Invalid local export.");
+    return new File(getContext().getCacheDir(), "onedrop-exports/" + id + "/" + safeName(required(call, "fileName")));
+  }
+
+  @PluginMethod
+  public void exportLocal(PluginCall call) {
+    try {
+      File file = localExportFile(call);
+      Long offset = call.getLong("offset", -1L);
+      String base64 = call.getString("base64");
+      if (base64 == null || base64.length() > 710000 || offset < 0 || file.length() != offset)
+        throw new IllegalArgumentException("Invalid local export chunk.");
+      if (!file.getParentFile().isDirectory() && !file.getParentFile().mkdirs())
+        throw new IllegalStateException("Local export storage is unavailable.");
+      try (FileOutputStream output = new FileOutputStream(file, offset != 0)) {
+        output.write(Base64.decode(base64, Base64.DEFAULT));
+      }
+      if (!call.getBoolean("complete", false)) {
+        call.resolve(new JSObject().put("fileName", file.getName()));
+        return;
+      }
+      Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+          .addCategory(Intent.CATEGORY_OPENABLE).setType(mimeType(file))
+          .putExtra(Intent.EXTRA_TITLE, file.getName());
+      startActivityForResult(call, intent, "exportResult");
+    } catch (Exception error) { call.reject("Android could not save this file.", error); }
+  }
+
   @PluginMethod
   public void export(PluginCall call) {
     try {
@@ -260,7 +327,8 @@ public class OneDropDownloadPlugin extends Plugin {
     executor.execute(
         () -> {
           try {
-            File file = requireFile(call);
+            File file = call.getString("exportId") == null ? requireFile(call) : localExportFile(call);
+            String fileName = file.getName();
             try (InputStream input = new FileInputStream(file);
                 OutputStream output =
                     getContext().getContentResolver().openOutputStream(destination, "wt")) {
@@ -270,7 +338,7 @@ public class OneDropDownloadPlugin extends Plugin {
               int count;
               while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
             }
-            call.resolve(new JSObject().put("fileName", file.getName()));
+            call.resolve(new JSObject().put("fileName", fileName));
           } catch (Exception error) {
             call.reject("Android could not save this file.", error);
           }

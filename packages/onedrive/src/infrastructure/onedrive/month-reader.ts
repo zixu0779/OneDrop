@@ -1,3 +1,4 @@
+import { readGraphContent } from "../graph/graph-content";
 import { z } from "zod";
 
 import { oneDropConfig } from "@onedrop/core/config/onedrop";
@@ -334,9 +335,9 @@ async function downloadDocument(
   month: string,
   accessToken: string,
 ): Promise<{ document: MonthDocument; messageLines: Record<string, number> }> {
-  const response = await fetch(
-    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(itemId)}/content`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+  const response = await readGraphContent(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(itemId)}`,
+    accessToken,
   );
   if (!response.ok) {
     throw new Error(

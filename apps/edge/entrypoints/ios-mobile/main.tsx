@@ -1,3 +1,5 @@
+import { AppLoading } from "@onedrop/ui/LoadingSpinner";
+import { initializeExtensionAccount } from "@onedrop/extension-runtime/account-bootstrap";
 import React from "react";
 import ReactDOM from "react-dom/client";
 
@@ -15,15 +17,21 @@ import "./styles.css";
 
 configureIosEdgeMobileSurface();
 
-setPlatformBridge(iosEdgePlatformBridge);
-const cached = cachedPreferences();
-applyAppearance(cached.appearance.theme, cached.appearance.textSize);
+const element = document.getElementById("root");
+if (!element) throw new Error("OneDrop root was not found.");
+const appRoot = ReactDOM.createRoot(element);
+appRoot.render(<AppLoading />);
 
-const root = document.getElementById("root");
-if (!root) throw new Error("OneDrop iOS Edge popup root was not found.");
+async function start() {
+  await initializeExtensionAccount();
+  setPlatformBridge(iosEdgePlatformBridge);
+  const cached = cachedPreferences();
+  applyAppearance(cached.appearance.theme, cached.appearance.textSize);
 
-ReactDOM.createRoot(root).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+  appRoot.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
+}
+void start().catch(() => appRoot.render(<AppLoading failed />));

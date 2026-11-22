@@ -1,3 +1,17 @@
+import {
+  readAccountAvatarWithAccessToken,
+  saveAccountAvatarWithAccessToken,
+} from "@onedrop/onedrive/infrastructure/onedrive/settings";
+import { exportBlob } from "./export-local-file";
+import { nativeAuthPlugin, restartNativeAccount } from "./native-auth";
+import { pauseAccountTransfers } from "@onedrop/web-storage/infrastructure/indexed-db/account-data";
+import { pauseArchiveTasks } from "@onedrop/onedrive/infrastructure/onedrive/archive-scheduler";
+import { pauseAttachmentCleanup } from "@onedrop/onedrive/infrastructure/onedrive/attachment-cleanup";
+import {
+  assertAccountSession,
+  scopedLocalKey,
+  unscopedDownloadId,
+} from "./account-session";
 import { Capacitor } from "@capacitor/core";
 import type {
   AuthStatus,
@@ -31,7 +45,6 @@ import {
 import {
   checkAttachmentCleanup,
   cleanDeletedDataNow,
-  resetAttachmentCleanup,
 } from "@onedrop/onedrive/infrastructure/onedrive/attachment-cleanup";
 import {
   readDeletedMessages,
@@ -89,14 +102,14 @@ setOneDriveRuntime({
   },
   storage: {
     async get(key) {
-      const value = localStorage.getItem(key);
+      const value = localStorage.getItem(scopedLocalKey(key));
       return value === null ? undefined : JSON.parse(value);
     },
     async set(key, value) {
-      localStorage.setItem(key, JSON.stringify(value));
+      localStorage.setItem(scopedLocalKey(key), JSON.stringify(value));
     },
     async remove(key) {
-      localStorage.removeItem(key);
+      localStorage.removeItem(scopedLocalKey(key));
     },
   },
   async emit(message) {
@@ -107,7 +120,13 @@ setOneDriveRuntime({
 });
 
 void nativeDownload.addListener("progress", (progress) => {
-  emit({ type: "files/download-progress", ...progress });
+  try {
+    const driveItemId = unscopedDownloadId(progress.driveItemId);
+    if (driveItemId)
+      emit({ type: "files/download-progress", ...progress, driveItemId });
+  } catch {
+    /* The previous account's downloads may finish after sign-out. */
+  }
 });
 
 if (nativePlatform === "android") {
@@ -116,7 +135,13 @@ if (nativePlatform === "android") {
   );
 }
 
+const pendingRequests = new Set<Promise<unknown>>();
+const activeDownloads = new Set<string>();
+const DOWNLOAD_TASK_PREFIX = "download-task.";
+let changingAccount = false;
+let managementLocked = false;
 export const nativePlatformBridge: PlatformBridge = {
+  exportLocalFile: exportBlob,
   capabilities: {
     showInFolder: true,
     saveAs: true,
@@ -131,11 +156,62 @@ export const nativePlatformBridge: PlatformBridge = {
 
   async request(request) {
     try {
-      return await handleRequest(request);
+      assertAccountSession();
+      const management = [
+        "accounts/add",
+        "accounts/switch",
+        "accounts/remove",
+        "auth/sign-in",
+        "auth/sign-out",
+      ].includes(request.type);
+      if (changingAccount)
+        throw new Error("An account change is already in progress.");
+      if (management) {
+        if (managementLocked)
+          throw new Error("An account change is already in progress.");
+        managementLocked = true;
+        try {
+          if (request.type === "accounts/remove")
+            return await handleRequest(request);
+          changingAccount = true;
+          await pauseAccountTransfers([...uploads.keys()]);
+          for (const upload of uploads.values()) upload.abort();
+          await Promise.all(
+            [...activeDownloads].map((driveItemId) =>
+              nativeDownload.cancel({ driveItemId }),
+            ),
+          );
+          await Promise.allSettled([...pendingRequests]);
+          await pauseArchiveTasks();
+          await pauseAttachmentCleanup();
+          return await handleRequest(request);
+        } finally {
+          const resume = changingAccount;
+          changingAccount = false;
+          managementLocked = false;
+          if (resume) {
+            void resumeNativeDownloads();
+            window.dispatchEvent(new Event("onedrop-account-work-resume"));
+          }
+        }
+      }
+      const operation = handleRequest(request);
+      pendingRequests.add(operation);
+      try {
+        const response = await operation;
+        assertAccountSession();
+        return response;
+      } finally {
+        pendingRequests.delete(operation);
+      }
     } catch (cause) {
       return {
         ok: false,
         error: cause instanceof Error ? cause.message : String(cause),
+        accountPaused:
+          changingAccount &&
+          (request.type === "messages/send-text" ||
+            request.type === "files/send"),
       };
     }
   },
@@ -147,7 +223,7 @@ export const nativePlatformBridge: PlatformBridge = {
 
   async findDownload(downloadId) {
     const driveItemId = localStorage.getItem(
-      `${DOWNLOAD_MAP_PREFIX}${downloadId}`,
+      scopedLocalKey(`${DOWNLOAD_MAP_PREFIX}${downloadId}`),
     );
     return driveItemId
       ? nativeDownloadStatus(driveItemId, downloadId)
@@ -161,7 +237,7 @@ export const nativePlatformBridge: PlatformBridge = {
 
   async openDownload(downloadId) {
     const driveItemId = localStorage.getItem(
-      `${DOWNLOAD_MAP_PREFIX}${downloadId}`,
+      scopedLocalKey(`${DOWNLOAD_MAP_PREFIX}${downloadId}`),
     );
     if (!driveItemId) {
       throw new Error(
@@ -196,6 +272,36 @@ async function handleRequest(
   request: RuntimeRequest,
 ): Promise<RuntimeResponse> {
   switch (request.type) {
+    case "accounts/list":
+      return {
+        ok: true,
+        type: "accounts/list",
+        accounts: await nativeAuthPlugin.listAccounts(),
+      };
+    case "accounts/add":
+      await nativeAuth.signIn({
+        ...getNativeAuthConfiguration(),
+        ...(request.reauthenticateKey
+          ? { reauthenticateKey: request.reauthenticateKey }
+          : {}),
+      });
+      return restartNativeAccount();
+    case "accounts/switch":
+      return nativeAuth.switchAccount({
+        accountKey: request.accountKey,
+      }) as Promise<never>;
+    case "accounts/remove": {
+      if (
+        (await nativeAuthPlugin.listAccounts()).activeKey === request.accountKey
+      )
+        throw new Error("Use Sign out to remove the current account.");
+      await nativeAuthPlugin.removeAccount({ accountKey: request.accountKey });
+      return {
+        ok: true,
+        type: "accounts/list",
+        accounts: await nativeAuthPlugin.listAccounts(),
+      };
+    }
     case "auth/status":
       return authResponse(await nativeAuth.status());
     case "auth/sign-in": {
@@ -209,11 +315,25 @@ async function handleRequest(
     }
     case "auth/sign-out": {
       const status = await nativeAuth.signOut();
-      await resetAttachmentCleanup();
       return authResponse(status);
     }
     case "device/id":
       return { ok: true, type: "device/id", deviceId: deviceId() };
+    case "settings/read-avatar":
+      return {
+        ok: true,
+        type: "settings/avatar",
+        avatar: await readAccountAvatarWithAccessToken(await accessToken()),
+      };
+    case "settings/save-avatar":
+      return {
+        ok: true,
+        type: "settings/avatar",
+        avatar: await saveAccountAvatarWithAccessToken(
+          await accessToken(),
+          request.avatar,
+        ),
+      };
     case "settings/read": {
       const token = await accessToken();
       return {
@@ -559,6 +679,7 @@ async function sendFile(
     uploads.set(request.messageId, controller);
     const attachment = await uploadNativeFile({
       id: request.messageId,
+      ...(request.reuseExisting ? { reuseExisting: true } : {}),
       file,
       name: request.file.name,
       mimeType: request.file.mimeType,
@@ -617,13 +738,24 @@ async function ensureDownloaded(attachment: {
   const status = await nativeDownload.status({
     driveItemId: attachment.driveItemId,
   });
+  const taskKey = scopedLocalKey(DOWNLOAD_TASK_PREFIX + attachment.driveItemId);
   if (!status.exists) {
-    await nativeDownload.download({
-      url: await getNativeAttachmentDownloadUrl(attachment.driveItemId),
-      driveItemId: attachment.driveItemId,
-      fileName: attachment.name,
-    });
+    localStorage.setItem(taskKey, JSON.stringify(attachment));
+    activeDownloads.add(attachment.driveItemId);
+    try {
+      const url = await getNativeAttachmentDownloadUrl(attachment.driveItemId);
+      if (changingAccount)
+        throw new Error("Download paused while changing accounts.");
+      await nativeDownload.download({
+        url,
+        driveItemId: attachment.driveItemId,
+        fileName: attachment.name,
+      });
+    } finally {
+      activeDownloads.delete(attachment.driveItemId);
+    }
   }
+  localStorage.removeItem(taskKey);
   return rememberDownload(attachment.driveItemId);
 }
 
@@ -643,12 +775,17 @@ async function nativeDownloadStatus(
 
 function rememberDownload(driveItemId: string): number {
   const id = nativeDownloadId(driveItemId);
-  localStorage.setItem(`${DOWNLOAD_MAP_PREFIX}${id}`, driveItemId);
+  localStorage.setItem(
+    scopedLocalKey(`${DOWNLOAD_MAP_PREFIX}${id}`),
+    driveItemId,
+  );
   return id;
 }
 
 function downloadIdToDriveItemId(downloadId: number): string | null {
-  return localStorage.getItem(`${DOWNLOAD_MAP_PREFIX}${downloadId}`);
+  return localStorage.getItem(
+    scopedLocalKey(`${DOWNLOAD_MAP_PREFIX}${downloadId}`),
+  );
 }
 
 function decodeBase64(
@@ -693,4 +830,34 @@ function deviceId(): string {
 
 function emit(event: PlatformRuntimeEvent): void {
   for (const listener of listeners) listener(event);
+}
+
+export async function resumeNativeDownloads(): Promise<void> {
+  const prefix = scopedLocalKey(DOWNLOAD_TASK_PREFIX);
+  for (const key of Object.keys(localStorage).filter((key) =>
+    key.startsWith(prefix),
+  )) {
+    if (changingAccount) return;
+    try {
+      const attachment = JSON.parse(localStorage.getItem(key) ?? "null") as {
+        driveItemId: string;
+        name: string;
+      };
+      if (
+        !attachment ||
+        typeof attachment.driveItemId !== "string" ||
+        typeof attachment.name !== "string"
+      )
+        continue;
+      const operation = ensureDownloaded(attachment);
+      pendingRequests.add(operation);
+      try {
+        await operation;
+      } finally {
+        pendingRequests.delete(operation);
+      }
+    } catch {
+      /* Keep paused downloads for the next active session. */
+    }
+  }
 }

@@ -21,6 +21,7 @@ import net.openid.appauth.AuthorizationResponse;
 import net.openid.appauth.AuthorizationService;
 import net.openid.appauth.AuthorizationServiceConfiguration;
 import net.openid.appauth.ResponseTypeValues;
+import net.openid.appauth.TokenResponse;
 import org.json.JSONObject;
 
 @CapacitorPlugin(name = "OneDropAuth")
@@ -38,18 +39,101 @@ public class OneDropAuthPlugin extends Plugin {
     store = new SecureAuthStore(getContext());
   }
 
+  private JSONObject accounts;
+  private synchronized JSONObject accounts() throws Exception {
+    if (accounts == null) {
+      String saved = store.read();
+      JSONObject value = saved == null ? new JSONObject() : new JSONObject(saved);
+      if (value.has("accountsVersion")) accounts = value;
+      else {
+        accounts = new JSONObject().put("accountsVersion", 1).put("tokens", new JSONObject()).put("lastUsed", new JSONObject()).put("required", new JSONObject());
+        if (saved != null) {
+          AuthState legacy = AuthState.jsonDeserialize(saved);
+          if (legacy.getIdToken() != null) {
+            String key = accountKey(legacy);
+            accounts.getJSONObject("tokens").put(key, legacy.jsonSerialize());
+            accounts.put("activeKey", key);
+            accounts.getJSONObject("lastUsed").put(key, System.currentTimeMillis());
+          }
+        }
+      }
+    }
+    return accounts;
+  }
   private synchronized AuthState state() throws Exception {
     if (state == null) {
-      String saved = store.read();
-      state = saved == null ? new AuthState() : AuthState.jsonDeserialize(saved);
+      JSONObject saved = accounts();
+      JSONObject token = saved.getJSONObject("tokens").optJSONObject(saved.optString("activeKey"));
+      state = token == null ? new AuthState() : AuthState.jsonDeserialize(token);
     }
     return state;
+  }
+  private void persistState(AuthState value) throws Exception {
+    String key = accountKey(value);
+    accounts().getJSONObject("tokens").put(key, value.jsonSerialize());
+    store.write(accounts().toString());
+  }
+  @PluginMethod
+  public synchronized void listAccounts(PluginCall call) {
+    try {
+      JSONObject saved = accounts();
+      org.json.JSONArray rows = new org.json.JSONArray();
+      java.util.Iterator<String> keys = saved.getJSONObject("tokens").keys();
+      while (keys.hasNext()) {
+        String key = keys.next();
+        AuthState token = AuthState.jsonDeserialize(saved.getJSONObject("tokens").getJSONObject(key));
+        JSONObject profile = signedIn(token).getJSONObject("account");
+        profile.put("key", key).put("lastUsedAt", saved.getJSONObject("lastUsed").optLong(key))
+            .put("signInRequired", saved.getJSONObject("required").optBoolean(key));
+        rows.put(profile);
+      }
+      call.resolve(new JSObject().put("accounts", rows).put("activeKey", saved.optString("activeKey", null)));
+    } catch (Exception error) { call.reject("The account list could not be read."); }
+  }
+  @PluginMethod
+  public synchronized void switchAccount(PluginCall call) {
+    try {
+      String key = call.getString("accountKey", "");
+      if (!accounts().getJSONObject("tokens").has(key)) throw new IllegalArgumentException();
+      JSONObject updated = new JSONObject(accounts().toString());
+      updated.put("activeKey", key);
+      updated.getJSONObject("lastUsed").put(key, System.currentTimeMillis());
+      store.write(updated.toString());
+      accounts = updated;
+      generation++; signingIn = false; state = null;
+      call.resolve(signedIn(state()));
+    } catch (Exception error) { call.reject("This account could not be selected."); }
+  }
+  @PluginMethod
+  public synchronized void removeAccount(PluginCall call) {
+    try {
+      String key = call.getString("accountKey", "");
+      if (key.equals(accounts().optString("activeKey"))) throw new IllegalStateException("Use Sign out for the current account.");
+      forgetAccount(key);
+      call.resolve();
+    } catch (Exception error) { call.reject("This account could not be removed."); }
+  }
+
+  private void forgetAccount(String key) throws Exception {
+      JSONObject saved = new JSONObject(accounts().toString());
+      boolean wasActive = key.equals(saved.optString("activeKey"));
+      saved.getJSONObject("tokens").remove(key);
+      saved.getJSONObject("lastUsed").remove(key);
+      saved.getJSONObject("required").remove(key);
+      if (key.equals(saved.optString("activeKey"))) {
+        saved.remove("activeKey");
+        String next = null; long newest = -1;
+        java.util.Iterator<String> keys = saved.getJSONObject("tokens").keys();
+        while (keys.hasNext()) { String candidate = keys.next(); long used = saved.getJSONObject("lastUsed").optLong(candidate); if (used > newest) { next = candidate; newest = used; } }
+        if (next != null) saved.put("activeKey", next);
+      }
+      store.write(saved.toString()); accounts = saved; if (wasActive) { generation++; signingIn = false; state = null; }
   }
 
   @PluginMethod
   public void status(PluginCall call) {
     try {
-      if (!state().isAuthorized()) {
+      if (state().getIdToken() == null) {
         call.resolve(signedOut());
         return;
       }
@@ -134,7 +218,17 @@ public class OneDropAuthPlugin extends Plugin {
             }
             try {
               next.update(tokens, null);
-              store.write(next.jsonSerializeString());
+              String key = accountKey(next);
+              String expected = call.getString("reauthenticateKey", "");
+              if (!expected.isEmpty() && !expected.equals(key)) { call.reject("Sign in with the selected Microsoft account."); return; }
+              if (!accounts().getJSONObject("tokens").has(key) && accounts().getJSONObject("tokens").length() >= 3) { call.reject("You can keep up to three accounts."); return; }
+              JSONObject updated = new JSONObject(accounts().toString());
+              updated.put("activeKey", key);
+              updated.getJSONObject("lastUsed").put(key, System.currentTimeMillis());
+              updated.getJSONObject("required").put(key, false);
+              updated.getJSONObject("tokens").put(key, next.jsonSerialize());
+              store.write(updated.toString());
+              accounts = updated;
               state = next;
               call.resolve(signedIn(next));
             } catch (Exception exception) {
@@ -153,10 +247,19 @@ public class OneDropAuthPlugin extends Plugin {
     try {
       AuthState current = state();
       if (!current.isAuthorized()) {
+        if (statusOnly && current.getIdToken() != null) { call.resolve(signedIn(current)); return; }
         call.reject("Sign in to Microsoft to continue.");
         return;
       }
       int currentGeneration = generation;
+      String previousIdToken = current.getIdToken();
+      String ownerKey = accountKey(current);
+      String previousState = current.jsonSerializeString();
+      if (accounts().getJSONObject("required").optBoolean(ownerKey)) {
+        if (statusOnly) call.resolve(signedIn(current));
+        else call.reject("Sign in again to sync this account.");
+        return;
+      }
       current.performActionWithFreshTokens(
           service,
           (token, idToken, error) -> {
@@ -166,22 +269,20 @@ public class OneDropAuthPlugin extends Plugin {
                 return;
               }
               try {
-                store.write(current.jsonSerializeString());
                 if (error != null || token == null) {
-                  if (!current.isAuthorized()) {
-                    store.clear();
-                    state = new AuthState();
-                    if (statusOnly) {
-                      call.resolve(signedOut());
-                      return;
-                    }
-                  }
+                  state = AuthState.jsonDeserialize(previousState);
+                  if (!current.isAuthorized()) accounts().getJSONObject("required").put(ownerKey, true);
+                  store.write(accounts().toString());
+                  if (statusOnly) { call.resolve(signedIn(state)); return; }
                   call.reject(
                       "Microsoft session refresh failed. Try again or sign in again.", error);
                   return;
                 }
+                retainIdentityAfterRefresh(current, previousIdToken);
+                if (!ownerKey.equals(accountKey(current))) throw new IllegalStateException("Account identity changed.");
+                persistState(current);
                 call.resolve(
-                    statusOnly ? signedIn(current) : new JSObject().put("accessToken", token));
+                    statusOnly ? signedIn(current) : new JSObject().put("accessToken", token).put("accountKey", accountKey(current)));
               } catch (Exception exception) {
                 call.reject("The secure session could not be saved.", exception);
               }
@@ -192,14 +293,30 @@ public class OneDropAuthPlugin extends Plugin {
     }
   }
 
+  // AppAuth replaces its last TokenResponse on refresh even when id_token is omitted.
+  // Keep identity from this same session without changing the new access-token lifetime.
+  static void retainIdentityAfterRefresh(AuthState current, String previousIdToken) {
+    TokenResponse latest = current.getLastTokenResponse();
+    if (previousIdToken == null || latest == null || latest.idToken != null) return;
+    TokenResponse retained = new TokenResponse.Builder(latest.request)
+        .setTokenType(latest.tokenType)
+        .setAccessToken(latest.accessToken)
+        .setAccessTokenExpirationTime(latest.accessTokenExpirationTime)
+        .setRefreshToken(latest.refreshToken)
+        .setScope(latest.scope)
+        .setAdditionalParameters(latest.additionalParameters)
+        .setIdToken(previousIdToken)
+        .build();
+    current.update(retained, null);
+  }
+
   @PluginMethod
   public synchronized void signOut(PluginCall call) {
     try {
-      generation++;
-      signingIn = false;
-      store.clear();
-      state = new AuthState();
-      call.resolve(signedOut());
+      String key = accounts().optString("activeKey", "");
+      if (!key.isEmpty()) forgetAccount(key);
+      AuthState next = state();
+      call.resolve(next.getIdToken() == null ? signedOut() : signedIn(next));
     } catch (Exception error) {
       call.reject("The secure session could not be removed.", error);
     }
@@ -207,6 +324,18 @@ public class OneDropAuthPlugin extends Plugin {
 
   private JSObject signedOut() {
     return new JSObject().put("state", "signed-out").put("redirectUri", REDIRECT);
+  }
+
+  private String accountKey(AuthState current) throws Exception {
+    String token = current.getIdToken();
+    if (token == null) throw new IllegalStateException("Microsoft account identity is missing.");
+    String[] parts = token.split("\\.");
+    if (parts.length != 3) throw new IllegalStateException("Microsoft account identity is invalid.");
+    JSONObject claims = new JSONObject(new String(Base64.decode(parts[1], Base64.URL_SAFE), StandardCharsets.UTF_8));
+    String issuer = claims.optString("iss");
+    String subject = claims.optString("sub");
+    if (issuer.isEmpty() || subject.isEmpty()) throw new IllegalStateException("Microsoft account identity is missing.");
+    return new org.json.JSONArray().put(issuer).put(subject).toString();
   }
 
   private JSObject signedIn(AuthState current) throws Exception {
@@ -226,6 +355,7 @@ public class OneDropAuthPlugin extends Plugin {
     SimpleDateFormat date = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
     date.setTimeZone(TimeZone.getTimeZone("UTC"));
     return new JSObject()
+        .put("accountKey", accountKey(current))
         .put("state", "signed-in")
         .put("redirectUri", REDIRECT)
         .put(

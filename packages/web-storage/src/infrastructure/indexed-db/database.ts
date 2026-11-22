@@ -26,6 +26,7 @@ type SettingRecord = {
 };
 
 export type PendingTransferRecord = {
+  pausedForAccountChange?: boolean;
   id: string;
   createdAt: string;
   name: string;
@@ -51,6 +52,7 @@ export type PendingTransferRecord = {
 };
 
 export type PendingTextRecord = {
+  pausedForAccountChange?: boolean;
   id: string;
   createdAt: string;
   text: string;
@@ -76,7 +78,7 @@ export type AttachmentCacheRecord = {
   cachedAt: string;
 };
 
-class OneDropDatabase extends Dexie {
+export class OneDropDatabase extends Dexie {
   monthCache!: EntityTable<MonthCacheRecord, "month">;
   settings!: EntityTable<SettingRecord, "key">;
   pendingTransfers!: EntityTable<PendingTransferRecord, "id">;
@@ -84,8 +86,8 @@ class OneDropDatabase extends Dexie {
   downloads!: EntityTable<DownloadRecord, "driveItemId">;
   attachmentCache!: EntityTable<AttachmentCacheRecord, "driveItemId">;
 
-  constructor() {
-    super("OneDrop");
+  constructor(name = "OneDrop") {
+    super(name);
     this.version(1).stores({
       monthCache: "&month",
       settings: "&key",
@@ -119,4 +121,21 @@ class OneDropDatabase extends Dexie {
   }
 }
 
-export const oneDropDatabase = new OneDropDatabase();
+export let oneDropDatabase = new OneDropDatabase();
+
+let nativeConfigured = false;
+
+// Native startup only: changing accounts requires a new document, not a live swap.
+export function configureNativeDatabase(scope: string): void {
+  if (nativeConfigured)
+    throw new Error("Native database changes require a new document.");
+  nativeConfigured = true;
+  oneDropDatabase.close();
+  oneDropDatabase = new OneDropDatabase(`OneDrop.native.${scope}`);
+}
+
+// Background switches call this only after all old-account work has drained.
+export function configureExtensionDatabase(scope: string): void {
+  oneDropDatabase.close();
+  oneDropDatabase = new OneDropDatabase(`OneDrop.edge.${scope}`);
+}

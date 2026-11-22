@@ -7,10 +7,13 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
     let identifier = "OneDropDownloadPlugin"
     let jsName = "OneDropDownload"
     let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "previousDownloads", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "removeAccount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "download", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "cancel", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "status", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "open", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "exportLocal", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "export", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "showInFolder", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "openExternal", returnType: CAPPluginReturnPromise),
@@ -24,6 +27,8 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
         let call: CAPPluginCall
     }
 
+    private let downloadLock = NSRecursiveLock()
+    private var cancelledTasks = Set<Int>()
     private var contexts: [Int: DownloadContext] = [:]
     private var tasksByDriveItemId: [String: URLSessionDownloadTask] = [:]
     private var documentController: UIDocumentInteractionController?
@@ -33,7 +38,24 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
         delegateQueue: nil
     )
 
+    @objc func previousDownloads(_ call: CAPPluginCall) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
+        var files: [[String: String]] = []
+        let prefix = "onedrop.download."
+        for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix(prefix) {
+            let id = String(key.dropFirst(prefix.count))
+            if id.range(of: "^[0-9a-f]{64}:", options: .regularExpression) != nil { continue }
+            if let url = storedURL(for: id), FileManager.default.fileExists(atPath: url.path) {
+                files.append(["id": id, "name": url.lastPathComponent])
+            }
+        }
+        call.resolve(["files": files])
+    }
+
     @objc func download(_ call: CAPPluginCall) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
         guard let value = call.getString("url"), let url = URL(string: value),
               let driveItemId = call.getString("driveItemId"), !driveItemId.isEmpty,
               let fileName = call.getString("fileName"), !fileName.isEmpty else {
@@ -54,7 +76,25 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
         task.resume()
     }
 
+    @objc func removeAccount(_ call: CAPPluginCall) {
+        guard let scope = call.getString("scope"), scope.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil else { call.reject("Invalid account scope."); return }
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
+        let prefix = scope + ":"
+        for (id, task) in tasksByDriveItemId where id.hasPrefix(prefix) { cancelledTasks.insert(task.taskIdentifier); task.cancel() }
+        do {
+            for key in UserDefaults.standard.dictionaryRepresentation().keys where key.hasPrefix("onedrop.download." + prefix) {
+                let id = String(key.dropFirst("onedrop.download.".count))
+                if let url = storedURL(for: id), FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+            call.resolve()
+        } catch { call.reject("Account downloads could not be removed.") }
+    }
+
     @objc func cancel(_ call: CAPPluginCall) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
         guard let driveItemId = call.getString("driveItemId") else {
             call.reject("The download identifier is missing.")
             return
@@ -64,6 +104,8 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
     }
 
     @objc func status(_ call: CAPPluginCall) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
         guard let driveItemId = call.getString("driveItemId") else {
             call.reject("The download identifier is missing.")
             return
@@ -96,6 +138,39 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
             }
             call.resolve(["fileName": url.lastPathComponent])
         }
+    }
+
+    @objc func exportLocal(_ call: CAPPluginCall) {
+        guard let name = call.getString("fileName"), let base64 = call.getString("base64"),
+              base64.count <= 710000, let data = Data(base64Encoded: base64),
+              let identifier = call.getString("exportId"), UUID(uuidString: identifier) != nil,
+              let offset = call.getInt("offset"), offset >= 0 else {
+            call.reject("The local file is unavailable."); return
+        }
+        let filename = (name as NSString).lastPathComponent
+        guard !filename.isEmpty, filename != ".", filename != "..", filename != "/" else {
+            call.reject("The local filename is invalid."); return
+        }
+        do {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("onedrop-exports").appendingPathComponent(identifier)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let url = directory.appendingPathComponent(filename)
+            if offset == 0 { try Data().write(to: url) }
+            let handle = try FileHandle(forWritingTo: url)
+            defer { try? handle.close() }
+            guard try handle.seekToEnd() == UInt64(offset) else {
+                call.reject("The local export is incomplete."); return
+            }
+            try handle.write(contentsOf: data)
+            if call.getBool("complete") != true {
+                call.resolve(["fileName": filename]); return
+            }
+            DispatchQueue.main.async {
+                let controller = UIDocumentPickerViewController(forExporting: [url], asCopy: true)
+                self.bridge?.viewController?.present(controller, animated: true)
+                call.resolve(["fileName": filename])
+            }
+        } catch { call.reject("The local file could not be exported.") }
     }
 
     @objc func export(_ call: CAPPluginCall) {
@@ -175,6 +250,8 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
         totalBytesWritten: Int64,
         totalBytesExpectedToWrite: Int64
     ) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
         guard let context = contexts[downloadTask.taskIdentifier] else { return }
         notifyListeners("progress", data: [
             "driveItemId": context.driveItemId,
@@ -188,7 +265,10 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
         downloadTask: URLSessionDownloadTask,
         didFinishDownloadingTo location: URL
     ) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
         guard let context = contexts[downloadTask.taskIdentifier] else { return }
+        if cancelledTasks.remove(downloadTask.taskIdentifier) != nil { finish(downloadTask, context: context); context.call.reject("Download cancelled."); return }
         do {
             let directory = try downloadDirectory()
             let destination = uniqueDestination(in: directory, fileName: context.fileName)
@@ -207,6 +287,8 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
         task: URLSessionTask,
         didCompleteWithError error: Error?
     ) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
         guard let error, let context = contexts[task.taskIdentifier] else { return }
         finish(task, context: context)
         let nsError = error as NSError
@@ -224,6 +306,9 @@ final class OneDropDownloadPlugin: CAPPlugin, CAPBridgedPlugin, URLSessionDownlo
     }
 
     private func finish(_ task: URLSessionTask, context: DownloadContext) {
+        downloadLock.lock()
+        defer { downloadLock.unlock() }
+        cancelledTasks.remove(task.taskIdentifier)
         contexts.removeValue(forKey: task.taskIdentifier)
         tasksByDriveItemId.removeValue(forKey: context.driveItemId)
     }

@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const identityToken = (sub = "account-a") =>
+  `header.${btoa(JSON.stringify({ iss: "https://issuer.example", sub, name: sub }))}.signature`;
+const accountKey = (sub = "account-a") =>
+  JSON.stringify(["https://issuer.example", sub]);
 type StorageState = Record<string, unknown>;
 
 function storageArea(state: StorageState) {
@@ -16,6 +20,7 @@ function storageArea(state: StorageState) {
 
 function token(overrides: Record<string, unknown> = {}) {
   return {
+    id_token: identityToken(),
     token_type: "Bearer",
     scope: "openid offline_access",
     expires_in: 3600,
@@ -90,6 +95,7 @@ describe("persistent authentication lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue(
         Response.json({
+          id_token: identityToken(),
           token_type: "Bearer",
           scope: "openid offline_access",
           expires_in: 3600,
@@ -118,8 +124,11 @@ describe("persistent authentication lifecycle", () => {
     );
     expect(browser.tabs.remove).toHaveBeenCalledWith(17);
     expect(
-      (localState["onedrop.auth.token"] as Record<string, unknown>)
-        .refresh_token,
+      (
+        localState["onedrop.auth.accounts.v1"] as {
+          tokens: Record<string, Record<string, unknown>>;
+        }
+      ).tokens[accountKey()]!.refresh_token,
     ).toBe("android-spa-refresh-token");
   });
 
@@ -133,6 +142,7 @@ describe("persistent authentication lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue(
         Response.json({
+          id_token: identityToken(),
           token_type: "Bearer",
           scope: "openid offline_access",
           expires_in: 3600,
@@ -183,6 +193,7 @@ describe("persistent authentication lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue(
         Response.json({
+          id_token: identityToken(),
           token_type: "Bearer",
           scope: "openid offline_access",
           expires_in: 3600,
@@ -191,9 +202,9 @@ describe("persistent authentication lifecycle", () => {
         }),
       ),
     );
-    const { getAuthStatus } =
+    const { getAuthStatus, resumePendingTabAuthorization } =
       await import("@onedrop/app-runtime/features/auth/auth-service");
-
+    await resumePendingTabAuthorization();
     await expect(getAuthStatus()).resolves.toMatchObject({
       state: "signed-in",
     });
@@ -209,6 +220,7 @@ describe("persistent authentication lifecycle", () => {
       "fetch",
       vi.fn().mockResolvedValue(
         Response.json({
+          id_token: identityToken(),
           token_type: "Bearer",
           scope: "openid offline_access",
           expires_in: 3600,
@@ -221,129 +233,164 @@ describe("persistent authentication lifecycle", () => {
 
     await expect(getCurrentAccessToken()).resolves.toBe("new-access-token");
     expect(
-      (localState["onedrop.auth.token"] as Record<string, unknown>)
-        .refresh_token,
+      (
+        localState["onedrop.auth.accounts.v1"] as {
+          tokens: Record<string, Record<string, unknown>>;
+        }
+      ).tokens[accountKey()]!.refresh_token,
     ).toBe("refresh-token");
   });
 
-  it("silently obtains a new authorization grant when the 24-hour SPA refresh grant expires", async () => {
+  it("retains an expired account for offline access and marks it for sign-in", async () => {
     localState["onedrop.auth.token"] = token({
-      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+      expiresAt: new Date(0).toISOString(),
     });
-    const launchWebAuthFlow = vi.mocked(browser.identity.launchWebAuthFlow);
-    launchWebAuthFlow.mockImplementation(async ({ url, interactive }) => {
-      expect(interactive).toBe(false);
-      const authorizeUrl = new URL(url);
-      expect(authorizeUrl.searchParams.get("prompt")).toBe("none");
-      return `https://extension.chromiumapp.org/auth?code=fresh-code&state=${authorizeUrl.searchParams.get("state")}`;
-    });
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValueOnce(
-          Response.json(
-            {
-              error: "invalid_grant",
-              error_description: "AADSTS70000: The grant is expired.",
-            },
-            { status: 400 },
-          ),
-        )
-        .mockResolvedValueOnce(
-          Response.json({
-            token_type: "Bearer",
-            scope: "openid offline_access",
-            expires_in: 3600,
-            access_token: "silent-access-token",
-            refresh_token: "fresh-refresh-token",
-          }),
-        ),
+    vi.mocked(fetch).mockResolvedValue(
+      Response.json({ error: "invalid_grant" }, { status: 400 }),
     );
-    const { getCurrentAccessToken } =
+    const auth =
       await import("@onedrop/app-runtime/features/auth/auth-service");
-
-    await expect(getCurrentAccessToken()).resolves.toBe("silent-access-token");
-    expect(
-      (localState["onedrop.auth.token"] as Record<string, unknown>)
-        .refresh_token,
-    ).toBe("fresh-refresh-token");
+    await expect(auth.getAuthStatus()).resolves.toMatchObject({
+      state: "signed-in",
+    });
+    expect((await auth.listAccounts()).accounts).toMatchObject([
+      { key: accountKey(), signInRequired: true },
+    ]);
+    expect(browser.identity.launchWebAuthFlow).not.toHaveBeenCalled();
   });
 
-  it("returns signed-out when both the refresh grant and Microsoft browser session have ended", async () => {
-    localState["onedrop.auth.token"] = token({
-      expiresAt: new Date(Date.now() - 1_000).toISOString(),
-    });
-    vi.mocked(browser.identity.launchWebAuthFlow).mockRejectedValue(
-      new Error("Interaction required"),
-    );
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        Response.json(
-          {
-            error: "invalid_grant",
-            error_description: "AADSTS70000: The grant is expired.",
-          },
-          { status: 400 },
-        ),
-      ),
-    );
-    const { getAuthStatus } =
+  it("sign-out deletes saved credentials and selects the most recently used remaining account", async () => {
+    const a = accountKey(),
+      b = accountKey("account-b"),
+      c = accountKey("account-c");
+    localState["onedrop.auth.accounts.v1"] = {
+      activeKey: a,
+      tokens: {
+        [a]: token(),
+        [b]: token({ id_token: identityToken("account-b") }),
+        [c]: token({ id_token: identityToken("account-c") }),
+      },
+      lastUsed: { [a]: 3, [b]: 2, [c]: 1 },
+      required: {},
+    };
+    localState["onedrop.edge.A.downloads"] = { kept: true };
+    const auth =
       await import("@onedrop/app-runtime/features/auth/auth-service");
-
-    await expect(getAuthStatus()).resolves.toMatchObject({
-      state: "signed-out",
-    });
-    expect(localState["onedrop.auth.token"]).toBeUndefined();
+    expect((await auth.signOut()).state).toBe("signed-in");
+    expect((await auth.listAccounts()).activeKey).toBe(b);
+    await expect(auth.switchAccount(a)).rejects.toThrow("no longer available");
+    expect(localState["onedrop.edge.A.downloads"]).toEqual({ kept: true });
+    await auth.removeAccount(c);
+    expect((await auth.listAccounts()).activeKey).toBe(b);
+    expect((await auth.signOut()).state).toBe("signed-out");
+    expect((await auth.listAccounts()).accounts).toHaveLength(0);
   });
 
-  it("returns signed-out when Android rejects cross-origin native token refresh", async () => {
-    localState["onedrop.auth.token"] = token({
-      expiresAt: new Date(Date.now() - 1_000).toISOString(),
-    });
-    vi.mocked(browser.identity.launchWebAuthFlow).mockRejectedValue(
-      new Error("Couldn't create a browser window"),
-    );
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        Response.json(
-          {
-            error: "invalid_request",
-            error_description:
-              "AADSTS90023: Cross-origin token redemption is permitted only for the Single-Page Application client-type.",
-          },
-          { status: 400 },
-        ),
-      ),
-    );
-    const { getAuthStatus } =
-      await import("@onedrop/app-runtime/features/auth/auth-service");
-
-    const statusPromise = getAuthStatus();
-    await vi.waitFor(() => expect(browser.tabs.create).toHaveBeenCalled());
-    for (const listener of tabRemovedListeners) listener(17);
-
-    await expect(statusPromise).resolves.toMatchObject({
-      state: "signed-out",
-    });
-    expect(browser.identity.launchWebAuthFlow).toHaveBeenCalledWith(
-      expect.objectContaining({ interactive: false }),
-    );
-    expect(localState["onedrop.auth.token"]).toBeUndefined();
-  });
-
-  it("clears persistent and legacy session tokens on sign out", async () => {
+  it("adding and reauthenticating deduplicate stable identity and preserve active account on failure", async () => {
     localState["onedrop.auth.token"] = token();
-    sessionState["onedrop.auth.token"] = token();
-    const { signOut } =
+    const auth =
       await import("@onedrop/app-runtime/features/auth/auth-service");
+    vi.mocked(browser.identity.launchWebAuthFlow).mockImplementation(
+      async ({ url }) => {
+        const request = new URL(url);
+        return `https://extension.chromiumapp.org/auth?code=synthetic&state=${request.searchParams.get("state")}`;
+      },
+    );
+    vi.mocked(fetch).mockImplementation(async () =>
+      Response.json(token({ id_token: identityToken("account-b") })),
+    );
+    await auth.signIn();
+    expect((await auth.listAccounts()).activeKey).toBe(accountKey("account-b"));
+    await auth.signIn();
+    expect((await auth.listAccounts()).accounts).toHaveLength(2);
+    await expect(auth.signIn(accountKey())).rejects.toThrow(
+      "selected Microsoft account",
+    );
+    expect((await auth.listAccounts()).activeKey).toBe(accountKey("account-b"));
+    vi.mocked(browser.identity.launchWebAuthFlow).mockRejectedValue(
+      new Error("cancelled"),
+    );
+    await expect(auth.signIn()).rejects.toThrow("cancelled");
+    expect((await auth.listAccounts()).accounts).toHaveLength(2);
+  });
 
-    const status = await signOut();
+  it.each([true, false])(
+    "forgetting an inactive account cancels a suspended auth flow (reauth: %s)",
+    async (reauth) => {
+      const a = accountKey(),
+        b = accountKey("account-b");
+      localState["onedrop.auth.accounts.v1"] = {
+        activeKey: a,
+        tokens: {
+          [a]: token(),
+          [b]: token({ id_token: identityToken("account-b") }),
+        },
+        lastUsed: {},
+        required: {},
+      };
+      localState["onedrop.auth.pending"] = {
+        state: "saved-state",
+        verifier: "saved-verifier",
+        redirectUri: "https://onedrop.sycamore.top/auth.html",
+        createdAt: Date.now(),
+        interactive: true,
+        ...(reauth ? { expectedKey: b } : {}),
+        originalActiveKey: a,
+      };
+      const auth =
+        await import("@onedrop/app-runtime/features/auth/auth-service");
+      await auth.removeAccount(b);
+      expect(localState["onedrop.auth.pending"]).toBeUndefined();
+      vi.mocked(browser.tabs.query).mockResolvedValue([
+        {
+          id: 44,
+          url: "https://onedrop.sycamore.top/auth.html?code=late&state=saved-state",
+        },
+      ] as never);
+      await auth.resumePendingTabAuthorization();
+      expect(fetch).not.toHaveBeenCalled();
+      expect((await auth.listAccounts()).accounts.map((x) => x.key)).toEqual([
+        a,
+      ]);
+    },
+  );
 
-    expect(status.state).toBe("signed-out");
-    expect(localState["onedrop.auth.token"]).toBeUndefined();
-    expect(sessionState["onedrop.auth.token"]).toBeUndefined();
+  it("caps at three accounts and rejects late refresh after removal", async () => {
+    const accounts = {
+      activeKey: accountKey(),
+      tokens: Object.fromEntries(
+        ["account-a", "account-b", "account-c"].map((sub) => [
+          accountKey(sub),
+          token({
+            id_token: identityToken(sub),
+            expiresAt: new Date(0).toISOString(),
+          }),
+        ]),
+      ),
+      lastUsed: {},
+      required: {},
+    };
+    localState["onedrop.auth.accounts.v1"] = accounts;
+    const auth =
+      await import("@onedrop/app-runtime/features/auth/auth-service");
+    await expect(auth.signIn()).rejects.toThrow("three accounts");
+    let complete!: (value: Response) => void;
+    vi.mocked(fetch).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const refresh = auth.getCurrentAccessToken();
+    const assertion = expect(refresh).rejects.toThrow();
+    await vi.waitFor(() => expect(complete).toBeTypeOf("function"));
+    await auth.removeAccount(accountKey());
+    complete(Response.json(token()));
+    await assertion;
+    expect(
+      (await auth.listAccounts()).accounts.some(
+        (account) => account.key === accountKey(),
+      ),
+    ).toBe(false);
   });
 });

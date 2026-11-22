@@ -1,3 +1,4 @@
+import { configureAccountContext } from "@onedrop/app-runtime/features/auth/account-context";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getAttachmentDownloadUrl = vi.hoisted(() => vi.fn());
@@ -6,6 +7,7 @@ vi.mock("@onedrop/onedrive/infrastructure/onedrive/file-uploader", () => ({
 }));
 
 import {
+  removeMobileAccountTasks,
   cancelMobileNavigationDownload,
   claimMobileNavigationDownload,
   prepareMobileNavigationDownload,
@@ -28,6 +30,7 @@ describe("mobile navigation download", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    configureAccountContext("signed-out");
     storage.clear();
     getAttachmentDownloadUrl.mockResolvedValue("https://files.test/download");
     searchDownloads.mockResolvedValue([]);
@@ -43,8 +46,9 @@ describe("mobile navigation download", () => {
             for (const [key, value] of Object.entries(values))
               storage.set(key, value);
           }),
-          remove: vi.fn(async (key: string) => {
-            storage.delete(key);
+          remove: vi.fn(async (key: string | string[]) => {
+            for (const item of Array.isArray(key) ? key : [key])
+              storage.delete(item);
           }),
         },
       },
@@ -140,5 +144,53 @@ describe("mobile navigation download", () => {
     await expect(
       readMobileNavigationDownloadStatus("drive-item"),
     ).resolves.toBeUndefined();
+  });
+  it("retains download ownership across account changes and never claims by filename alone", async () => {
+    configureAccountContext("A");
+    getAttachmentDownloadUrl.mockResolvedValueOnce(
+      "https://files.test/account-a",
+    );
+    await prepareMobileNavigationDownload(attachment);
+    configureAccountContext("B");
+    getAttachmentDownloadUrl.mockResolvedValueOnce(
+      "https://files.test/account-b",
+    );
+    await prepareMobileNavigationDownload(attachment);
+    await claimMobileNavigationDownload({
+      id: 18,
+      url: "https://files.test/unrelated",
+      filename: "extension.crx",
+      state: "complete",
+      startTime: new Date().toISOString(),
+      bytesReceived: 1000,
+      totalBytes: 1000,
+    } as Browser.downloads.DownloadItem);
+    expect(
+      (await readMobileNavigationDownloadStatus("drive-item"))?.state,
+    ).toBe("waiting");
+    await claimMobileNavigationDownload({
+      id: 17,
+      url: "https://files.test/account-a",
+      filename: "extension.crx",
+      state: "complete",
+      bytesReceived: 1000,
+      totalBytes: 1000,
+    } as Browser.downloads.DownloadItem);
+    expect(
+      (await readMobileNavigationDownloadStatus("drive-item"))?.state,
+    ).toBe("waiting");
+    configureAccountContext("A");
+    expect(
+      (await readMobileNavigationDownloadStatus("drive-item"))?.downloadId,
+    ).toBe(17);
+    await removeMobileAccountTasks("A");
+    expect(
+      await readMobileNavigationDownloadStatus("drive-item"),
+    ).toBeUndefined();
+    expect(removeFile).not.toHaveBeenCalled();
+    configureAccountContext("B");
+    expect(
+      (await readMobileNavigationDownloadStatus("drive-item"))?.state,
+    ).toBe("waiting");
   });
 });

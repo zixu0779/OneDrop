@@ -146,6 +146,7 @@ export async function registerNativeFileMessage(input: {
 
 export async function uploadNativeFile(input: {
   id: string;
+  reuseExisting?: boolean;
   file: Blob;
   name: string;
   mimeType: string;
@@ -167,6 +168,7 @@ export async function uploadNativeFile(input: {
     mimeType: input.mimeType || "application/octet-stream",
     size: input.file.size,
     messageId: input.id,
+    ...(input.reuseExisting ? { reuseExisting: true } : {}),
     createdAt: input.createdAt,
     ...nativeImageMetadata(input),
     signal: input.signal,

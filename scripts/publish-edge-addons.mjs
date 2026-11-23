@@ -13,31 +13,6 @@ function requireEnvironment(name, preserveWhitespace = false) {
   return preserveWhitespace ? value : value.trim();
 }
 
-export function extractVersionNotes(releaseBody) {
-  const lines = releaseBody.replaceAll("\r\n", "\n").split("\n");
-  const headingIndex = lines.findIndex((line) =>
-    /^###\s+Partner Center Notes\s*$/i.test(line.trim()),
-  );
-
-  if (headingIndex === -1) {
-    throw new Error(
-      'The GitHub Release body must contain a "### Partner Center Notes" section.',
-    );
-  }
-
-  const sectionLines = [];
-  for (const line of lines.slice(headingIndex + 1)) {
-    if (/^#{1,3}\s+/.test(line.trim())) break;
-    sectionLines.push(line);
-  }
-
-  const notes = sectionLines.join("\n").trim();
-  if (!notes) {
-    throw new Error('The "### Partner Center Notes" section cannot be empty.');
-  }
-  return notes;
-}
-
 function certificationCredential(fixedNotes, label) {
   const pattern = new RegExp(`^[ \t]*${label}:[ \t]?([^\r\n]*)$`, "i");
   const matches = fixedNotes
@@ -52,7 +27,10 @@ function certificationCredential(fixedNotes, label) {
   return matches[0][1];
 }
 
-export function composeCertificationNotes(fixedNotes, releaseBody) {
+export function composeCertificationNotes(fixedNotes, versionNotes) {
+  if (!versionNotes?.trim()) {
+    throw new Error("Version-specific certification notes must not be empty.");
+  }
   const username = certificationCredential(fixedNotes, "Username");
   const password = certificationCredential(fixedNotes, "Password");
   return `ONEDROP CERTIFICATION INSTRUCTIONS
@@ -87,7 +65,7 @@ On first use, OneDrop may need to initialize its app folder in OneDrive. Wait br
 
 VERSION-SPECIFIC NOTES
 
-${extractVersionNotes(releaseBody)}`;
+${versionNotes.trim()}`;
 }
 
 export function redactCertificationNotes(certificationNotes) {
@@ -171,13 +149,16 @@ async function main() {
     true,
   );
   const packagePath = requireEnvironment("EDGE_ADDONS_PACKAGE_PATH");
-  const releaseBodyPath = requireEnvironment("EDGE_ADDONS_RELEASE_BODY_PATH");
+  const versionNotesPath = requireEnvironment("EDGE_ADDONS_VERSION_NOTES_PATH");
 
-  const [packageBytes, releaseBody] = await Promise.all([
+  const [packageBytes, versionNotes] = await Promise.all([
     readFile(packagePath),
-    readFile(releaseBodyPath, "utf8"),
+    readFile(versionNotesPath, "utf8"),
   ]);
-  const certificationNotes = composeCertificationNotes(fixedNotes, releaseBody);
+  const certificationNotes = composeCertificationNotes(
+    fixedNotes,
+    versionNotes,
+  );
   await writeCertificationNotesSummary(certificationNotes);
 
   if (process.env.EDGE_ADDONS_DRY_RUN === "1") {

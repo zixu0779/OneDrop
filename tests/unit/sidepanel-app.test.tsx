@@ -1,3 +1,8 @@
+import { defaultAccountAvatar } from "@onedrop/core/domain/account-avatar";
+import {
+  defaultAccountSettings,
+  defaultDevicePreferences,
+} from "@onedrop/core/domain/settings";
 import {
   act,
   cleanup,
@@ -7,6 +12,16 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const accountResume = vi.hoisted(() => ({
+  claimFile: vi.fn(),
+  claimText: vi.fn(),
+}));
+vi.mock("@onedrop/web-storage/infrastructure/indexed-db/account-data", () => ({
+  claimPausedTransfer: accountResume.claimFile,
+  claimPausedText: accountResume.claimText,
+  deletePendingMessage: vi.fn().mockResolvedValue(undefined),
+}));
 
 const pendingTextStore = vi.hoisted(() => ({
   deletePendingText: vi.fn().mockResolvedValue(undefined),
@@ -31,7 +46,8 @@ vi.mock(
   () => pendingTransferStore,
 );
 vi.mock("@onedrop/core/features/messages/month", () => ({
-  getUtcMonth: () => "2026-08",
+  getUtcMonth: (date?: Date) =>
+    date ? date.toISOString().slice(0, 7) : "2026-08",
 }));
 
 import {
@@ -55,6 +71,7 @@ let archiveCheckNotices: Array<{
 let archiveMessageListener:
   | ((message: {
       type: "archives/event";
+      accountScope?: string;
       notice: (typeof archiveCheckNotices)[number];
     }) => void)
   | undefined;
@@ -63,6 +80,14 @@ const defaultSendMessage = async (
   request: RuntimeRequest,
 ): Promise<RuntimeResponse> => {
   switch (request.type) {
+    case "settings/read-avatar":
+      return {
+        ok: true,
+        type: "settings/avatar",
+        avatar: defaultAccountAvatar(),
+      };
+    case "accounts/list":
+      return { ok: true, type: "accounts/list", accounts: { accounts: [] } };
     case "auth/status":
       return {
         ok: true,
@@ -225,12 +250,20 @@ describe("side panel message composer", () => {
   });
 
   beforeEach(() => {
+    accountResume.claimFile.mockReset().mockResolvedValue(false);
+    accountResume.claimText.mockReset().mockResolvedValue(false);
+    pendingTransferStore.putPendingTransfer
+      .mockReset()
+      .mockResolvedValue("pending-transfer");
+    pendingTransferStore.listPendingTransfers.mockResolvedValue([]);
+    pendingTextStore.listPendingTexts.mockResolvedValue([]);
     sendMessage.mockClear();
     sendMessage.mockImplementation(defaultSendMessage);
     archiveCheckNotices = [];
     archiveMessageListener = undefined;
     vi.stubGlobal("browser", {
       runtime: {
+        getManifest: () => ({ version: "1.1.0" }),
         sendMessage,
         onMessage: {
           addListener: vi.fn((listener) => {
@@ -240,6 +273,302 @@ describe("side panel message composer", () => {
         },
       },
     });
+  });
+
+  it("sign-out and folder opening show pending feedback and recover after rejection", async () => {
+    let finish!: (value: RuntimeResponse) => void;
+    sendMessage.mockImplementation(async (request) =>
+      request.type === "auth/sign-out" ||
+      request.type === "onedrive/open-app-folder"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : defaultSendMessage(request),
+    );
+    await screenForComposer();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    const folder = screen.getByRole("button", { name: "Open OneDrive folder" });
+    fireEvent.click(folder);
+    fireEvent.click(folder);
+    expect(folder).toBeDisabled();
+    expect(folder.querySelector(".loading-spinner")).not.toBeNull();
+    await act(async () => finish({ ok: false, error: "Folder offline" }));
+    expect(folder).toBeEnabled();
+    const signout = screen.getByRole("button", { name: "Sign out" });
+    fireEvent.click(signout);
+    fireEvent.click(signout);
+    expect(signout).toBeDisabled();
+    expect(signout.querySelector(".loading-spinner")).not.toBeNull();
+    await act(async () => finish({ ok: false, error: "Sign-out failed" }));
+    expect(signout).toBeEnabled();
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "auth/sign-out",
+      ),
+    ).toHaveLength(1);
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "onedrive/open-app-folder",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each(["copy", "reset"])(
+    "settings %s has targeted progress, duplicate protection and retry after error",
+    async (action) => {
+      const device = {
+        schemaVersion: 1 as const,
+        deviceId: "01989f5e-7700-7000-8000-000000000099",
+        platform: "desktop-edge" as const,
+        displayName: "Current",
+        createdAt: "2026-08-03T00:00:00.000Z",
+        lastSeenAt: "2026-08-03T00:00:00.000Z",
+        preferences: defaultDevicePreferences(),
+      };
+      let finish!: (value: RuntimeResponse) => void;
+      let finishSave!: (value: RuntimeResponse) => void;
+      const type =
+        action === "copy" ? "settings/copy-device" : "settings/reset-device";
+      sendMessage.mockImplementation(async (request) => {
+        if (request.type === "settings/read")
+          return {
+            ok: true,
+            type: "settings/snapshot",
+            snapshot: {
+              account: defaultAccountSettings(),
+              device,
+              devices: [
+                device,
+                {
+                  ...device,
+                  deviceId: "01989f5e-7700-7000-8000-000000000088",
+                  displayName: "Other",
+                },
+              ],
+            },
+          };
+        if (request.type === "settings/save-device")
+          return new Promise((resolve) => {
+            finishSave = resolve;
+          });
+        if (request.type === type)
+          return new Promise((resolve) => {
+            finish = resolve;
+          });
+        return defaultSendMessage(request);
+      });
+      await screenForComposer();
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: /one@example.com|sycamore|microsoft account/iu,
+        }),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      const button = await screen.findByRole("button", {
+        name: action === "copy" ? "Copy settings" : "Reset to defaults",
+      });
+      const preference = screen.getByRole("checkbox", {
+        name: "Enter to send",
+      });
+      fireEvent.click(preference);
+      await waitFor(() => expect(finishSave).toBeTypeOf("function"));
+      fireEvent.click(button);
+      fireEvent.click(button);
+      expect(preference).toBeDisabled();
+      expect(
+        sendMessage.mock.calls.filter(([request]) => request.type === type),
+      ).toHaveLength(0);
+      await act(async () =>
+        finishSave({ ok: true, type: "settings/device", device }),
+      );
+      await waitFor(() => expect(finish).toBeTypeOf("function"));
+      expect(button).toBeDisabled();
+      expect(button.querySelector(".loading-spinner")).not.toBeNull();
+      await act(async () => finish({ ok: false, error: "Settings offline" }));
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "Settings offline",
+      );
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+      await waitFor(() =>
+        expect(
+          sendMessage.mock.calls.filter(([request]) => request.type === type),
+        ).toHaveLength(2),
+      );
+      await act(async () =>
+        finish({ ok: true, type: "settings/device", device }),
+      );
+      expect(button).toBeEnabled();
+      expect(
+        sendMessage.mock.calls.filter(([request]) => request.type === type),
+      ).toHaveLength(2);
+    },
+  );
+
+  it("Settings has its own first-read loading, failure and retry state", async () => {
+    localStorage.clear();
+    let finish!: (value: RuntimeResponse) => void;
+    sendMessage.mockImplementation(async (request) =>
+      request.type === "settings/read"
+        ? new Promise((resolve) => {
+            finish = resolve;
+          })
+        : defaultSendMessage(request),
+    );
+    render(<App />);
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    expect(await screen.findByText("Loading settings…")).toBeInTheDocument();
+    await act(async () => finish({ ok: false, error: "Settings offline" }));
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("Loading settings…")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to messages" }));
+    await act(async () => finish({ ok: false, error: "Settings offline" }));
+  });
+
+  it.each([false, true])(
+    "shows saved accounts on sign-in only when present (%s)",
+    async (saved) => {
+      sendMessage.mockImplementation(async (request: RuntimeRequest) => {
+        if (request.type === "auth/status")
+          return {
+            ok: true,
+            type: "auth/status",
+            status: {
+              state: "signed-out",
+              redirectUri: "https://extension.chromiumapp.org/auth",
+            },
+          };
+        if (request.type === "accounts/list")
+          return {
+            ok: true,
+            type: "accounts/list",
+            accounts: {
+              accounts: saved
+                ? [
+                    {
+                      key: "saved",
+                      displayName: "Saved account",
+                      lastUsedAt: 1,
+                      signInRequired: true,
+                    },
+                  ]
+                : [],
+            },
+          };
+        return defaultSendMessage(request);
+      });
+      render(<App />);
+      expect(
+        await screen.findByRole("button", { name: "Sign in with Microsoft" }),
+      ).toBeEnabled();
+      await waitFor(() =>
+        expect(sendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "accounts/list" }),
+        ),
+      );
+      if (saved)
+        expect(
+          await screen.findByRole("button", {
+            name: "Switch to Saved account",
+          }),
+        ).toBeInTheDocument();
+      else {
+        expect(screen.queryByText("Accounts (0/3)")).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: "Add account" }),
+        ).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole("button", { name: "Manage accounts" }),
+        ).not.toBeInTheDocument();
+      }
+    },
+  );
+
+  it("device deletion shows progress, prevents duplicates, and recovers from failure without exposing legacy recovery", async () => {
+    const device = {
+      schemaVersion: 1 as const,
+      deviceId: "01989f5e-7700-7000-8000-000000000099",
+      platform: "desktop-edge" as const,
+      displayName: "Current",
+      createdAt: "2026-08-03T00:00:00.000Z",
+      lastSeenAt: "2026-08-03T00:00:00.000Z",
+      preferences: defaultDevicePreferences(),
+    };
+    const other = {
+      ...device,
+      deviceId: "01989f5e-7700-7000-8000-000000000088",
+      displayName: "Other laptop",
+    };
+    let finish!: (value: RuntimeResponse) => void;
+    sendMessage.mockImplementation(async (request) => {
+      if (request.type === "settings/read")
+        return {
+          ok: true,
+          type: "settings/snapshot",
+          snapshot: {
+            account: defaultAccountSettings(),
+            device,
+            devices: [device, other],
+          },
+        };
+      if (request.type === "settings/delete-device")
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      return defaultSendMessage(request);
+    });
+    await screenForComposer();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Delete Other laptop" }),
+    );
+    expect(screen.queryByText("Previous local data")).not.toBeInTheDocument();
+    const button = screen.getByRole("button", { name: "Delete device" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute("aria-busy", "true");
+    expect(button.querySelector(".loading-spinner")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    expect(
+      sendMessage.mock.calls.filter(
+        ([request]) => request.type === "settings/delete-device",
+      ),
+    ).toHaveLength(1);
+    await act(async () => finish({ ok: false, error: "Offline. Try again." }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Offline. Try again.",
+    );
+    expect(button).toBeEnabled();
+    expect(button.querySelector(".loading-spinner")).toBeNull();
+    fireEvent.click(button);
+    await act(async () =>
+      finish({
+        ok: true,
+        type: "settings/device-deleted",
+        deviceId: other.deviceId,
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("button", { name: "Delete Other laptop" }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("activates the keyboard layout when the iOS Edge composer receives focus", async () => {
@@ -307,6 +636,102 @@ describe("side panel message composer", () => {
     expect(second.pendingFiles).toEqual([...failedFiles, activeFile]);
   });
 
+  it.each(["paused", "cancelled", "ordinary-failure", "already-committed"])(
+    "restores %s file work only after checking its original month",
+    async (scenario) => {
+      const id = "01989f5e-7700-7000-8000-000000000088";
+      const createdAt = "2026-07-10T00:00:00.000Z";
+      pendingTransferStore.listPendingTransfers.mockResolvedValue([
+        {
+          id,
+          createdAt,
+          name: "paused.txt",
+          mimeType: "text/plain",
+          size: 4,
+          lastModified: 1,
+          blob: new Blob(["data"]),
+          isImage: false,
+          status: scenario === "cancelled" ? "cancelled" : "upload-failed",
+          pausedForAccountChange: scenario !== "ordinary-failure",
+        },
+      ]);
+      accountResume.claimFile.mockResolvedValueOnce(true);
+      sendMessage.mockImplementation(async (request) => {
+        if (
+          request.type === "messages/read-month" &&
+          request.month === "2026-07"
+        )
+          return {
+            ok: true,
+            type: "messages/month",
+            result:
+              scenario === "already-committed"
+                ? {
+                    state: "loaded",
+                    month: "2026-07",
+                    eTag: "old",
+                    messages: [
+                      {
+                        schemaVersion: 1,
+                        id,
+                        createdAt,
+                        type: "file",
+                        attachment: {
+                          driveItemId: "existing",
+                          name: "paused.txt",
+                          mimeType: "text/plain",
+                          size: 4,
+                        },
+                      },
+                    ],
+                  }
+                : { state: "missing", month: "2026-07" },
+          };
+        if (request.type === "files/send")
+          return {
+            ok: true,
+            type: "files/transfer",
+            transfer: {
+              state: "upload-failed",
+              error: "synthetic stop after request assertion",
+            },
+          };
+        return defaultSendMessage(request);
+      });
+      await screenForComposer();
+      await waitFor(() =>
+        expect(sendMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ type: "messages/read-current-month" }),
+        ),
+      );
+      if (scenario === "paused") {
+        await waitFor(() =>
+          expect(sendMessage).toHaveBeenCalledWith(
+            expect.objectContaining({
+              type: "files/send",
+              messageId: id,
+              createdAt,
+              reuseExisting: true,
+            }),
+          ),
+        );
+        const types = sendMessage.mock.calls.map(([request]) => request.type);
+        expect(types.indexOf("messages/read-month")).toBeLessThan(
+          types.indexOf("files/send"),
+        );
+      } else {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        });
+        expect(
+          sendMessage.mock.calls.some(
+            ([request]) => request.type === "files/send",
+          ),
+        ).toBe(false);
+      }
+    },
+  );
+
   it("loads OneDrive in the background without showing validation controls", async () => {
     await screenForComposer();
 
@@ -315,9 +740,11 @@ describe("side panel message composer", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText("Read current month")).not.toBeInTheDocument();
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "onedrive/verify-app-folder",
     });
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "messages/read-current-month",
     });
   });
@@ -428,12 +855,33 @@ describe("side panel message composer", () => {
 
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
+        accountScope: "signed-out",
         type: "deleted-data/clean-now",
       }),
     );
     expect(
       screen.queryByText("Deleted data cleanup has completed successfully."),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps restoration failure visible after a successful list refresh and permits retry", async () => {
+    sendMessage.mockImplementation(async (request) =>
+      request.type === "deleted-data/restore"
+        ? { ok: false, error: "Restoration failed" }
+        : defaultSendMessage(request),
+    );
+    await screenForComposer();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /one@example.com|sycamore|microsoft account/iu,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /Recycle bin/ }));
+    await screen.findByText("deleted text message");
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    expect(await screen.findByText("Restoration failed")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Restore" })).toBeEnabled();
+    expect(screen.getByText("deleted text message")).toBeInTheDocument();
   });
 
   it("opens the recycle bin and restores a deleted message", async () => {
@@ -463,6 +911,7 @@ describe("side panel message composer", () => {
       ).not.toBeInTheDocument(),
     );
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "deleted-data/restore",
       messageId: "01989f5e-7700-7000-8000-000000000881",
       month: "2026-08",
@@ -571,6 +1020,7 @@ describe("side panel message composer", () => {
       ).toContain("data:image/png"),
     );
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "files/read-preview",
       driveItemId: "deleted-image-item",
       mimeType: "image/png",
@@ -713,6 +1163,7 @@ describe("side panel message composer", () => {
       ),
     ).toBeInTheDocument();
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "archives/retry",
       month: "2026-07",
     });
@@ -722,6 +1173,7 @@ describe("side panel message composer", () => {
     await screenForComposer();
     act(() => {
       archiveMessageListener?.({
+        accountScope: "signed-out",
         type: "archives/event",
         notice: { month: "2026-07", phase: "failed" },
       });
@@ -741,6 +1193,7 @@ describe("side panel message composer", () => {
 
     fireEvent.keyDown(composer, { key: "Enter", shiftKey: true });
     expect(sendMessage).not.toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "messages/send-text",
       text: "hello",
     });
@@ -825,19 +1278,17 @@ describe("side panel message composer", () => {
       screen.getByRole("button", { name: "Open OneDrive folder" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Recycle bin/ })).toBeEnabled();
-    expect(
-      screen.getByRole("button", { name: "Sign out…" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Switch account" }));
-    expect(screen.getByText("No other signed-in accounts")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add account" })).toBeDisabled();
+    expect(screen.getByText("Switch account")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Add account" })).toBeEnabled(),
+    );
 
     fireEvent.pointerDown(document.body);
     await waitFor(() =>
-      expect(
-        screen.queryByText("No other signed-in accounts"),
-      ).not.toBeInTheDocument(),
+      expect(screen.queryByText("Switch account")).not.toBeInTheDocument(),
     );
   });
 
@@ -965,6 +1416,7 @@ describe("side panel message composer", () => {
 
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
+        accountScope: "signed-out",
         type: "messages/delete",
         messageId: "01989f5e-7700-7000-8000-000000000001",
         month: "2026-08",
@@ -1007,6 +1459,7 @@ describe("side panel message composer", () => {
 
     expect(await screen.findByText("from July")).toBeInTheDocument();
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "messages/read-month",
       month: "2026-07",
     });
@@ -1123,6 +1576,7 @@ describe("side panel message composer", () => {
     );
     expect(await screen.findByText("from this Edge")).toBeInTheDocument();
     expect(sendMessage).not.toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "messages/list-months",
     });
   });
@@ -1356,6 +1810,7 @@ describe("side panel message composer", () => {
     fireEvent.scroll(timeline);
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
+        accountScope: "signed-out",
         type: "messages/read-month",
         month: "2026-07",
       }),
@@ -1417,6 +1872,7 @@ describe("side panel message composer", () => {
       screen.getByText("Can't load history while syncing."),
     ).toBeInTheDocument();
     expect(sendMessage).not.toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "messages/read-month",
       month: "2026-07",
     });
@@ -1578,6 +2034,7 @@ describe("side panel message composer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
+        accountScope: "signed-out",
         type: "messages/delete",
         messageId: "01989f5e-7700-7000-8000-000000000001",
         month: "2026-08",
@@ -1693,6 +2150,7 @@ describe("side panel message composer", () => {
     fireEvent.keyDown(composer, { key: "Enter", isComposing: true });
 
     expect(sendMessage).not.toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "messages/send-text",
       text: "中文",
     });
@@ -1759,6 +2217,39 @@ describe("side panel message composer", () => {
     expect(
       sendMessage.mock.calls.some(([request]) => request.type === "files/send"),
     ).toBe(false);
+  });
+
+  it("keeps preparation feedback until every concurrently selected file settles", async () => {
+    await screenForComposer();
+    const failures: Array<(cause: Error) => void> = [];
+    pendingTransferStore.putPendingTransfer
+      .mockImplementationOnce(
+        () => new Promise((_resolve, reject) => failures.push(reject)),
+      )
+      .mockImplementationOnce(
+        () => new Promise((_resolve, reject) => failures.push(reject)),
+      );
+    const shell = document.querySelector(".shell")!;
+    for (const name of ["a.txt", "b.txt"])
+      fireEvent.drop(shell, {
+        dataTransfer: {
+          files: [new File([name], name, { type: "text/plain" })],
+          types: ["Files"],
+        },
+      });
+    expect(
+      await screen.findByRole("status", { name: "Preparing files" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(failures).toHaveLength(2));
+    await act(async () => failures[0]!(new Error("Cannot save first file")));
+    expect(
+      screen.getByRole("status", { name: "Preparing files" }),
+    ).toBeInTheDocument();
+    await act(async () => failures[1]!(new Error("Cannot save second file")));
+    expect(
+      screen.queryByRole("status", { name: "Preparing files" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Cannot save second file")).toBeInTheDocument();
   });
 
   it("uploads a file dropped onto the desktop side panel", async () => {

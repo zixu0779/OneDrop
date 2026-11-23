@@ -1,3 +1,6 @@
+import { startBrowserUpdates } from "@onedrop/platform/platform/browser-updates";
+import { AppLoading } from "@onedrop/ui/LoadingSpinner";
+import { initializeExtensionAccount } from "@onedrop/extension-runtime/account-bootstrap";
 import React from "react";
 import ReactDOM from "react-dom/client";
 
@@ -11,18 +14,23 @@ import {
 import "@onedrop/ui/styles.css";
 import "@onedrop/ui/mobile.css";
 
-setPlatformBridge(browserPlatformBridge);
-const cached = cachedPreferences();
-applyAppearance(cached.appearance.theme, cached.appearance.textSize);
+const element = document.getElementById("root");
+if (!element) throw new Error("OneDrop root was not found.");
+const appRoot = ReactDOM.createRoot(element);
+appRoot.render(<AppLoading />);
 
-const root = document.getElementById("root");
+async function start() {
+  await initializeExtensionAccount();
+  setPlatformBridge(browserPlatformBridge);
+  const cached = cachedPreferences();
+  applyAppearance(cached.appearance.theme, cached.appearance.textSize);
 
-if (!root) {
-  throw new Error("OneDrop mobile page root was not found.");
+  appRoot.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>,
+  );
 }
+void start().catch(() => appRoot.render(<AppLoading failed />));
 
-ReactDOM.createRoot(root).render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-);
+startBrowserUpdates(true);

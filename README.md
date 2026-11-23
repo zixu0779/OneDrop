@@ -4,6 +4,8 @@ OneDrop is a no-server app for sending text and files between your own devices t
 
 It uses the user's Microsoft account and OneDrive App Folder as the storage boundary. The project currently provides shared React clients for desktop Edge, Android Edge, native Android, and iOS.
 
+Save up to three Microsoft accounts and switch between them with separate messages, drafts, and transfers. Customize an account avatar across devices, and check for updates in Settings → About.
+
 ## Architecture
 
 - Desktop and Mobile (Android & iOS) clients are Manifest V3 Edge extensions built with WXT.

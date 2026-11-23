@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+// Keep these domain tests focused on document/cache/conflict behavior.
+// The real metadata and credential boundary is covered by graph-content.test.ts.
+vi.mock("@onedrop/onedrive/infrastructure/graph/graph-content", () => ({
+  readGraphContent: (itemUrl: string, accessToken: string) =>
+    fetch(`${itemUrl}/content`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+}));
+
 vi.mock("@onedrop/app-runtime/features/auth/auth-service", () => ({
   getCurrentAccessToken: vi.fn().mockResolvedValue("access-token"),
 }));

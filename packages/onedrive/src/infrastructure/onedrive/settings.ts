@@ -1,3 +1,9 @@
+import {
+  accountAvatarSchema,
+  defaultAccountAvatar,
+  type AccountAvatar,
+} from "@onedrop/core/domain/account-avatar";
+import { readGraphContent } from "../graph/graph-content";
 import { z } from "zod";
 
 import { oneDropConfig } from "@onedrop/core/config/onedrop";
@@ -23,6 +29,30 @@ const childrenSchema = z.object({
 });
 
 export type { SettingsSnapshot } from "@onedrop/core/domain/settings";
+
+export async function readAccountAvatarWithAccessToken(
+  accessToken: string,
+): Promise<AccountAvatar> {
+  return (
+    (await readDocument(
+      "settings/avatar.json",
+      accountAvatarSchema,
+      accessToken,
+    )) ?? defaultAccountAvatar()
+  );
+}
+export async function saveAccountAvatarWithAccessToken(
+  accessToken: string,
+  avatar: AccountAvatar,
+): Promise<AccountAvatar> {
+  await ensureSettingsFolders(accessToken);
+  return writeDocument(
+    "settings/avatar.json",
+    accountAvatarSchema.parse(avatar),
+    accountAvatarSchema,
+    accessToken,
+  );
+}
 
 export async function readAccountSettingsWithAccessToken(
   accessToken: string,
@@ -224,9 +254,9 @@ async function listDeviceSettings(
     const page = childrenSchema.parse(await response.json());
     for (const item of page.value) {
       if (!/^[0-9a-f-]{36}\.json$/iu.test(item.name)) continue;
-      const content = await fetch(
-        `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}/content`,
-        { headers: { Authorization: `Bearer ${accessToken}` } },
+      const content = await readGraphContent(
+        `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}`,
+        accessToken,
       );
       if (!content.ok) continue;
       const parsed = deviceSettingsSchema.safeParse(await content.json());
@@ -247,9 +277,9 @@ async function readDocument<T>(
   schema: z.ZodType<T>,
   accessToken: string,
 ): Promise<T | undefined> {
-  const response = await fetch(
-    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/${path}:/content`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+  const response = await readGraphContent(
+    `${oneDropConfig.graphBaseUrl}${oneDropConfig.appRootPath}/${path}`,
+    accessToken,
   );
   if (response.status === 404) return undefined;
   if (!response.ok) {

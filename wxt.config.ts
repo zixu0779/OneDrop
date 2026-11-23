@@ -29,6 +29,7 @@ export function createEdgeManifest(
       "tabs",
     ],
     host_permissions: [
+      "https://onedrop.sycamore.top/*",
       "https://graph.microsoft.com/*",
       "https://login.microsoftonline.com/*",
       "https://*.files.1drv.com/*",

@@ -1,3 +1,8 @@
+import {
+  accountIdentity,
+  MAX_LOCAL_ACCOUNTS,
+  type LocalAccounts,
+} from "@onedrop/core/domain/local-account";
 import type { AuthStatus } from "@onedrop/core/contracts/runtime-messages";
 import { z } from "zod";
 import { createPkcePair, createRandomBase64Url } from "./pkce";
@@ -7,6 +12,7 @@ import {
   type TokenResponse,
 } from "./token";
 
+const ACCOUNTS_STORAGE_KEY = "onedrop.auth.accounts.v1";
 const TOKEN_STORAGE_KEY = "onedrop.auth.token";
 const PENDING_AUTH_STORAGE_KEY = "onedrop.auth.pending";
 const EXPIRY_SKEW_MS = 60_000;
@@ -30,6 +36,8 @@ type PendingAuthorization = {
   redirectUri: string;
   createdAt: number;
   interactive: boolean;
+  expectedKey?: string | undefined;
+  originalActiveKey?: string | undefined;
 };
 
 function getClientId(): string | undefined {
@@ -80,46 +88,128 @@ function getIdentityApi():
   ).identity;
 }
 
-async function readStoredToken(): Promise<StoredToken | undefined> {
-  const stored = await browser.storage.local.get(TOKEN_STORAGE_KEY);
-  const value: unknown = stored[TOKEN_STORAGE_KEY];
-
-  const parsed = zStoredToken.safeParse(value).data;
-
-  if (parsed) return parsed;
-
-  // Migrate a token created by an earlier validation build while the current
-  // Edge session is still alive.
-  const sessionStored = await browser.storage.session.get(TOKEN_STORAGE_KEY);
-  const sessionToken = zStoredToken.safeParse(
-    sessionStored[TOKEN_STORAGE_KEY],
-  ).data;
-
-  if (sessionToken) {
-    await storeToken(sessionToken);
-    await browser.storage.session.remove(TOKEN_STORAGE_KEY);
-  }
-
-  return sessionToken;
-}
-
 const zStoredToken = tokenResponseSchema.extend({
   expiresAt: z.iso.datetime(),
 });
-
-let refreshInFlight: Promise<StoredToken | undefined> | undefined;
-
+type AccountStore = {
+  activeKey?: string | undefined;
+  tokens: Record<string, StoredToken>;
+  lastUsed: Record<string, number>;
+  required: Record<string, boolean>;
+};
+let mutationTail: Promise<unknown> = Promise.resolve();
+function mutateAccounts<T>(
+  operation: (store: AccountStore) => Promise<T>,
+): Promise<T> {
+  const result = mutationTail.then(async () => {
+    const store = await readAccounts();
+    const result = await operation(store);
+    await browser.storage.local.set({ [ACCOUNTS_STORAGE_KEY]: store });
+    return result;
+  });
+  mutationTail = result.catch(() => undefined);
+  return result;
+}
+async function readAccounts(): Promise<AccountStore> {
+  const saved = await browser.storage.local.get(ACCOUNTS_STORAGE_KEY);
+  const existing = saved[ACCOUNTS_STORAGE_KEY] as AccountStore | undefined;
+  if (existing) return existing;
+  const store: AccountStore = { tokens: {}, lastUsed: {}, required: {} };
+  const local = await browser.storage.local.get(TOKEN_STORAGE_KEY);
+  const session = await browser.storage.session.get(TOKEN_STORAGE_KEY);
+  const legacy = zStoredToken.safeParse(
+    local[TOKEN_STORAGE_KEY] ?? session[TOKEN_STORAGE_KEY],
+  ).data;
+  if (legacy) {
+    // Only credentials have an identity; never claim the old unscoped message database.
+    const key = accountIdentity(readUnverifiedIdTokenClaims(legacy.id_token));
+    store.tokens[key] = legacy;
+    store.activeKey = key;
+    store.lastUsed[key] = Date.now();
+  }
+  return store;
+}
+async function readStoredToken(): Promise<StoredToken | undefined> {
+  const store = await readAccounts();
+  return store.activeKey ? store.tokens[store.activeKey] : undefined;
+}
+const refreshInFlight = new Map<string, Promise<StoredToken | undefined>>();
 class SignInRequiredError extends Error {}
 
-async function storeToken(token: StoredToken): Promise<void> {
-  await browser.storage.local.set({ [TOKEN_STORAGE_KEY]: token });
+async function storeToken(
+  token: StoredToken,
+  activate = false,
+  expectedKey?: string,
+  originalActiveKey?: string,
+): Promise<void> {
+  const key = accountIdentity(readUnverifiedIdTokenClaims(token.id_token));
+  if (expectedKey && key !== expectedKey)
+    throw new Error("Sign in with the selected Microsoft account.");
+  await mutateAccounts(async (store) => {
+    if (activate && store.activeKey !== originalActiveKey)
+      throw new Error("The active account changed during sign-in. Try again.");
+    if (
+      !store.tokens[key] &&
+      Object.keys(store.tokens).length >= MAX_LOCAL_ACCOUNTS
+    )
+      throw new Error(
+        "You can keep up to three accounts. Remove one before adding another.",
+      );
+    if ((!activate || expectedKey) && !store.tokens[key])
+      throw new Error("The account was removed.");
+    store.tokens[key] = token;
+    store.required[key] = false;
+    if (activate) {
+      store.activeKey = key;
+      store.lastUsed[key] = Date.now();
+    }
+  });
 }
-
-async function removeStoredToken(): Promise<void> {
-  await Promise.all([
-    browser.storage.local.remove(TOKEN_STORAGE_KEY),
-    browser.storage.session.remove(TOKEN_STORAGE_KEY),
-  ]);
+async function markSignInRequired(key: string): Promise<void> {
+  await mutateAccounts(async (store) => {
+    if (store.tokens[key]) store.required[key] = true;
+  });
+}
+export async function listAccounts(): Promise<LocalAccounts> {
+  const store = await readAccounts();
+  return {
+    activeKey: store.activeKey,
+    accounts: Object.entries(store.tokens)
+      .map(([key, token]) => {
+        const claims = readUnverifiedIdTokenClaims(token.id_token);
+        return {
+          key,
+          displayName: claims.name,
+          username: claims.preferred_username,
+          lastUsedAt: store.lastUsed[key] ?? 0,
+          signInRequired: store.required[key] ?? false,
+        };
+      })
+      .sort((a, b) => b.lastUsedAt - a.lastUsedAt),
+  };
+}
+export async function switchAccount(key: string): Promise<void> {
+  await mutateAccounts(async (store) => {
+    if (!store.tokens[key])
+      throw new Error("This account is no longer available.");
+    store.activeKey = key;
+    store.lastUsed[key] = Date.now();
+  });
+}
+export async function removeAccount(key: string): Promise<void> {
+  await mutateAccounts(async (store) => {
+    delete store.tokens[key];
+    delete store.lastUsed[key];
+    delete store.required[key];
+    if (store.activeKey === key)
+      store.activeKey = Object.keys(store.tokens).sort(
+        (a, b) => (store.lastUsed[b] ?? 0) - (store.lastUsed[a] ?? 0),
+      )[0];
+  });
+  await browser.storage.local.remove(TOKEN_STORAGE_KEY);
+  await browser.storage.session.remove(TOKEN_STORAGE_KEY);
+  // A suspended browser flow predates this explicit removal; do not restore it later.
+  await browser.storage.local.remove(PENDING_AUTH_STORAGE_KEY);
 }
 
 function isAccessTokenUsable(token: StoredToken): boolean {
@@ -128,24 +218,27 @@ function isAccessTokenUsable(token: StoredToken): boolean {
 
 async function getUsableToken(): Promise<StoredToken | undefined> {
   const token = await readStoredToken();
-
+  const store = await readAccounts();
+  if (store.activeKey && store.required[store.activeKey])
+    throw new SignInRequiredError("Sign in again to sync this account.");
   if (!token || isAccessTokenUsable(token)) return token;
 
   if (!token.refresh_token) {
-    await removeStoredToken();
-    return undefined;
+    await markSignInRequired(
+      accountIdentity(readUnverifiedIdTokenClaims(token.id_token)),
+    );
+    throw new SignInRequiredError("Sign in again to sync this account.");
   }
 
-  refreshInFlight ??= refreshAccessToken(token)
-    .catch((error: unknown) => {
-      if (error instanceof SignInRequiredError) return undefined;
-      throw error;
-    })
-    .finally(() => {
-      refreshInFlight = undefined;
-    });
-
-  return refreshInFlight;
+  const key = accountIdentity(readUnverifiedIdTokenClaims(token.id_token));
+  let refresh = refreshInFlight.get(key);
+  if (!refresh) {
+    refresh = refreshAccessToken(token).finally(() =>
+      refreshInFlight.delete(key),
+    );
+    refreshInFlight.set(key, refresh);
+  }
+  return refresh;
 }
 
 export async function getAuthStatus(): Promise<AuthStatus> {
@@ -155,8 +248,7 @@ export async function getAuthStatus(): Promise<AuthStatus> {
     return { state: "unconfigured", redirectUri };
   }
 
-  await resumePendingTabAuthorization();
-  const token = await getUsableToken();
+  const token = await getUsableToken().catch(() => readStoredToken());
 
   if (!token) {
     return { state: "signed-out", redirectUri };
@@ -177,14 +269,23 @@ export async function getAuthStatus(): Promise<AuthStatus> {
   };
 }
 
-export async function signIn(): Promise<AuthStatus> {
+export async function signIn(expectedKey?: string): Promise<AuthStatus> {
   const clientId = getClientId();
 
   if (!clientId) {
     throw new Error("Microsoft Entra Client ID is not configured.");
   }
 
-  await acquireAuthorizationCodeToken({ interactive: true });
+  const accounts = await listAccounts();
+  if (!expectedKey && accounts.accounts.length >= MAX_LOCAL_ACCOUNTS)
+    throw new Error(
+      "You can keep up to three accounts. Remove one before adding another.",
+    );
+  await acquireAuthorizationCodeToken({
+    interactive: true,
+    expectedKey,
+    originalActiveKey: accounts.activeKey,
+  });
   await browser.storage.session.remove(TOKEN_STORAGE_KEY);
   return getAuthStatus();
 }
@@ -254,6 +355,8 @@ async function launchTabAuthorizationFlow(
 async function acquireAuthorizationCodeToken(options: {
   interactive: boolean;
   previous?: StoredToken;
+  expectedKey?: string | undefined;
+  originalActiveKey?: string | undefined;
 }): Promise<StoredToken> {
   const clientId = getClientId();
 
@@ -295,6 +398,8 @@ async function acquireAuthorizationCodeToken(options: {
         redirectUri,
         createdAt: Date.now(),
         interactive: options.interactive,
+        expectedKey: options.expectedKey,
+        originalActiveKey: options.originalActiveKey,
       });
     }
     callbackUrl = identity?.launchWebAuthFlow
@@ -310,6 +415,15 @@ async function acquireAuthorizationCodeToken(options: {
   } catch (cause) {
     if (shouldUseTabAuthorizationFallback(cause)) {
       try {
+        await storePendingAuthorization({
+          state,
+          verifier,
+          redirectUri,
+          createdAt: Date.now(),
+          interactive: options.interactive,
+          expectedKey: options.expectedKey,
+          originalActiveKey: options.originalActiveKey,
+        });
         callbackUrl = await launchTabAuthorizationFlow(
           authorizeUrl.toString(),
           redirectUri,
@@ -345,6 +459,8 @@ async function acquireAuthorizationCodeToken(options: {
     redirectUri,
     createdAt: Date.now(),
     interactive: options.interactive,
+    expectedKey: options.expectedKey,
+    originalActiveKey: options.originalActiveKey,
   });
   await browser.storage.local.remove(PENDING_AUTH_STORAGE_KEY);
   return storedToken;
@@ -408,7 +524,12 @@ async function exchangeAuthorizationCallback(
     expiresAt: new Date(Date.now() + token.expires_in * 1000).toISOString(),
   };
 
-  await storeToken(storedToken);
+  await storeToken(
+    storedToken,
+    pending.interactive,
+    pending.expectedKey,
+    pending.originalActiveKey,
+  );
   return storedToken;
 }
 
@@ -418,7 +539,14 @@ async function storePendingAuthorization(
   await browser.storage.local.set({ [PENDING_AUTH_STORAGE_KEY]: pending });
 }
 
-async function resumePendingTabAuthorization(): Promise<void> {
+let pendingResume: Promise<void> | undefined;
+export async function resumePendingTabAuthorization(): Promise<void> {
+  pendingResume ??= resumePendingAuthorizationOnce().finally(() => {
+    pendingResume = undefined;
+  });
+  return pendingResume;
+}
+async function resumePendingAuthorizationOnce(): Promise<void> {
   const stored = await browser.storage.local.get(PENDING_AUTH_STORAGE_KEY);
   const pending = stored[PENDING_AUTH_STORAGE_KEY] as
     PendingAuthorization | undefined;
@@ -443,12 +571,16 @@ async function resumePendingTabAuthorization(): Promise<void> {
 }
 
 export async function signOut(): Promise<AuthStatus> {
-  await removeStoredToken();
+  const key = (await listAccounts()).activeKey;
+  if (key) await removeAccount(key);
   return getAuthStatus();
 }
 
 export async function getCurrentAccessToken(): Promise<string> {
+  const before = (await listAccounts()).activeKey;
   const token = await getUsableToken();
+  if (before !== (await listAccounts()).activeKey)
+    throw new Error("The active account changed.");
 
   if (!token) {
     throw new Error("Your Microsoft session ended. Sign in again to continue.");
@@ -461,7 +593,6 @@ async function refreshAccessToken(previous: StoredToken): Promise<StoredToken> {
   const clientId = getClientId();
 
   if (!clientId || !previous.refresh_token) {
-    await removeStoredToken();
     throw new Error("Microsoft authentication is no longer configured.");
   }
 
@@ -479,17 +610,10 @@ async function refreshAccessToken(previous: StoredToken): Promise<StoredToken> {
 
   if (!response.ok) {
     if (isPermanentRefreshFailure(body)) {
-      try {
-        return await acquireAuthorizationCodeToken({
-          interactive: false,
-          previous,
-        });
-      } catch (error) {
-        if (error instanceof SignInRequiredError) {
-          await removeStoredToken();
-        }
-        throw error;
-      }
+      await markSignInRequired(
+        accountIdentity(readUnverifiedIdTokenClaims(previous.id_token)),
+      );
+      throw new SignInRequiredError("Sign in again to sync this account.");
     }
 
     throw new Error(
@@ -504,7 +628,11 @@ async function refreshAccessToken(previous: StoredToken): Promise<StoredToken> {
     id_token: refreshed.id_token ?? previous.id_token,
     expiresAt: new Date(Date.now() + refreshed.expires_in * 1000).toISOString(),
   };
-  await storeToken(storedToken);
+  await storeToken(
+    storedToken,
+    false,
+    accountIdentity(readUnverifiedIdTokenClaims(previous.id_token)),
+  );
   return storedToken;
 }
 
@@ -535,4 +663,14 @@ function getTokenErrorMessage(body: unknown): string {
   }
 
   return typeof error === "string" ? error : "Unknown response";
+}
+
+export async function hasPendingAuthorizationCallback(): Promise<boolean> {
+  const saved = await browser.storage.local.get(PENDING_AUTH_STORAGE_KEY);
+  const pending = saved[PENDING_AUTH_STORAGE_KEY] as
+    PendingAuthorization | undefined;
+  if (!pending) return false;
+  return (await browser.tabs.query({})).some((tab) =>
+    tab.url?.startsWith(pending.redirectUri),
+  );
 }

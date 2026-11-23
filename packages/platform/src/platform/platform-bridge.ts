@@ -1,3 +1,7 @@
+import {
+  assertAccountContext,
+  currentAccountScope,
+} from "@onedrop/app-runtime/features/auth/account-context";
 import type {
   ArchiveRuntimeEvent,
   FileTransferRuntimeEvent,
@@ -47,6 +51,7 @@ export interface PlatformBridge {
     signal: AbortSignal,
   ): Promise<File>;
   shareAttachment(file: File): Promise<void>;
+  exportLocalFile?(name: string, blob: Blob): Promise<void>;
   copyText(text: string): Promise<void>;
   copyImage(dataUrl: string): Promise<void>;
 }
@@ -64,15 +69,35 @@ const defaultBrowserBridge: PlatformBridge = {
     return browser.runtime.getManifest().version;
   },
   async request(request) {
-    return (await browser.runtime.sendMessage(request)) as RuntimeResponse;
+    assertAccountContext();
+    const scope = currentAccountScope();
+    const response = await browser.runtime.sendMessage({
+      ...request,
+      accountScope: scope,
+    });
+    assertAccountContext(scope);
+    return response as RuntimeResponse;
   },
   subscribe(listener) {
     if (!browser.runtime.onMessage) return () => undefined;
-    browser.runtime.onMessage.addListener(listener);
-    return () => browser.runtime.onMessage.removeListener(listener);
+    const scopedListener = (
+      event: Parameters<typeof listener>[0] & { accountScope?: string },
+    ) => {
+      try {
+        assertAccountContext();
+      } catch {
+        return;
+      }
+      if (event.accountScope === currentAccountScope()) listener(event);
+    };
+    browser.runtime.onMessage.addListener(scopedListener);
+    return () => browser.runtime.onMessage.removeListener(scopedListener);
   },
   async findDownload(downloadId) {
+    const scope = currentAccountScope();
+    assertAccountContext(scope);
     const [item] = await browser.downloads.search({ id: downloadId });
+    assertAccountContext(scope);
     if (!item) return undefined;
     return {
       id: item.id,
@@ -85,6 +110,7 @@ const defaultBrowserBridge: PlatformBridge = {
     return undefined;
   },
   async openDownload(downloadId) {
+    assertAccountContext();
     await browser.downloads.open(downloadId);
   },
   async getPreparedAttachment() {

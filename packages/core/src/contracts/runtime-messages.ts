@@ -1,3 +1,5 @@
+import type { AccountAvatar } from "@onedrop/core/domain/account-avatar";
+import type { LocalAccounts } from "@onedrop/core/domain/local-account";
 import type { Attachment, Message } from "@onedrop/core/domain/message";
 import type { DeletedMessageItem } from "@onedrop/core/domain/deleted-message";
 import type {
@@ -8,6 +10,7 @@ import type {
 } from "@onedrop/core/domain/settings";
 
 export type MobileDownloadStatus = {
+  accountScope?: string;
   driveItemId: string;
   state: "waiting" | "downloading" | "complete" | "failed" | "cancelled";
   filename: string;
@@ -33,11 +36,17 @@ export type AuthStatus =
     };
 
 export type RuntimeRequest =
+  | { type: "accounts/list" }
+  | { type: "accounts/add"; reauthenticateKey?: string }
+  | { type: "accounts/switch"; accountKey: string }
+  | { type: "accounts/remove"; accountKey: string }
   | { type: "auth/status" }
   | { type: "auth/sign-in" }
   | { type: "auth/sign-out" }
   | { type: "device/id" }
   | { type: "settings/read"; platform: DevicePlatform; deviceName: string }
+  | { type: "settings/read-avatar" }
+  | { type: "settings/save-avatar"; avatar: AccountAvatar }
   | { type: "settings/save-account"; account: AccountSettings }
   | { type: "settings/save-device"; device: DeviceSettings }
   | { type: "settings/delete-device"; deviceId: string }
@@ -170,9 +179,11 @@ export type FileTransferRuntimeEvent = {
 };
 
 export type RuntimeResponse =
+  | { ok: true; type: "accounts/list"; accounts: LocalAccounts }
   | { ok: true; type: "auth/status"; status: AuthStatus }
   | { ok: true; type: "device/id"; deviceId: string }
   | { ok: true; type: "settings/snapshot"; snapshot: SettingsSnapshot }
+  | { ok: true; type: "settings/avatar"; avatar: AccountAvatar }
   | { ok: true; type: "settings/account"; account: AccountSettings }
   | { ok: true; type: "settings/device"; device: DeviceSettings }
   | { ok: true; type: "settings/device-deleted"; deviceId: string }
@@ -252,4 +263,4 @@ export type RuntimeResponse =
     }
   | { ok: true; type: "files/onedrive-opened" }
   | { ok: true; type: "files/folder-shown"; exists: boolean }
-  | { ok: false; error: string };
+  | { ok: false; error: string; accountPaused?: boolean };

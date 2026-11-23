@@ -188,3 +188,12 @@ html:has(body.mobile-surface:not(.ios-surface):not(.ios-edge-surface)) {
     background: var(--panel-background, #f6f8fb);
   }
 }
+
+/* iOS zooms focused text fields below 16px; preserve larger user text sizes. */
+:is(.ios-surface, .ios-edge-surface) .settings-device-copy > input {
+  font-size: max(16px, calc(16px * var(--onedrop-user-text-scale, 1)));
+}
+
+html[data-text-size] :is(.ios-surface, .ios-edge-surface) .composer textarea {
+  font-size: max(16px, calc(16px * var(--onedrop-user-text-scale, 1)));
+}

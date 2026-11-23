@@ -1,3 +1,4 @@
+import { readGraphContent } from "../graph/graph-content";
 import { z } from "zod";
 
 import { oneDropConfig } from "@onedrop/core/config/onedrop";
@@ -66,9 +67,9 @@ export async function readRawMonthArchive(
     );
   }
   const item = itemSchema.parse(await metadata.json());
-  const content = await fetch(
-    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}/content`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+  const content = await readGraphContent(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(item.id)}`,
+    accessToken,
   );
   if (!content.ok) {
     throw new Error(

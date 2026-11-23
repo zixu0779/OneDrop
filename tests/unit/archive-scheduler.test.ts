@@ -105,6 +105,7 @@ describe("archive scheduler", () => {
     await checkArchiveTasks();
     await vi.waitFor(() =>
       expect(sendMessage).toHaveBeenCalledWith({
+        accountScope: "signed-out",
         type: "archives/event",
         notice: { month: "2026-07", phase: "failed" },
       }),
@@ -123,10 +124,12 @@ describe("archive scheduler", () => {
     });
     expect(publishMonthArchive).toHaveBeenCalledTimes(2);
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "archives/event",
       notice: { month: "2026-07", phase: "running" },
     });
     expect(sendMessage).toHaveBeenCalledWith({
+      accountScope: "signed-out",
       type: "archives/event",
       notice: { month: "2026-07", phase: "succeeded" },
     });
@@ -218,6 +221,7 @@ describe("archive scheduler", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.waitFor(() =>
         expect(sendMessage).toHaveBeenCalledWith({
+          accountScope: "signed-out",
           type: "archives/event",
           notice: { month: "2026-07", phase: "failed" },
         }),
@@ -227,6 +231,7 @@ describe("archive scheduler", () => {
       await vi.advanceTimersByTimeAsync(0);
       await vi.waitFor(() =>
         expect(sendMessage).toHaveBeenCalledWith({
+          accountScope: "signed-out",
           type: "archives/event",
           notice: { month: "2026-07", phase: "succeeded" },
         }),

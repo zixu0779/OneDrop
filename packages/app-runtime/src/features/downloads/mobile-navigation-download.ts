@@ -1,3 +1,4 @@
+import { currentAccountScope } from "@onedrop/app-runtime/features/auth/account-context";
 import type { Attachment } from "@onedrop/core/domain/message";
 import type { MobileDownloadStatus } from "@onedrop/core/contracts/runtime-messages";
 import { getAttachmentDownloadUrl } from "@onedrop/onedrive/infrastructure/onedrive/file-uploader";
@@ -13,6 +14,7 @@ export async function prepareMobileNavigationDownload(
 ): Promise<MobileDownloadStatus> {
   const now = Date.now();
   const task: MobileDownloadStatus = {
+    accountScope: currentAccountScope(),
     driveItemId: attachment.driveItemId,
     state: "waiting",
     filename: sanitizeDownloadFilename(attachment.name),
@@ -27,7 +29,27 @@ export async function prepareMobileNavigationDownload(
   return task;
 }
 
-export async function claimMobileNavigationDownload(
+let registryWork: Promise<unknown> = Promise.resolve();
+function mutateRegistry<T>(operation: () => Promise<T>): Promise<T> {
+  const work = registryWork.then(operation);
+  registryWork = work.catch(() => undefined);
+  return work;
+}
+export async function removeMobileAccountTasks(scope: string): Promise<void> {
+  await mutateRegistry(async () => {
+    const saved = await browser.storage.local.get(null);
+    const prefix = `onedrop.edge.${scope}.${STORAGE_KEY_PREFIX}`;
+    await browser.storage.local.remove(
+      Object.keys(saved).filter((key) => key.startsWith(prefix)),
+    );
+  });
+}
+export function claimMobileNavigationDownload(
+  item: Browser.downloads.DownloadItem,
+): Promise<void> {
+  return mutateRegistry(() => claimDownload(item));
+}
+async function claimDownload(
   item: Browser.downloads.DownloadItem,
 ): Promise<void> {
   const candidates = (await listTasks())
@@ -35,12 +57,14 @@ export async function claimMobileNavigationDownload(
       (task) =>
         task.state === "waiting" &&
         Date.now() - task.startedAt < 60_000 &&
-        (item.url === task.sourceUrl ||
-          item.finalUrl === task.sourceUrl ||
-          basename(item.filename) === task.filename),
+        (item.url === task.sourceUrl || item.finalUrl === task.sourceUrl),
     )
     .sort((left, right) => right.startedAt - left.startedAt);
-  const task = candidates[0];
+  const exact = candidates.filter(
+    (task) => item.url === task.sourceUrl || item.finalUrl === task.sourceUrl,
+  );
+  const matching = exact.length ? exact : candidates;
+  const task = matching.length === 1 ? matching[0] : undefined;
   if (!task) return;
   const now = Date.now();
   await writeTask({
@@ -179,12 +203,11 @@ function positiveTotal(primary: number, fallback: number): number {
   return primary > 0 ? primary : fallback;
 }
 
-function basename(path: string): string {
-  return path.split(/[\\/]/u).at(-1) ?? path;
-}
-
-function storageKey(driveItemId: string): string {
-  return `${STORAGE_KEY_PREFIX}${driveItemId}`;
+function storageKey(
+  driveItemId: string,
+  scope = currentAccountScope(),
+): string {
+  return `onedrop.edge.${scope}.${STORAGE_KEY_PREFIX}${driveItemId}`;
 }
 
 async function readTask(
@@ -198,12 +221,18 @@ async function readTask(
 async function listTasks(): Promise<MobileDownloadStatus[]> {
   const stored = await browser.storage.local.get(null);
   return Object.entries(stored)
-    .filter(([key]) => key.startsWith(STORAGE_KEY_PREFIX))
+    .filter(
+      ([key]) =>
+        key.startsWith("onedrop.edge.") &&
+        key.includes(`.${STORAGE_KEY_PREFIX}`),
+    )
     .map(([, value]) => value as MobileDownloadStatus);
 }
 
 async function writeTask(task: MobileDownloadStatus): Promise<void> {
-  await browser.storage.local.set({ [storageKey(task.driveItemId)]: task });
+  await browser.storage.local.set({
+    [storageKey(task.driveItemId, task.accountScope)]: task,
+  });
 }
 
 async function removeTask(driveItemId: string): Promise<void> {

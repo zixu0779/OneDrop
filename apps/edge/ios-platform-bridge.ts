@@ -1,3 +1,7 @@
+import {
+  assertAccountContext,
+  currentAccountScope,
+} from "@onedrop/app-runtime/features/auth/account-context";
 import type { PlatformBridge } from "@onedrop/platform/platform/platform-bridge";
 import {
   deleteAttachmentCache,
@@ -18,14 +22,29 @@ export const iosEdgePlatformBridge: PlatformBridge = {
   },
 
   async request(request) {
-    return (await browser.runtime.sendMessage(request)) as Awaited<
-      ReturnType<PlatformBridge["request"]>
-    >;
+    assertAccountContext();
+    const scope = currentAccountScope();
+    const response = await browser.runtime.sendMessage({
+      ...request,
+      accountScope: scope,
+    });
+    assertAccountContext(scope);
+    return response as Awaited<ReturnType<PlatformBridge["request"]>>;
   },
 
   subscribe(listener) {
-    browser.runtime.onMessage.addListener(listener);
-    return () => browser.runtime.onMessage.removeListener(listener);
+    const scopedListener = (
+      event: Parameters<typeof listener>[0] & { accountScope?: string },
+    ) => {
+      try {
+        assertAccountContext();
+      } catch {
+        return;
+      }
+      if (event.accountScope === currentAccountScope()) listener(event);
+    };
+    browser.runtime.onMessage.addListener(scopedListener);
+    return () => browser.runtime.onMessage.removeListener(scopedListener);
   },
 
   async findDownload() {
@@ -55,15 +74,19 @@ export const iosEdgePlatformBridge: PlatformBridge = {
   },
 
   async prepareAttachment(attachment, onProgress, signal) {
+    const scope = currentAccountScope();
+    assertAccountContext(scope);
     const response = await browser.runtime.sendMessage({
       type: "files/get-download-url",
+      accountScope: scope,
       driveItemId: attachment.driveItemId,
     });
     if (!response.ok || response.type !== "files/download-url") {
       throw new Error(response.error || "OneDrop could not prepare the file.");
     }
 
-    const download = await fetch(response.url, { signal });
+    assertAccountContext(scope);
+    const download = await fetch(response.url, { signal, credentials: "omit" });
     if (!download.ok) {
       throw new Error(`File download failed (${download.status}).`);
     }
@@ -71,6 +94,7 @@ export const iosEdgePlatformBridge: PlatformBridge = {
     if (attachment.size > 0 && blob.size !== attachment.size) {
       throw new Error("The downloaded file size did not match OneDrive.");
     }
+    assertAccountContext(scope);
     await putAttachmentCache({
       driveItemId: attachment.driveItemId,
       name: attachment.name,

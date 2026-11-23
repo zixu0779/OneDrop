@@ -21,6 +21,7 @@ const retryDelays = [5 * 60_000, 30 * 60_000, 6 * 60 * 60_000] as const;
 const finalRetryDelay = 24 * 60 * 60_000;
 const runningMonths = new Map<string, Promise<ArchiveNotice | undefined>>();
 let schedulerGeneration = 0;
+const unfinishedOperations = new Set<Promise<unknown>>();
 
 const taskSchema = z.object({
   month: z.string().regex(/^\d{4}-\d{2}$/u),
@@ -373,6 +374,10 @@ async function digestDocument(document: MonthDocument): Promise<string> {
 }
 
 async function withTimeout<T>(operation: Promise<T>): Promise<T> {
+  unfinishedOperations.add(operation);
+  void operation
+    .finally(() => unfinishedOperations.delete(operation))
+    .catch(() => undefined);
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
@@ -412,3 +417,13 @@ function sourceMonthItemUrl(month: string): string {
 }
 
 class ArchiveBlockedError extends Error {}
+
+// Account switches wait for actual operations, including work that outlived a timeout.
+export async function pauseArchiveTasks(): Promise<void> {
+  schedulerGeneration += 1;
+  await Promise.allSettled([
+    ...runningMonths.values(),
+    ...unfinishedOperations,
+  ]);
+  runningMonths.clear();
+}

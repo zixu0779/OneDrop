@@ -1,3 +1,6 @@
+import { startBrowserUpdates } from "@onedrop/platform/platform/browser-updates";
+import { AppLoading } from "@onedrop/ui/LoadingSpinner";
+import { initializeExtensionAccount } from "@onedrop/extension-runtime/account-bootstrap";
 import React from "react";
 import ReactDOM from "react-dom/client";
 
@@ -11,7 +14,13 @@ import {
 } from "@onedrop/app-runtime/features/settings/settings-cache";
 import "@onedrop/ui/styles.css";
 
+const element = document.getElementById("root");
+if (!element) throw new Error("OneDrop root was not found.");
+const appRoot = ReactDOM.createRoot(element);
+appRoot.render(<AppLoading />);
+
 async function start(): Promise<void> {
+  await initializeExtensionAccount();
   let operatingSystem: string | undefined;
   try {
     operatingSystem = (await browser.runtime.getPlatformInfo()).os;
@@ -38,17 +47,13 @@ async function start(): Promise<void> {
   const cached = cachedPreferences();
   applyAppearance(cached.appearance.theme, cached.appearance.textSize);
 
-  const root = document.getElementById("root");
-
-  if (!root) {
-    throw new Error("OneDrop side panel root was not found.");
-  }
-
-  ReactDOM.createRoot(root).render(
+  appRoot.render(
     <React.StrictMode>
       <App />
     </React.StrictMode>,
   );
 }
 
-void start();
+void start().catch(() => appRoot.render(<AppLoading failed />));
+
+startBrowserUpdates(false);

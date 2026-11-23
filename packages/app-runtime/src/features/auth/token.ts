@@ -12,6 +12,8 @@ export const tokenResponseSchema = z.object({
 export type TokenResponse = z.infer<typeof tokenResponseSchema>;
 
 type IdTokenClaims = {
+  iss?: string | undefined;
+  sub?: string | undefined;
   name?: string | undefined;
   preferred_username?: string | undefined;
 };
@@ -41,6 +43,8 @@ export function readUnverifiedIdTokenClaims(idToken?: string): IdTokenClaims {
 
     return z
       .object({
+        iss: z.string().optional(),
+        sub: z.string().optional(),
         name: z.string().optional(),
         preferred_username: z.string().optional(),
       })

@@ -1,3 +1,4 @@
+import { readGraphContent } from "../graph/graph-content";
 import { z } from "zod";
 
 import { oneDropConfig } from "@onedrop/core/config/onedrop";
@@ -482,9 +483,9 @@ export async function readAttachmentDataUrlWithAccessToken(
   mimeType: string,
   accessToken: string,
 ): Promise<string> {
-  const response = await fetch(
-    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}/content`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
+  const response = await readGraphContent(
+    `${oneDropConfig.graphBaseUrl}/me/drive/items/${encodeURIComponent(driveItemId)}`,
+    accessToken,
   );
   if (!response.ok) {
     throw new Error(`Image preview failed: ${await readGraphError(response)}`);

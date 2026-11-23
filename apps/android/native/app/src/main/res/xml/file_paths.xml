@@ -2,4 +2,5 @@
 <paths>
     <files-path name="downloads" path="downloads/" />
     <cache-path name="clipboard" path="clipboard/" />
+    <cache-path name="updates" path="updates/" />
 </paths>

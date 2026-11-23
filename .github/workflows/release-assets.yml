@@ -198,8 +198,11 @@ jobs:
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber
 
   livecontainer-source:
-    name: Refresh LiveContainer subscription
-    needs: ios
+    name: Refresh release update feeds
+    needs: [edge, android, ios]
+    if: >-
+      always() && !cancelled() &&
+      (needs.edge.result == 'success' || needs.android.result == 'success' || needs.ios.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 12
     permissions:
@@ -210,7 +213,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release=$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,assets)
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" | jq '{isDraft:.draft,isPrerelease:.prerelease,assets:[.assets[] | .url = .browser_download_url]}')
           if jq -e '.isDraft' <<< "$release" > /dev/null; then exit 0; fi
           if [[ "$RELEASE_TAG" == ios-beta-v* ]]; then
             jq -e '.isPrerelease' <<< "$release" > /dev/null
@@ -223,16 +226,22 @@ jobs:
             name="OneDrop-$version.ipa"
             bundle=com.sycamore.onedrop
           fi
-          asset=$(jq -ce --arg name "$name" '.assets[] | select(.name == $name and .state == "uploaded" and .size > 0)' <<< "$release")
+          asset=$(jq -c --arg name "$name" 'first(.assets[] | select(.name == $name and .state == "uploaded" and .size > 0)) // null' <<< "$release")
           gh api --method POST "repos/$GITHUB_REPOSITORY/pages/builds"
           for attempt in {1..36}; do
+            if ! curl --fail --silent --show-error --max-time 10 "https://onedrop.sycamore.top/updates.json?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$attempt" |
+              jq -e --arg v "$version" --argjson release "$release" '. as $feed | all($release.assets[] | select(.state == "uploaded" and (.name | test("(\\.ipa|-android\\.apk|-mobile-edge\\.crx)$"))); . as $asset | any($feed.assets[]; .version == $v and .url == $asset.url and .size == $asset.size and (.sha256 | test("^[a-f0-9]{64}$")) and .sha256 == ($asset.digest | sub("^sha256:"; ""))))' > /dev/null; then
+              sleep 15
+              continue
+            fi
+            if [[ "$asset" == null ]]; then exit 0; fi
             if curl --fail --silent --show-error --max-time 10 "https://onedrop.sycamore.top/apps.json?run=$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$attempt" |
               jq -e --arg bundle "$bundle" --arg v "$version" --argjson ipa "$asset" 'any(.apps[] | select(.bundleIdentifier == $bundle) | .versions[]; .version == $v and .size == $ipa.size and .downloadURL == $ipa.url)' > /dev/null; then
               exit 0
             fi
             sleep 15
           done
-          echo "The published subscription does not list the uploaded IPA." >&2
+          echo "The published update feeds do not list all uploaded packages." >&2
           exit 1
 
   partner-center:

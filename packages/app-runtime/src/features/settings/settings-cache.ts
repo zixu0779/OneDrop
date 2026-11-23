@@ -1,3 +1,4 @@
+import { oneDropDatabase } from "@onedrop/web-storage/infrastructure/indexed-db/database";
 import {
   defaultAccountSettings,
   defaultDevicePreferences,
@@ -8,6 +9,18 @@ import {
   type ThemePreference,
   type TextSize,
 } from "@onedrop/core/domain/settings";
+
+let storagePrefix = "";
+export function configureSettingsScope(
+  scope: string,
+  platform = "native",
+): void {
+  if (!localStorage.getItem(APPEARANCE_KEY)) {
+    const existing = readCachedDeviceSettings();
+    if (existing) saveSharedAppearance(existing.preferences.appearance);
+  }
+  storagePrefix = `onedrop.${platform}.${scope}.`;
+}
 
 const ACCOUNT_KEY = "onedrop.settings.account.v1";
 const DEVICE_KEY = "onedrop.settings.current-device.v1";
@@ -28,18 +41,17 @@ export function cacheSettings(
   account: AccountSettings,
   device: DeviceSettings,
 ): void {
-  localStorage.setItem(ACCOUNT_KEY, JSON.stringify(account));
-  localStorage.setItem(DEVICE_KEY, JSON.stringify(device));
-  applyAppearance(
-    device.preferences.appearance.theme,
-    device.preferences.appearance.textSize,
-  );
+  localStorage.setItem(storagePrefix + ACCOUNT_KEY, JSON.stringify(account));
+  localStorage.setItem(storagePrefix + DEVICE_KEY, JSON.stringify(device));
+  const appearance = sharedAppearance(device.preferences.appearance);
+  applyAppearance(appearance.theme, appearance.textSize);
 }
 
 export function clearCachedSettings(): void {
-  localStorage.removeItem(ACCOUNT_KEY);
-  localStorage.removeItem(DEVICE_KEY);
-  applyAppearance("system", "default");
+  localStorage.removeItem(storagePrefix + ACCOUNT_KEY);
+  localStorage.removeItem(storagePrefix + DEVICE_KEY);
+  const appearance = sharedAppearance(defaultDevicePreferences().appearance);
+  applyAppearance(appearance.theme, appearance.textSize);
 }
 
 export function applyAppearance(
@@ -52,7 +64,12 @@ export function applyAppearance(
 }
 
 export function cachedPreferences() {
-  return readCachedDeviceSettings()?.preferences ?? defaultDevicePreferences();
+  const preferences =
+    readCachedDeviceSettings()?.preferences ?? defaultDevicePreferences();
+  return {
+    ...preferences,
+    appearance: sharedAppearance(preferences.appearance),
+  };
 }
 
 function parse<T>(
@@ -60,7 +77,7 @@ function parse<T>(
   schema: { safeParse(value: unknown): { success: boolean; data?: T } },
 ): T | undefined {
   try {
-    const raw = localStorage.getItem(key);
+    const raw = localStorage.getItem(storagePrefix + key);
     if (!raw) return undefined;
     const parsed = schema.safeParse(JSON.parse(raw));
     return parsed.success ? parsed.data : undefined;
@@ -106,4 +123,41 @@ function applyForcedColorScheme(theme: ThemePreference): void {
   }
   document.documentElement.style.colorScheme =
     theme === "system" ? "light dark" : theme;
+}
+
+export function readDraft(): string {
+  return localStorage.getItem(storagePrefix + "composer-draft") ?? "";
+}
+export function saveDraft(value: string): void {
+  localStorage.setItem(storagePrefix + "composer-draft", value);
+  void oneDropDatabase.settings.put({ key: "composer-draft", value });
+}
+
+const APPEARANCE_KEY = "onedrop.device.appearance.v1";
+export function saveSharedAppearance(
+  appearance: ReturnType<typeof defaultDevicePreferences>["appearance"],
+): void {
+  localStorage.setItem(APPEARANCE_KEY, JSON.stringify(appearance));
+}
+export function sharedAppearance(
+  fallback: ReturnType<typeof defaultDevicePreferences>["appearance"],
+) {
+  try {
+    const saved = defaultDevicePreferencesSchemaAppearance(
+      JSON.parse(localStorage.getItem(APPEARANCE_KEY) ?? "null"),
+    );
+    if (saved) return saved;
+  } catch {
+    /* Replace invalid device appearance with the current valid value. */
+  }
+  saveSharedAppearance(fallback);
+  return fallback;
+}
+function defaultDevicePreferencesSchemaAppearance(value: unknown) {
+  const preferences = defaultDevicePreferences();
+  const result = deviceSettingsSchema.shape.preferences.safeParse({
+    ...preferences,
+    appearance: value,
+  });
+  return result.success ? result.data.appearance : undefined;
 }

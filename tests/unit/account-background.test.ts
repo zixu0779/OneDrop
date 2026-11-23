@@ -7,6 +7,8 @@ const state = vi.hoisted(() => ({
   pause: vi.fn(),
   configure: vi.fn(),
   remove: vi.fn(),
+  updateCheck: vi.fn(),
+  reload: vi.fn(),
 }));
 vi.mock("@onedrop/core/domain/local-account", () => ({
   accountStorageScope: async (key: string) => key,
@@ -46,6 +48,7 @@ vi.mock("@onedrop/onedrive/infrastructure/onedrive/attachment-cleanup", () => ({
 }));
 let closeDatabase = () => {};
 let request: (message: Record<string, unknown>) => Promise<unknown>;
+let connectUpdateView: (port: unknown) => void;
 beforeEach(async () => {
   closeDatabase();
   vi.resetModules();
@@ -57,6 +60,18 @@ beforeEach(async () => {
   vi.stubGlobal("browser", {
     runtime: {
       getPlatformInfo: async () => ({ os: "mac" }),
+      getManifest: () => ({
+        version: "1.1.0",
+        update_url: "https://edge.microsoft.com/extensionwebstorebase/v1/crx",
+      }),
+      requestUpdateCheck: state.updateCheck,
+      reload: state.reload,
+      onConnect: {
+        addListener: (handler: typeof connectUpdateView) => {
+          connectUpdateView = handler;
+        },
+      },
+      onUpdateAvailable: { addListener: vi.fn() },
       onInstalled: { addListener: vi.fn() },
       onMessage: {
         addListener: (handler: typeof request) => {
@@ -259,4 +274,98 @@ test("public remove rejects the active account without interrupting work", async
   ).toMatchObject({ ok: false });
   expect(state.remove).not.toHaveBeenCalled();
   expect(state.pause).not.toHaveBeenCalled();
+});
+
+function updateView(idle: boolean | null = true) {
+  const listeners = new Set<(message: unknown) => void>();
+  const sent: Array<{ type: string; id?: string }> = [];
+  const port = {
+    name: "onedrop-updates",
+    onMessage: {
+      addListener: (fn: (message: unknown) => void) => listeners.add(fn),
+      removeListener: (fn: (message: unknown) => void) => listeners.delete(fn),
+    },
+    onDisconnect: { addListener: vi.fn() },
+    postMessage: (message: { type: string; id?: string }) => {
+      sent.push(message);
+      if (message.type === "lock" && idle !== null)
+        for (const fn of listeners) fn({ id: message.id, idle });
+    },
+  };
+  connectUpdateView(port);
+  return {
+    sent,
+    respond: (idle: boolean) => {
+      for (const fn of listeners)
+        fn({ id: sent.find((message) => message.type === "lock")?.id, idle });
+    },
+  };
+}
+async function preparedUpdate() {
+  const { oneDropDatabase } =
+    await import("@onedrop/web-storage/infrastructure/indexed-db/database");
+  await oneDropDatabase.pendingTexts.clear();
+  await oneDropDatabase.pendingTransfers.clear();
+  state.updateCheck.mockResolvedValue({
+    status: "update_available",
+    version: "1.2.0",
+  });
+  expect(await request({ type: "updates/check" })).toMatchObject({
+    ok: true,
+    result: { state: "available", version: "1.2.0" },
+  });
+}
+test("desktop store throttling is not current and a known prepared update survives no_update", async () => {
+  state.updateCheck.mockResolvedValue({ status: "throttled" });
+  expect(await request({ type: "updates/check" })).toMatchObject({ ok: false });
+  await preparedUpdate();
+  state.updateCheck.mockResolvedValue({ status: "no_update" });
+  expect(await request({ type: "updates/check" })).toMatchObject({
+    ok: true,
+    result: { state: "available", version: "1.2.0" },
+  });
+});
+test("desktop Install waits for every window and unlocks all after a busy response", async () => {
+  await preparedUpdate();
+  const busy = updateView(false),
+    late = updateView(null);
+  const install = request({ type: "updates/install" });
+  await vi.waitFor(() =>
+    expect(late.sent.some((message) => message.type === "lock")).toBe(true),
+  );
+  expect(busy.sent.some((message) => message.type === "unlock")).toBe(false);
+  expect(state.reload).not.toHaveBeenCalled();
+  expect(
+    await request({
+      type: "messages/send-text",
+      text: "keep",
+      messageId: "new",
+      accountScope: "A",
+    }),
+  ).toMatchObject({ ok: false, accountPaused: false });
+  late.respond(true);
+  expect(await install).toMatchObject({ ok: false });
+  expect(busy.sent.at(-1)?.type).toBe("unlock");
+  expect(late.sent.at(-1)?.type).toBe("unlock");
+});
+test("desktop Install drains maintenance before reload and rejects a newly opened window", async () => {
+  await preparedUpdate();
+  updateView();
+  // Each maintenance drain needs its own resolver.
+  const finishes: Array<() => void> = [];
+  state.pause.mockImplementation(
+    () => new Promise<void>((resolve) => finishes.push(resolve)),
+  );
+  const install = request({ type: "updates/install" });
+  await vi.waitFor(() => expect(finishes).toHaveLength(2));
+  expect(state.reload).not.toHaveBeenCalled();
+  updateView();
+  finishes.forEach((resolve) => resolve());
+  expect(await install).toMatchObject({ ok: false });
+  expect(state.reload).not.toHaveBeenCalled();
+  state.pause.mockResolvedValue(undefined);
+  expect(await request({ type: "updates/install" })).toMatchObject({
+    ok: true,
+  });
+  expect(state.reload).toHaveBeenCalledTimes(1);
 });

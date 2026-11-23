@@ -1,3 +1,4 @@
+import { compareVersions } from "@onedrop/core/domain/app-update";
 import {
   readAccountAvatarWithAccessToken,
   saveAccountAvatarWithAccessToken,
@@ -8,7 +9,10 @@ import {
   configureAccountContext,
   currentAccountScope,
 } from "@onedrop/app-runtime/features/auth/account-context";
-import { configureExtensionDatabase } from "@onedrop/web-storage/infrastructure/indexed-db/database";
+import {
+  configureExtensionDatabase,
+  oneDropDatabase,
+} from "@onedrop/web-storage/infrastructure/indexed-db/database";
 import { pauseArchiveTasks } from "@onedrop/onedrive/infrastructure/onedrive/archive-scheduler";
 import { pauseAttachmentCleanup } from "@onedrop/onedrive/infrastructure/onedrive/attachment-cleanup";
 import type {
@@ -130,8 +134,64 @@ export default defineBackground(() => {
     void configureExtensionAction(runtimePlatform);
   });
 
+  let updateViewRevision = 0;
+  const updateViews = new Set<ReturnType<typeof browser.runtime.connect>>();
+  browser.runtime.onConnect?.addListener((port) => {
+    if (port.name !== "onedrop-updates") return;
+    updateViewRevision++;
+    updateViews.add(port);
+    port.onDisconnect.addListener(() => updateViews.delete(port));
+  });
+  async function lockUpdateViews(): Promise<void> {
+    if (!updateViews.size)
+      throw new Error("The OneDrop window is not ready. Try Install again.");
+    const results = await Promise.allSettled(
+      [...updateViews].map(
+        (port) =>
+          new Promise<void>((resolve, reject) => {
+            const id = crypto.randomUUID();
+            const onMessage = (message: { id?: string; idle?: boolean }) => {
+              if (message.id !== id) return;
+              clearTimeout(timer);
+              port.onMessage.removeListener(onMessage);
+              if (message.idle) resolve();
+              else
+                reject(
+                  new Error(
+                    "Wait for current work to finish, then try Install again.",
+                  ),
+                );
+            };
+            const timer = setTimeout(() => {
+              port.onMessage.removeListener(onMessage);
+              reject(
+                new Error(
+                  "Another OneDrop window is not ready. Close it and try again.",
+                ),
+              );
+            }, 3000);
+            port.onMessage.addListener(onMessage);
+            try {
+              port.postMessage({ type: "lock", id });
+            } catch (error) {
+              clearTimeout(timer);
+              port.onMessage.removeListener(onMessage);
+              reject(error);
+            }
+          }),
+      ),
+    );
+    const failure = results.find((result) => result.status === "rejected");
+    if (failure?.status === "rejected") throw failure.reason;
+  }
+  let preparedUpdate: string | undefined;
+  browser.runtime.onUpdateAvailable?.addListener(({ version }) => {
+    preparedUpdate = version;
+    void browser.storage.local.set({ "onedrop.prepared-update": version });
+  });
   const pendingRequests = new Set<Promise<RuntimeResponse>>();
   let changingAccount = false;
+  let installingUpdate = false;
   let managementLocked = false;
   let databaseReady = false;
   async function selectDatabase() {
@@ -150,9 +210,129 @@ export default defineBackground(() => {
     .catch(() => undefined)
     .then(selectDatabase);
   browser.runtime.onMessage.addListener(
-    async (request: RuntimeRequest & { accountScope?: string }) => {
+    async (
+      request:
+        | (RuntimeRequest & { accountScope?: string })
+        | { type: "updates/check" }
+        | { type: "updates/install" },
+    ) => {
       // Runtime progress events are broadcasts, not commands.
       if (!request.type || request.type.endsWith("progress")) return;
+      if (
+        request.type === "updates/check" ||
+        request.type === "updates/install"
+      ) {
+        try {
+          const manifest = browser.runtime.getManifest();
+          if (
+            !manifest.update_url ||
+            new URL(manifest.update_url).hostname !== "edge.microsoft.com"
+          )
+            throw new Error(
+              "Store update checks are unavailable for this installation.",
+            );
+          const cached = (
+            await browser.storage.local.get("onedrop.prepared-update")
+          )["onedrop.prepared-update"];
+          if (
+            typeof cached === "string" &&
+            compareVersions(cached, manifest.version) > 0
+          )
+            preparedUpdate = cached;
+          if (request.type === "updates/check") {
+            const checked = await browser.runtime.requestUpdateCheck();
+            if (checked.status === "update_available" && checked.version) {
+              preparedUpdate = checked.version;
+              await browser.storage.local.set({
+                "onedrop.prepared-update": checked.version,
+              });
+            }
+            if (
+              preparedUpdate &&
+              compareVersions(preparedUpdate, manifest.version) > 0
+            )
+              return {
+                ok: true,
+                result: { state: "available", version: preparedUpdate },
+              };
+            if (checked.status === "throttled")
+              throw new Error(
+                "The browser limited update checks. Try again later.",
+              );
+            if (checked.status !== "no_update")
+              throw new Error("The browser could not check for updates.");
+            return { ok: true, result: { state: "current" } };
+          }
+          await ready;
+          if (
+            !preparedUpdate ||
+            compareVersions(preparedUpdate, manifest.version) <= 0
+          )
+            throw new Error(
+              "No browser update is ready to install. Check again.",
+            );
+          if (
+            managementLocked ||
+            changingAccount ||
+            pendingRequests.size ||
+            activeFileUploads.size
+          )
+            throw new Error(
+              "Wait for current work to finish, then try Install again.",
+            );
+          managementLocked = true;
+          changingAccount = true;
+          installingUpdate = true;
+          try {
+            const views = updateViewRevision;
+            await lockUpdateViews();
+            const [texts, files] = await Promise.all([
+              oneDropDatabase.pendingTexts.toArray(),
+              oneDropDatabase.pendingTransfers.toArray(),
+            ]);
+            if (
+              texts.some((item) => item.status === "sending") ||
+              files.some(
+                (item) =>
+                  item.status === "uploading" || item.status === "committing",
+              )
+            )
+              throw new Error(
+                "Wait for current work to finish, then try Install again.",
+              );
+            const drains = await Promise.allSettled([
+              pauseArchiveTasks(),
+              pauseAttachmentCleanup(),
+            ]);
+            const failedDrain = drains.find(
+              (result) => result.status === "rejected",
+            );
+            if (failedDrain?.status === "rejected") throw failedDrain.reason;
+            if (views !== updateViewRevision)
+              throw new Error(
+                "Another OneDrop window opened. Try Install again.",
+              );
+            browser.runtime.reload();
+            return { ok: true };
+          } finally {
+            for (const port of updateViews) {
+              try {
+                port.postMessage({ type: "unlock" });
+              } catch {
+                /* closed view */
+              }
+            }
+            managementLocked = false;
+            changingAccount = false;
+            installingUpdate = false;
+          }
+        } catch (cause) {
+          return {
+            ok: false,
+            error: cause instanceof Error ? cause.message : String(cause),
+          };
+        }
+      }
       await ready;
       if (request.type === "accounts/list")
         return {
@@ -173,10 +353,13 @@ export default defineBackground(() => {
       if (changingAccount || request.accountScope !== currentAccountScope())
         return {
           ok: false,
-          error: "The active account changed. Reopen OneDrop to continue.",
+          error: installingUpdate
+            ? "An update is being installed. Try again after it finishes."
+            : "The active account changed. Reopen OneDrop to continue.",
           accountPaused:
-            request.type === "messages/send-text" ||
-            request.type === "files/send",
+            !installingUpdate &&
+            (request.type === "messages/send-text" ||
+              request.type === "files/send"),
         };
       if (management) {
         if (managementLocked)

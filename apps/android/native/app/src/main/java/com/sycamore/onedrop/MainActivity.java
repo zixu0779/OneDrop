@@ -11,6 +11,7 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
     registerPlugin(OneDropAuthPlugin.class);
+    registerPlugin(OneDropUpdatePlugin.class);
     registerPlugin(OneDropDownloadPlugin.class);
     super.onCreate(savedInstanceState);
     WindowCompat.setDecorFitsSystemWindows(getWindow(), false);

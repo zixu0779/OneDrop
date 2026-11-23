@@ -81,7 +81,7 @@ test("OAuth starts before a pending read drains, but activation waits for all wo
     reauthenticateKey: "B",
   });
   await vi.waitFor(() => expect(s.prepare).toHaveBeenCalled());
-  expect(s.prepare.mock.calls[0][0]).toMatchObject({
+  expect(s.prepare.mock.calls[0]![0]).toMatchObject({
     reauthenticateKey: "B",
     attemptId: expect.any(String),
   });

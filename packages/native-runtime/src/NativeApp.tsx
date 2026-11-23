@@ -1,3 +1,4 @@
+import { startNativeUpdates } from "./native-updates";
 import { AppLoading } from "@onedrop/ui/LoadingSpinner";
 import { resumeNativeDownloads } from "./native-platform-bridge";
 import React from "react";
@@ -15,6 +16,7 @@ import { nativeAuthPlugin } from "./native-auth";
 export async function mountNativeApp(element: HTMLElement): Promise<void> {
   const root = ReactDOM.createRoot(element);
   root.render(<AppLoading />);
+  startNativeUpdates();
   try {
     await nativeAuthPlugin.resetAuthorization();
     const status = await nativeAuthPlugin.status();

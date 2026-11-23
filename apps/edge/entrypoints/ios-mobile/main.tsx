@@ -1,3 +1,4 @@
+import { startBrowserUpdates } from "@onedrop/platform/platform/browser-updates";
 import { AppLoading } from "@onedrop/ui/LoadingSpinner";
 import { initializeExtensionAccount } from "@onedrop/extension-runtime/account-bootstrap";
 import React from "react";
@@ -35,3 +36,5 @@ async function start() {
   );
 }
 void start().catch(() => appRoot.render(<AppLoading failed />));
+
+startBrowserUpdates(true);

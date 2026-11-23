@@ -1,3 +1,5 @@
+import { beginUpdateWork } from "@onedrop/app-runtime/features/updates/update-work";
+import { UpdateSettingsRow } from "./UpdateSettingsRow";
 import { useAccountAvatar } from "./useAccountAvatar";
 import { LoadingSpinner as LoadingIcon } from "./LoadingSpinner";
 import {
@@ -147,14 +149,19 @@ function formatArchiveMonth(month: string): string {
 }
 
 async function sendRequest(request: RuntimeRequest): Promise<RuntimeResponse> {
-  const response = await getPlatformBridge().request(request);
+  const finish = beginUpdateWork();
+  try {
+    const response = await getPlatformBridge().request(request);
 
-  if (!response.ok) {
-    await persistPausedResponse(request, response);
-    throw new Error(response.error);
+    if (!response.ok) {
+      await persistPausedResponse(request, response);
+      throw new Error(response.error);
+    }
+
+    return response;
+  } finally {
+    finish();
   }
-
-  return response;
 }
 
 async function sendAuthRequest(request: RuntimeRequest): Promise<AuthStatus> {
@@ -1423,6 +1430,17 @@ export function App() {
   }
 
   function enqueueSettingsWrite(operation: () => Promise<void>) {
+    let finishUpdateWork: () => void;
+    try {
+      finishUpdateWork = beginUpdateWork();
+    } catch (cause) {
+      setSettingsError(
+        cause instanceof Error
+          ? cause.message
+          : "Wait for the update to finish.",
+      );
+      return;
+    }
     const revision = ++settingsWriteRevisionRef.current;
     setIsSettingsSaving(true);
     setSettingsError(undefined);
@@ -1441,6 +1459,7 @@ export function App() {
         },
       )
       .finally(() => {
+        finishUpdateWork();
         if (settingsWriteRevisionRef.current === revision)
           setIsSettingsSaving(false);
       });
@@ -2018,6 +2037,21 @@ export function App() {
   }
 
   async function sendText() {
+    let finish: (() => void) | undefined;
+    try {
+      finish = beginUpdateWork();
+      await prepareAndSendText();
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The message could not be sent.",
+      );
+    } finally {
+      finish?.();
+    }
+  }
+  async function prepareAndSendText() {
     if (!draft.trim() || isCreatingPendingTextRef.current) {
       return;
     }
@@ -2460,6 +2494,21 @@ export function App() {
   }
 
   async function selectFile(file: File) {
+    let finish: (() => void) | undefined;
+    try {
+      finish = beginUpdateWork();
+      await prepareAndSendFile(file);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "The file could not be prepared.",
+      );
+    } finally {
+      finish?.();
+    }
+  }
+  async function prepareAndSendFile(file: File) {
     setPreparingFileCount((count) => count + 1);
     let pending: PendingFile | undefined;
     try {
@@ -4090,6 +4139,7 @@ function SettingsView({
           </SettingsSection>
         </fieldset>
         <SettingsSection title="About">
+          <UpdateSettingsRow />
           <button
             className="settings-about settings-about-link"
             disabled={!!operation}

@@ -55,6 +55,13 @@
       OneDrop does not use your content for analytics or model training.
     </p>
 
+    <p>
+      If you choose an account avatar, OneDrop resizes the image and stores it
+      in that account’s OneDrive settings so other signed-in OneDrop clients can
+      display it. Restoring the default records that choice in the same
+      settings.
+    </p>
+
     <h2>Local storage and downloads</h2>
     <p>
       Edge storage, IndexedDB, Cache Storage, and browser download records may
@@ -74,7 +81,9 @@
       local extension data by removing the extension or clearing its site data.
       Native app data and private downloads can be removed through
       operating-system app controls. Sign out clears the locally stored
-      authentication session. Revoking consent prevents future cloud access;
+      credentials for the active account; forgetting another saved account
+      removes that account’s credentials. Neither action deletes local messages,
+      drafts, files, or settings. Revoking consent prevents future cloud access;
       existing files remain in your OneDrive until you delete them.
     </p>
 
@@ -85,6 +94,15 @@
       to other cloud services. Edge authentication tokens are stored in
       extension-local storage. Native iOS stores tokens in Keychain; native
       Android encrypts token state using an Android Keystore key.
+    </p>
+
+    <p>
+      Update checks request public version metadata from onedrop.sycamore.top;
+      store-installed desktop extensions use Edge’s updater instead. Microsoft
+      credentials are not sent to the public update endpoint. Choosing a package
+      download connects to the official GitHub release hosting service. These
+      requests expose ordinary connection information, such as the IP address,
+      to the hosting service and do not include message or attachment content.
     </p>
 
     <h2>Changes and contact</h2>

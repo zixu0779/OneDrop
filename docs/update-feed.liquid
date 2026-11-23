@@ -1,0 +1,34 @@
+---
+permalink: /updates.json
+layout: null
+---
+{"schemaVersion":1,"assets":[
+{%- assign separator = "" -%}
+{%- for release in site.github.releases -%}
+  {%- if release.draft -%}{%- continue -%}{%- endif -%}
+  {%- assign prefix = release.tag_name | slice: 0, 10 -%}
+  {%- if release.prerelease -%}
+    {%- unless prefix == "ios-beta-v" -%}{%- continue -%}{%- endunless -%}
+    {%- assign channel = "beta" -%}
+    {%- assign version = release.tag_name | remove_first: "ios-beta-v" -%}
+  {%- else -%}
+    {%- if prefix == "ios-beta-v" -%}{%- continue -%}{%- endif -%}
+    {%- assign channel = "stable" -%}
+    {%- assign version = release.tag_name | remove_first: "v" -%}
+  {%- endif -%}
+  {%- for asset in release.assets -%}
+    {%- unless asset.state == "uploaded" and asset.size > 0 and asset.digest contains "sha256:" -%}{%- continue -%}{%- endunless -%}
+    {%- assign platform = "" -%}
+    {%- assign apk = "OneDrop-" | append: version | append: "-android.apk" -%}
+    {%- assign crx = "OneDrop-" | append: version | append: "-mobile-edge.crx" -%}
+    {%- assign ipa = "OneDrop-" | append: version | append: ".ipa" -%}
+    {%- if channel == "beta" -%}{%- assign ipa = "OneDrop-Beta-" | append: version | append: ".ipa" -%}{%- endif -%}
+    {%- if asset.name == ipa -%}{%- assign platform = "ios" -%}
+    {%- elsif channel == "stable" and asset.name == apk -%}{%- assign platform = "android" -%}
+    {%- elsif channel == "stable" and asset.name == crx -%}{%- assign platform = "mobile-edge" -%}{%- endif -%}
+    {%- if platform == "" -%}{%- continue -%}{%- endif -%}
+    {{ separator }}{"platform":{{ platform | jsonify }},"channel":{{ channel | jsonify }},"version":{{ version | jsonify }},"url":{{ asset.browser_download_url | jsonify }},"size":{{ asset.size | jsonify }},"sha256":{{ asset.digest | remove_first: "sha256:" | jsonify }}}
+    {%- assign separator = "," -%}
+  {%- endfor -%}
+{%- endfor -%}
+]}

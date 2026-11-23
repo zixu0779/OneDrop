@@ -36,7 +36,7 @@ A release build with a new stable extension ID needs its new redirect URI added 
 - Native iOS tokens are stored in Keychain. Native Android token state is encrypted with an Android Keystore AES-GCM key and stored in private preferences.
 - OneDrop requests `offline_access` and refreshes access tokens on demand.
 - For the Edge SPA redirect flow, refresh-token families expire after 24 hours; when that happens, OneDrop attempts silent authorization and otherwise asks the user to sign in again.
-- Sign out clears local token storage but does not sign the user out of Microsoft in the browser.
+- Sign out removes the active account’s saved credentials and selects the most recently used remaining account, or returns to the sign-in page. Forgetting an inactive account removes only its saved credentials. Both preserve local messages, drafts, files, and settings and do not sign the user out of Microsoft in the browser.
 
 ## Troubleshooting
 

@@ -4,7 +4,7 @@
 
 OneDrop sends text and files between clients owned by the same user. It has no backend server, SaaS database, server-side queue, content scripts, or access to arbitrary websites.
 
-OneDrive is the cloud source of truth. Local storage and IndexedDB hold rebuildable indexes, caches, transfer state, and settings. Authentication tokens use platform-specific storage.
+OneDrive is the cloud source of truth for synchronized content. Local storage and IndexedDB also hold unsent drafts and file data, transfer state, settings, indexes, and caches; not all local data can be rebuilt from OneDrive. Authentication tokens use platform-specific storage.
 
 ## Clients
 
@@ -40,6 +40,8 @@ The extension does not request `unlimitedStorage`; managed local data must remai
 
 Native apps use WebView local storage for preferences and download mappings. iOS stores authentication tokens in Keychain; Android encrypts token state using an Android Keystore key. Native downloads are held in app-owned storage, with platform actions to export or share them.
 
+Saved accounts have separate local databases, drafts, transfer queues, and download mappings. Up to three accounts can be saved, with only one active account synchronizing. Switching preserves each account’s local data; signing out or forgetting an account removes its saved credentials without deleting that data. Appearance preferences and daily update-check state are installation-wide.
+
 ## OneDrive layout
 
 OneDrop stores its data in the explicit `/Apps/OneDrop` path through
@@ -62,6 +64,7 @@ Apps/OneDrop/
 │               └── <original-file-name>
 ├── settings/
 │   ├── account.json
+│   ├── avatar.json
 │   └── devices/
 │       └── <device-id>.json
 └── tombstones/
@@ -168,11 +171,12 @@ alarms, downloads, downloads.open, identity, sidePanel, storage, tabs
 ```
 
 Its host permissions include Microsoft Graph, authentication, and OneDrive
-download URLs:
+download URLs, plus the public update-metadata host:
 
 ```text
 https://graph.microsoft.com/*
 https://login.microsoftonline.com/*
+https://onedrop.sycamore.top/*
 https://*.files.1drv.com/*
 https://*.sharepoint.com/*
 ```

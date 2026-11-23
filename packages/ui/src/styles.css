@@ -4455,6 +4455,10 @@ html[data-theme="dark"] .attachment-error {
   flex-wrap: nowrap;
 }
 .settings-update .settings-about > button {
+  appearance: none;
+  box-shadow: none;
+  color: #98a2b3;
+  font-size: calc(10px * var(--onedrop-text-scale, 1));
   flex: 1;
   min-width: 0;
   padding-left: 0;
@@ -4471,8 +4475,12 @@ html[data-theme="dark"] .attachment-error {
   font: inherit;
   cursor: pointer;
 }
-.settings-update button:hover {
+.settings-update-result button:hover {
   background: rgb(127 127 127 / 12%);
+}
+.settings-update .settings-about > button:focus-visible {
+  outline: 2px solid #3077d4;
+  outline-offset: 2px;
 }
 .settings-update button:disabled {
   opacity: 0.6;

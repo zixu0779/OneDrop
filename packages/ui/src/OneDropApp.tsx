@@ -4139,7 +4139,6 @@ function SettingsView({
           </SettingsSection>
         </fieldset>
         <SettingsSection title="About">
-          <UpdateSettingsRow />
           <button
             className="settings-about settings-about-link"
             disabled={!!operation}
@@ -4161,6 +4160,7 @@ function SettingsView({
             <span>Platform</span>
             <strong>{detectedPlatformLabel(device.platform)}</strong>
           </div>
+          <UpdateSettingsRow />
         </SettingsSection>
       </div>
     </div>

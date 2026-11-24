@@ -14,7 +14,7 @@
 
 ## 状态
 
-制作预览中。源数据已读取 GitHub Releases，保存在预览目录 releases.json。
+已正式接入并发布官网，线上独立验收通过。历史预览过程与最终发布证据见下文。
 
 ## 预览实现
 
@@ -84,3 +84,11 @@
 Taste 诊断已运行（报告 `/tmp/onedrop-release-taste/report.json`），1440/768/390px 页面截图已目视。通用规则报出既有品牌的 hairline、shadow、eyebrow、emoji、gradient、glass、outlined-box，以及 micro-label、button-fx、icon-cards、body-size、still-page、headline-lines；警告 size-count、grey-body、no-footage、small-text。按用户已确认设计与单节接入范围保留：细线节点和柔环是明确需求，14px 摘要与紧凑分类是已确认效果；其余属原官网视觉或全站装饰/动画配额，不为满足通用风格计数改动既有首页。此次没有宣称 Taste 无条件通过。正式时间线可读、无可见错位；实际交互与响应式由独立验收覆盖。
 
 正式接入独立验收通过：移除 Draft 后 section 内容与最终预览一致，时间线末段 JS 逐字一致；10 项针对测试通过。实际 docs 首页在四宽度真实展开并静置 650ms，scrollY 全程变化 0px，第三节点无残留高亮；八组点线中心误差 0px、接缝误差不超过 0.0005px。减少动态效果、原安装区复制、正式 IPA 链接和指南按钮回归通过。生产桌面/手机截图 `/tmp/onedrop-timeline-acceptance/production-{1440,375}.png` 已由独立验收员目视通过。源码已具备提交与发布条件，等待主代理执行发布并补充线上结果。
+
+## 发布结果
+
+2026-11-24，PR [#47](https://github.com/zixu0779/OneDrop/pull/47) 的 CI 与 Android 检查通过后合并，官网部署提交为 `c71746469c66925e2b5a678519704569e4449452`，GitHub Pages 构建成功。正式入口：https://onedrop.sycamore.top/#updates。
+
+线上独立验收使用真实官网与源数据：桌面/移动展开逐帧滚动变化为 0px，静置 650ms 后第三节点无残留高亮；展开动画、底部 Hide、收起焦点、选择与 hover 正常。源链接真实剪贴板正确，正式 IPA 直链 HTTP 200。Draft 和 Get started 均不存在。截图 `/tmp/onedrop-timeline-acceptance/published-{1440,375}.png` 已目视复核。
+
+确认全部代码已合入且工作区无待保留变更后，已删除本地与远程 `feat/website-release-notes` 分支。临时验收浏览器及 8766/8767 服务已关闭。本次仅发布官网，未发布安装包或提交 Edge 商店审核。

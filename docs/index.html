@@ -551,6 +551,293 @@
           flex-direction: column;
         }
       }
+      html {
+        overflow-anchor: none;
+      }
+      #updates {
+        padding-top: 18px;
+        padding-bottom: 36px;
+        scroll-margin-top: 100px;
+      }
+      .release-wrap {
+        max-width: 1036px;
+      }
+      .release-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 32px;
+      }
+      .release-heading h2 {
+        max-width: 680px;
+        font-size: clamp(30px, 3.6vw, 40px);
+      }
+      .release-entry {
+        --node-x: 204px;
+        --node-y: 25px;
+        --node-radius: 5px;
+        display: grid;
+        grid-template-columns: 170px minmax(0, 1fr);
+        gap: 34px;
+        position: relative;
+      }
+      .release-meta {
+        padding-top: 14px;
+      }
+      .release-version {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 18px;
+        font-weight: 750;
+        letter-spacing: -0.02em;
+      }
+      .release-meta time {
+        display: block;
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .release-latest {
+        border-radius: 5px;
+        padding: 2px 6px;
+        background: var(--soft);
+        color: var(--blue);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+      }
+      .release-body {
+        position: relative;
+        padding: 12px 0 20px 32px;
+      }
+      .release-entry[hidden] {
+        display: none;
+      }
+      .release-entry::before {
+        box-sizing: border-box;
+        content: "";
+        position: absolute;
+        top: calc(var(--node-y) - var(--node-radius));
+        left: calc(var(--node-x) - var(--node-radius));
+        width: calc(var(--node-radius) * 2);
+        height: calc(var(--node-radius) * 2);
+        border: 2px solid #b2c0d6;
+        border-radius: 50%;
+      }
+      .release-entry:not(.release-last)::after {
+        content: "";
+        position: absolute;
+        left: calc(var(--node-x) - 0.5px);
+        top: calc(var(--node-y) + var(--node-radius));
+        bottom: calc(var(--node-radius) - var(--node-y));
+        width: 1px;
+        background: #d9e2f1;
+      }
+      .release-entry::before {
+        transition:
+          background-color 160ms,
+          border-color 160ms,
+          box-shadow 160ms;
+      }
+      .release-entry:hover::before,
+      .release-entry:has(:focus-visible)::before {
+        border-color: var(--blue);
+        background: var(--soft);
+        box-shadow: 0 0 0 4px rgb(40 100 230 / 7%);
+      }
+      .release-entry.is-selected::before {
+        background: var(--blue);
+        border-color: var(--blue);
+        box-shadow: 0 0 0 5px var(--soft);
+      }
+      .release-select {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        letter-spacing: inherit;
+        cursor: pointer;
+      }
+      .release-select:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 4px;
+        border-radius: 3px;
+      }
+      .release-archive[hidden],
+      .release-archive-toggle[hidden] {
+        display: none;
+      }
+      .release-archive {
+        overflow: clip;
+        margin-left: -12px;
+        padding-left: 12px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .release-entry::before {
+          transition: none;
+        }
+      }
+      .release-current .release-body {
+        padding-top: 12px;
+      }
+      .release-body h3 {
+        font-size: 21px;
+        line-height: 1.35;
+        letter-spacing: -0.025em;
+        margin-bottom: 12px;
+      }
+      .release-changes {
+        display: grid;
+        gap: 9px;
+        list-style: none;
+        margin: 0 0 12px;
+        padding: 0;
+      }
+      .release-changes li {
+        display: grid;
+        grid-template-columns: 65px minmax(0, 1fr);
+        gap: 12px;
+        align-items: baseline;
+      }
+      .release-kind {
+        font-size: 11px;
+        font-weight: 700;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.045em;
+      }
+      .release-changes p {
+        margin: 0;
+        color: #505e73;
+        font-size: 14px;
+        line-height: 1.75;
+      }
+      .release-link {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+        color: var(--blue);
+        font-size: 13px;
+        font-weight: 650;
+      }
+      .release-link:hover {
+        text-decoration: underline;
+        text-underline-offset: 4px;
+      }
+      .release-archive-toggle {
+        width: fit-content;
+        margin-left: 236px;
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        cursor: pointer;
+        color: var(--blue);
+        font: inherit;
+        font-size: 14px;
+        font-weight: 650;
+        padding: 12px 0;
+        border: 0;
+        background: transparent;
+      }
+      .release-archive-toggle[aria-expanded="true"] .archive-chevron {
+        transform: rotate(180deg);
+      }
+      .release-link:focus-visible,
+      .release-archive-toggle:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 5px;
+        border-radius: 3px;
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+      }
+      @media (max-width: 800px) {
+        .release-heading {
+          flex-direction: column-reverse;
+          gap: 18px;
+          margin-bottom: 28px;
+        }
+        .release-heading h2 {
+          max-width: 490px;
+        }
+        .release-entry {
+          --node-x: 140px;
+          grid-template-columns: 120px minmax(0, 1fr);
+          gap: 20px;
+        }
+        .release-body {
+          padding-left: 24px;
+        }
+        .release-version {
+          flex-wrap: wrap;
+          gap: 5px;
+        }
+        .release-archive-toggle {
+          margin-left: 164px;
+        }
+      }
+      @media (max-width: 520px) {
+        #updates {
+          padding-top: 0;
+        }
+        .release-entry {
+          --node-x: 0px;
+          --node-y: 13px;
+          grid-template-columns: minmax(0, 1fr);
+          gap: 0;
+          margin-left: 5px;
+          padding-left: 20px;
+          padding-bottom: 22px;
+        }
+        .release-meta {
+          position: relative;
+          padding-top: 0;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .release-version {
+          font-size: 16px;
+        }
+        .release-meta time {
+          margin: 0;
+          font-size: 11px;
+        }
+        .release-body,
+        .release-current .release-body {
+          border-left: 0;
+          padding: 10px 0 0;
+        }
+        .release-body h3 {
+          font-size: 20px;
+          margin-bottom: 12px;
+        }
+        .release-changes li {
+          display: block;
+        }
+        .release-kind {
+          display: block;
+          margin-bottom: 3px;
+        }
+        .release-changes {
+          gap: 10px;
+        }
+        .release-archive-toggle {
+          margin-left: 26px;
+        }
+      }
     </style>
   </head>
   <body>
@@ -805,15 +1092,374 @@
           </div>
         </div>
       </section>
-      <section id="download">
-        <div class="wrap">
-          <div class="section-head">
-            <div class="eyebrow">Get started</div>
-            <h2>Bring your own Microsoft account.</h2>
-            <p>
-              Install the OneDrop app or extension for your device, sign in with
-              Microsoft, and authorize access to the OneDrive App Folder.
-            </p>
+      <section id="updates" aria-labelledby="updates-heading">
+        <div class="wrap release-wrap">
+          <div class="release-heading">
+            <h2 id="updates-heading">Release notes</h2>
+          </div>
+          <div class="release-timeline" tabindex="-1">
+            <article class="release-entry release-current is-selected">
+              <div class="release-meta">
+                <div class="release-version">
+                  <button
+                    class="release-select"
+                    type="button"
+                    aria-pressed="true"
+                    aria-label="Select release v1.2.0"
+                  >
+                    v1.2.0
+                  </button>
+                  <span class="release-latest">Latest</span>
+                </div>
+                <time datetime="2026-11-23T11:33:50Z">Nov 23, 2026</time>
+              </div>
+              <div class="release-body">
+                <h3>More accounts. More personal.</h3>
+                <ul class="release-changes">
+                  <li>
+                    <span class="release-kind">New</span>
+                    <p>
+                      Save up to three Microsoft accounts, with separate
+                      messages, drafts and transfers. Customize and sync account
+                      avatars.
+                    </p>
+                  </li>
+                  <li>
+                    <span class="release-kind">New</span>
+                    <p>
+                      Check for updates in Settings, with a daily check on first
+                      launch and download or install actions you control.
+                    </p>
+                  </li>
+                  <li>
+                    <span class="release-kind">Fixed</span>
+                    <p>
+                      More reliable native sign-in and Android downloads,
+                      clearer switching feedback, and no unwanted input zoom on
+                      iOS.
+                    </p>
+                  </li>
+                </ul>
+                <a
+                  class="release-link"
+                  href="https://github.com/zixu0779/OneDrop/releases/tag/v1.2.0"
+                  target="_blank"
+                  rel="noreferrer"
+                  >Full release notes <span aria-hidden="true">↗</span
+                  ><span class="sr-only"> for v1.2.0</span></a
+                >
+              </div>
+            </article>
+            <article class="release-entry">
+              <div class="release-meta">
+                <div class="release-version">
+                  <button
+                    class="release-select"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="Select release v1.1.3"
+                  >
+                    v1.1.3
+                  </button>
+                </div>
+                <time datetime="2026-11-23T14:02:54Z">Nov 23, 2026</time>
+              </div>
+              <div class="release-body">
+                <h3>A quieter update check.</h3>
+                <ul class="release-changes">
+                  <li>
+                    <span class="release-kind">Improved</span>
+                    <p>
+                      Check for updates moves to the last row of About, with a
+                      cleaner label and version status and actions aligned on
+                      the right.
+                    </p>
+                  </li>
+                </ul>
+                <a
+                  class="release-link"
+                  href="https://github.com/zixu0779/OneDrop/releases/tag/v1.1.3"
+                  target="_blank"
+                  rel="noreferrer"
+                  >Full release notes <span aria-hidden="true">↗</span
+                  ><span class="sr-only"> for v1.1.3</span></a
+                >
+              </div>
+            </article>
+            <article class="release-entry release-last">
+              <div class="release-meta">
+                <div class="release-version">
+                  <button
+                    class="release-select"
+                    type="button"
+                    aria-pressed="false"
+                    aria-label="Select release v1.1.2"
+                  >
+                    v1.1.2
+                  </button>
+                </div>
+                <time datetime="2026-11-23T14:02:52Z">Nov 23, 2026</time>
+              </div>
+              <div class="release-body">
+                <h3>Know when an update is ready.</h3>
+                <ul class="release-changes">
+                  <li>
+                    <span class="release-kind">New</span>
+                    <p>
+                      Update checks across all five clients, shown inline in
+                      Settings. Stable and Beta channels stay separate.
+                    </p>
+                  </li>
+                  <li>
+                    <span class="release-kind">Improved</span>
+                    <p>
+                      One check on the first launch each day, with
+                      platform-specific Install or Download actions you choose.
+                    </p>
+                  </li>
+                </ul>
+                <a
+                  class="release-link"
+                  href="https://github.com/zixu0779/OneDrop/releases/tag/v1.1.2"
+                  target="_blank"
+                  rel="noreferrer"
+                  >Full release notes <span aria-hidden="true">↗</span
+                  ><span class="sr-only"> for v1.1.2</span></a
+                >
+              </div>
+            </article>
+            <button
+              class="release-archive-toggle"
+              id="show-releases"
+              type="button"
+              aria-expanded="false"
+              aria-controls="older-releases"
+            >
+              Show 5 earlier releases <span aria-hidden="true">⌄</span>
+            </button>
+            <div class="release-archive" id="older-releases" hidden>
+              <article class="release-entry" id="release-older-1">
+                <div class="release-meta">
+                  <div class="release-version">
+                    <button
+                      class="release-select"
+                      type="button"
+                      aria-pressed="false"
+                      aria-label="Select release v1.1.1"
+                    >
+                      v1.1.1
+                    </button>
+                  </div>
+                  <time datetime="2026-11-23T14:02:49Z">Nov 23, 2026</time>
+                </div>
+                <div class="release-body">
+                  <h3>Your accounts, kept separate.</h3>
+                  <ul class="release-changes">
+                    <li>
+                      <span class="release-kind">New</span>
+                      <p>
+                        Switch between up to three Microsoft accounts and
+                        personalize each with a synced avatar.
+                      </p>
+                    </li>
+                    <li>
+                      <span class="release-kind">Fixed</span>
+                      <p>
+                        Native Android download authorization, native sign-in
+                        feedback, and focus-triggered zoom on iOS.
+                      </p>
+                    </li>
+                  </ul>
+                  <a
+                    class="release-link"
+                    href="https://github.com/zixu0779/OneDrop/releases/tag/v1.1.1"
+                    target="_blank"
+                    rel="noreferrer"
+                    >Full release notes <span aria-hidden="true">↗</span
+                    ><span class="sr-only"> for v1.1.1</span></a
+                  >
+                </div>
+              </article>
+              <article class="release-entry" id="release-older-2">
+                <div class="release-meta">
+                  <div class="release-version">
+                    <button
+                      class="release-select"
+                      type="button"
+                      aria-pressed="false"
+                      aria-label="Select release v1.1.0"
+                    >
+                      v1.1.0
+                    </button>
+                  </div>
+                  <time datetime="2026-11-21T14:49:21Z">Nov 21, 2026</time>
+                </div>
+                <div class="release-body">
+                  <h3>Paste an image. Take Android along.</h3>
+                  <ul class="release-changes">
+                    <li>
+                      <span class="release-kind">New</span>
+                      <p>
+                        Paste clipboard images straight into the composer with
+                        Cmd+V or Ctrl+V.
+                      </p>
+                    </li>
+                    <li>
+                      <span class="release-kind">New</span>
+                      <p>
+                        A native Android app for sharing text and files, with
+                        previews, downloads, opening, sharing and saving.
+                      </p>
+                    </li>
+                  </ul>
+                  <a
+                    class="release-link"
+                    href="https://github.com/zixu0779/OneDrop/releases/tag/v1.1.0"
+                    target="_blank"
+                    rel="noreferrer"
+                    >Full release notes <span aria-hidden="true">↗</span
+                    ><span class="sr-only"> for v1.1.0</span></a
+                  >
+                </div>
+              </article>
+              <article class="release-entry" id="release-older-3">
+                <div class="release-meta">
+                  <div class="release-version">
+                    <button
+                      class="release-select"
+                      type="button"
+                      aria-pressed="false"
+                      aria-label="Select release v1.0.4"
+                    >
+                      v1.0.4
+                    </button>
+                  </div>
+                  <time datetime="2026-11-15T14:59:49Z">Nov 15, 2026</time>
+                </div>
+                <div class="release-body">
+                  <h3>A better pull to load history.</h3>
+                  <ul class="release-changes">
+                    <li>
+                      <span class="release-kind">Fixed</span>
+                      <p>
+                        One pull loads the latest month with messages when the
+                        current month is empty, including short or empty
+                        timelines on native iOS.
+                      </p>
+                    </li>
+                    <li>
+                      <span class="release-kind">Fixed</span>
+                      <p>
+                        The empty-state hint clears when earlier messages
+                        appear.
+                      </p>
+                    </li>
+                  </ul>
+                  <a
+                    class="release-link"
+                    href="https://github.com/zixu0779/OneDrop/releases/tag/v1.0.4"
+                    target="_blank"
+                    rel="noreferrer"
+                    >Full release notes <span aria-hidden="true">↗</span
+                    ><span class="sr-only"> for v1.0.4</span></a
+                  >
+                </div>
+              </article>
+              <article class="release-entry" id="release-older-4">
+                <div class="release-meta">
+                  <div class="release-version">
+                    <button
+                      class="release-select"
+                      type="button"
+                      aria-pressed="false"
+                      aria-label="Select release v1.0.3"
+                    >
+                      v1.0.3
+                    </button>
+                  </div>
+                  <time datetime="2026-08-27T10:56:21Z">Aug 27, 2026</time>
+                </div>
+                <div class="release-body">
+                  <h3>One mobile package. Fewer rough edges.</h3>
+                  <ul class="release-changes">
+                    <li>
+                      <span class="release-kind">New</span>
+                      <p>
+                        One shared mobile CRX for Android and iOS Edge, plus
+                        device removal controls in Settings.
+                      </p>
+                    </li>
+                    <li>
+                      <span class="release-kind">Fixed</span>
+                      <p>
+                        Keyboard positioning in iOS Edge and correct iPhone and
+                        iPad device identification.
+                      </p>
+                    </li>
+                  </ul>
+                  <a
+                    class="release-link"
+                    href="https://github.com/zixu0779/OneDrop/releases/tag/v1.0.3"
+                    target="_blank"
+                    rel="noreferrer"
+                    >Full release notes <span aria-hidden="true">↗</span
+                    ><span class="sr-only"> for v1.0.3</span></a
+                  >
+                </div>
+              </article>
+              <article class="release-entry release-last" id="release-older-5">
+                <div class="release-meta">
+                  <div class="release-version">
+                    <button
+                      class="release-select"
+                      type="button"
+                      aria-pressed="false"
+                      aria-label="Select release v1.0.2"
+                    >
+                      v1.0.2
+                    </button>
+                  </div>
+                  <time datetime="2026-08-22T15:33:13Z">Aug 22, 2026</time>
+                </div>
+                <div class="release-body">
+                  <h3>The foundations of OneDrop.</h3>
+                  <ul class="release-changes">
+                    <li>
+                      <span class="release-kind">New</span>
+                      <p>
+                        Microsoft sign-in and OneDrive-based text, image and
+                        file sharing across desktop Edge, mobile Edge and native
+                        iOS.
+                      </p>
+                    </li>
+                    <li>
+                      <span class="release-kind">New</span>
+                      <p>
+                        Recycle Bin support and recovery when the OneDrive App
+                        Folder is missing.
+                      </p>
+                    </li>
+                  </ul>
+                  <a
+                    class="release-link"
+                    href="https://github.com/zixu0779/OneDrop/releases/tag/v1.0.2"
+                    target="_blank"
+                    rel="noreferrer"
+                    >Full release notes <span aria-hidden="true">↗</span
+                    ><span class="sr-only"> for v1.0.2</span></a
+                  >
+                </div>
+              </article>
+              <button
+                class="release-archive-toggle"
+                id="hide-releases"
+                type="button"
+                aria-expanded="true"
+                aria-controls="older-releases"
+              >
+                Hide earlier releases <span aria-hidden="true">⌃</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>
@@ -1079,6 +1725,84 @@
 
         render();
         restartAutoAdvance();
+      })();
+    </script>
+    <script>
+      (() => {
+        const entries = [...document.querySelectorAll(".release-entry")];
+        const timeline = document.querySelector(".release-timeline");
+        const show = document.querySelector("#show-releases");
+        const hide = document.querySelector("#hide-releases");
+        const archive = document.querySelector("#older-releases");
+        let animating = false;
+        const select = (selected) =>
+          entries.forEach((entry) => {
+            const active = entry === selected;
+            entry.classList.toggle("is-selected", active);
+            entry
+              .querySelector(".release-select")
+              .setAttribute("aria-pressed", String(active));
+          });
+        entries.forEach((entry) =>
+          entry.addEventListener("click", (event) => {
+            if (!event.target.closest("a")) select(entry);
+          }),
+        );
+        const setExpanded = async (expanded) => {
+          if (animating) return;
+          animating = true;
+          const reducedMotion = window.matchMedia(
+            "(prefers-reduced-motion: reduce)",
+          ).matches;
+          const startingHeight = expanded
+            ? show.getBoundingClientRect().height
+            : 0;
+          // Park focus outside release entries, without following the moving Hide control.
+          timeline.focus({ preventScroll: true });
+          if (expanded) {
+            archive.hidden = false;
+            show.hidden = true;
+            entries[2].classList.remove("release-last");
+          }
+          const height = archive.getBoundingClientRect().height;
+          const animation = archive.animate(
+            expanded
+              ? [
+                  { height: `${startingHeight}px`, opacity: 0 },
+                  { height: `${height}px`, opacity: 1 },
+                ]
+              : [
+                  { height: `${height}px`, opacity: 1 },
+                  { height: "0px", opacity: 0 },
+                ],
+            {
+              duration: reducedMotion ? 0 : 300,
+              easing: "cubic-bezier(.2,.7,.2,1)",
+            },
+          );
+          await animation.finished;
+          if (!expanded) {
+            archive.hidden = true;
+            show.hidden = false;
+            entries[2].classList.add("release-last");
+            if (
+              entries
+                .slice(3)
+                .some((entry) => entry.classList.contains("is-selected"))
+            )
+              select(entries[2]);
+            show.focus({ preventScroll: true });
+            show.scrollIntoView({ block: "nearest", behavior: "instant" });
+          }
+          show.setAttribute("aria-expanded", String(expanded));
+          animating = false;
+        };
+        show.addEventListener("click", () => {
+          void setExpanded(true);
+        });
+        hide.addEventListener("click", () => {
+          void setExpanded(false);
+        });
       })();
     </script>
   </body>

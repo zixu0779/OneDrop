@@ -1,0 +1,90 @@
+{%- assign release_rows = "" | split: "," -%}
+{%- for release in site.github.releases -%}
+{%- if release.draft or release.prerelease or release.published_at == nil -%}
+{%- continue -%}
+{%- endif -%}
+{%- assign tag_prefix = release.tag_name | slice: 0, 1 -%}
+{%- assign version = release.tag_name | remove_first: "v" -%}
+{%- assign parts = version | split: "." -%}
+{%- assign joined_version = parts | join: "." -%}
+{%- unless tag_prefix == "v" and parts.size == 3 and joined_version == version -%}
+{%- continue -%}
+{%- endunless -%}
+{%- assign valid_version = true -%}
+{%- capture order -%}
+{%- for part in parts -%}
+{%- assign non_digits = part | remove: "0" | remove: "1" | remove: "2" | remove: "3" | remove: "4" | remove: "5" | remove: "6" | remove: "7" | remove: "8" | remove: "9" -%}
+{%- assign normalized = part | plus: 0 | append: "" -%}
+{%- unless non_digits == "" and part == normalized and part.size <= 10 -%}
+{%- assign valid_version = false -%}
+{%- endunless -%}
+{{ part | prepend: "0000000000" | slice: -10, 10 }}.{%- endfor -%}
+{%- endcapture -%}
+{%- unless valid_version -%}
+{%- continue -%}
+{%- endunless -%}
+{%- assign row = order | append: "|" | append: release.tag_name -%}
+{%- assign release_rows = release_rows | push: row -%}
+{%- endfor -%}
+{%- assign release_rows = release_rows | sort | reverse -%}
+<section id="updates" aria-labelledby="updates-heading">
+  <div class="wrap release-wrap">
+    <div class="release-heading">
+      <h2 id="updates-heading">Release notes</h2>
+    </div>
+    <div class="release-timeline" tabindex="-1">
+      {% for row in release_rows %} {% assign tag = row | split: "|" | last %}
+      {% assign release = site.github.releases | where: "tag_name", tag | first
+      %} {% if forloop.index == 4 %}
+      <button
+        class="release-archive-toggle"
+        id="show-releases"
+        type="button"
+        aria-expanded="false"
+        aria-controls="older-releases"
+      >
+        Show earlier releases
+        <svg
+          class="archive-chevron"
+          viewBox="0 0 20 20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.8"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="m5 7.5 5 5 5-5"></path>
+        </svg>
+      </button>
+      <div class="release-archive" id="older-releases" hidden>
+        {% endif %} {% include release-entry.liquid release=release
+        index=forloop.index total=release_rows.size %} {% else %}
+        <p>No releases published yet.</p>
+        {% endfor %} {% if release_rows.size > 3 %}
+        <button
+          class="release-archive-toggle"
+          id="hide-releases"
+          type="button"
+          aria-expanded="true"
+          aria-controls="older-releases"
+        >
+          Hide earlier releases
+          <svg
+            class="archive-chevron"
+            viewBox="0 0 20 20"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="m5 7.5 5 5 5-5"></path>
+          </svg>
+        </button>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</section>

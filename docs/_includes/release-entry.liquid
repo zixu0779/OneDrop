@@ -1,0 +1,104 @@
+{%- assign release = include.release -%}
+{%- assign version = release.tag_name | remove_first: "v" -%}
+{%- assign historical = site.data.release_summaries[version] -%}
+{%- assign summary_start = "<!-- website-summary:start -->" -%}
+{%- assign summary_end = "<!-- website-summary:end -->" -%}
+{%- assign body = release.body | default: "" -%}
+{%- assign without_start = body | remove: summary_start -%}
+{%- assign without_end = body | remove: summary_end -%}
+{%- assign start_count = body.size | minus: without_start.size | divided_by: summary_start.size -%}
+{%- assign end_count = body.size | minus: without_end.size | divided_by: summary_end.size -%}
+{%- assign after_start = body | split: summary_start | last -%}
+{%- assign valid_summary = false -%}
+{%- assign summary_title = "" -%}
+{%- assign change_count = 0 -%}
+{%- assign newline = "%0A" | url_decode -%}
+{%- capture summary_changes -%}
+{%- if start_count == 1 and end_count == 1 and after_start contains summary_end -%}
+{%- assign valid_summary = true -%}
+{%- assign block = after_start | split: summary_end | first -%}
+{%- assign lines = block | split: newline -%}
+{%- for raw_line in lines -%}
+{%- assign line = raw_line | strip -%}
+{%- if line == "" -%}
+{%- continue -%}
+{%- endif -%}
+{%- assign heading_prefix = line | slice: 0, 4 -%}
+{%- if summary_title == "" and heading_prefix == "### " -%}
+{%- assign summary_title = line | remove_first: "### " | strip -%}
+{%- if summary_title == "" or summary_title.size > 80 -%}
+{%- assign valid_summary = false -%}
+{%- endif -%}
+{%- else -%}
+{%- assign kind = line | remove_first: "- " | split: ":" | first -%}
+{%- assign prefix = "- " | append: kind | append: ": " -%}
+{%- assign actual_prefix = line | slice: 0, prefix.size -%}
+{%- assign text = line | remove_first: prefix | strip -%}
+{%- unless kind == "New" or kind == "Improved" or kind == "Fixed" -%}
+{%- assign valid_summary = false -%}
+{%- endunless -%}
+{%- if summary_title == "" or actual_prefix != prefix or text == "" or text.size > 240 -%}
+{%- assign valid_summary = false -%}
+{%- endif -%}
+{%- assign change_count = change_count | plus: 1 -%}
+
+<li>
+  <span class="release-kind">{{ kind | escape }}</span>
+  <p>{{ text | escape }}</p>
+</li>
+{%- endif -%}
+{%- endfor -%}
+{%- endif -%}
+{%- endcapture -%}
+{%- if summary_title == "" or change_count < 1 or change_count > 3 -%}
+{%- assign valid_summary = false -%}
+{%- endif -%}
+<article
+  class="release-entry{% if include.index == 1 %} release-current is-selected{% endif %}{% if include.index == 3 or include.index == include.total %} release-last{% endif %}"
+>
+  <div class="release-meta">
+    <div class="release-version">
+      <button
+        class="release-select"
+        type="button"
+        aria-pressed="{% if include.index == 1 %}true{% else %}false{% endif %}"
+        aria-label="Select release {{ release.tag_name | escape }}"
+      >
+        {{ release.tag_name | escape }}
+      </button>
+      {% if include.index == 1 %}<span class="release-latest">Latest</span>{%
+      endif %}
+    </div>
+    <time datetime="{{ release.published_at | escape }}"
+      >{{ release.published_at | date: "%b %-d, %Y" }}</time
+    >
+  </div>
+  <div class="release-body">
+    {% if valid_summary %}
+    <h3>{{ summary_title | escape }}</h3>
+    <ul class="release-changes">
+      {{ summary_changes }}
+    </ul>
+    {% elsif historical %}
+    <h3>{{ historical.title | escape }}</h3>
+    <ul class="release-changes">
+      {% for change in historical.changes %}
+      <li>
+        <span class="release-kind">{{ change.kind | escape }}</span>
+        <p>{{ change.text | escape }}</p>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <h3>Release update.</h3>
+    {% endif %}
+    <a
+      class="release-link"
+      href="https://github.com/zixu0779/OneDrop/releases/tag/{{ release.tag_name | escape }}"
+      target="_blank"
+      rel="noreferrer"
+      >Full release notes <span aria-hidden="true">↗</span
+      ><span class="sr-only"> for {{ release.tag_name | escape }}</span></a
+    >
+  </div>
+</article>

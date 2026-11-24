@@ -367,6 +367,91 @@
         font-size: 14px;
         font-weight: 700;
       }
+      .platform-native-ios {
+        grid-column: span 2;
+        gap: 20px;
+      }
+      .ios-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+      }
+      .platform-native-ios .platform-action {
+        margin-top: 0;
+        max-width: 100%;
+        min-height: 44px;
+        border: 0;
+        font-family: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .source-toggle {
+        color: #fff;
+        background: var(--blue);
+      }
+      .platform-native-ios .source-toggle:hover {
+        background: #2055c6;
+      }
+      .platform-native-ios .platform-guide {
+        min-height: 0;
+      }
+      .source-control {
+        position: relative;
+        max-width: 100%;
+      }
+      .source-details {
+        position: absolute;
+        z-index: 6;
+        top: calc(100% + 8px);
+        left: 0;
+        width: min(430px, calc(100vw - 32px));
+        padding: 8px;
+        background: var(--paper);
+        box-shadow: 0 8px 24px rgb(23 32 51 / 14%);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      .source-link-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .source-link-row button {
+        flex: 0 0 44px;
+        width: 44px;
+        height: 44px;
+        justify-content: center;
+        padding: 0;
+        font-size: 21px;
+        line-height: 1;
+      }
+      .source-link-row a {
+        flex: 1;
+        min-width: 0;
+        color: var(--blue);
+        overflow-wrap: anywhere;
+        font-size: 13px;
+      }
+      .ios-status {
+        display: block;
+        font-size: 13px;
+      }
+      .ios-status:empty {
+        display: none;
+      }
+      .source-details .ios-status {
+        margin-top: 6px;
+      }
+      .platform-action[aria-disabled="true"] {
+        color: var(--muted);
+        cursor: wait;
+      }
+      .platform-action:focus-visible,
+      .source-link-row a:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 4px;
+      }
       .platform-action:hover {
         background: #dfeaff;
       }
@@ -444,6 +529,9 @@
         .features,
         .platforms {
           grid-template-columns: 1fr;
+        }
+        .platform-native-ios {
+          grid-column: auto;
         }
         .band {
           padding: 28px;
@@ -653,22 +741,66 @@
                 Installation guide</a
               >
             </div>
-            <div class="platform">
-              <h3>Native iOS</h3>
-              <small
-                >Install through the OneDrop source in LiveContainer.</small
-              >
-              <a
-                class="platform-action"
-                href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#native-ios-through-livecontainer"
-                target="_blank"
-                rel="noreferrer"
-                ><span class="platform-action-icon" aria-hidden="true">↗</span>
-                Installation guide</a
-              >
-              <a class="platform-action" href="apps.json"
-                >LiveContainer source</a
-              >
+            <div class="platform platform-native-ios">
+              <div>
+                <h3>Native iOS</h3>
+                <small
+                  >Use the OneDrop source for updates, or import an IPA into
+                  LiveContainer.</small
+                >
+              </div>
+              <div class="ios-actions">
+                <div class="source-control">
+                  <button
+                    class="platform-action source-toggle"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="livecontainer-source"
+                  >
+                    LiveContainer source link
+                  </button>
+                  <div class="source-details" id="livecontainer-source" hidden>
+                    <div class="source-link-row">
+                      <a
+                        id="source-url"
+                        href="https://onedrop.sycamore.top/apps.json"
+                        >https://onedrop.sycamore.top/apps.json</a
+                      >
+                      <button
+                        class="platform-action"
+                        id="copy-source"
+                        aria-label="Copy source link"
+                        aria-live="polite"
+                        type="button"
+                      >
+                        <span aria-hidden="true">⧉</span>
+                      </button>
+                    </div>
+                    <small
+                      class="ios-status"
+                      id="source-status"
+                      role="status"
+                    ></small>
+                  </div>
+                </div>
+                <a
+                  class="platform-action"
+                  id="download-ipa"
+                  aria-disabled="true"
+                  >Preparing IPA…</a
+                >
+                <a
+                  class="platform-action platform-guide"
+                  href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#native-ios-through-livecontainer"
+                  target="_blank"
+                  rel="noreferrer"
+                  ><span class="platform-action-icon" aria-hidden="true"
+                    >↗</span
+                  >
+                  Installation guide</a
+                >
+              </div>
+              <small class="ios-status" id="ipa-status" role="status"></small>
             </div>
           </div>
         </div>
@@ -719,6 +851,113 @@
         >
       </div>
     </footer>
+    <script>
+      (() => {
+        const sourceToggle = document.querySelector(".source-toggle");
+        const sourceDetails = document.querySelector("#livecontainer-source");
+        const sourceURL = document.querySelector("#source-url");
+        const sourceStatus = document.querySelector("#source-status");
+        const copyButton = document.querySelector("#copy-source");
+        const copyIcon = copyButton.querySelector("span");
+        const closeSource = (restoreFocus = false) => {
+          sourceDetails.hidden = true;
+          sourceToggle.setAttribute("aria-expanded", "false");
+          if (restoreFocus) sourceToggle.focus();
+        };
+        const positionSource = () => {
+          sourceDetails.style.left = `${Math.min(0, window.innerWidth - 16 - sourceToggle.getBoundingClientRect().left - sourceDetails.offsetWidth)}px`;
+        };
+        window.addEventListener("resize", () => {
+          if (!sourceDetails.hidden) positionSource();
+        });
+        const copySource = async () => {
+          sourceStatus.textContent = "";
+          try {
+            await navigator.clipboard.writeText(sourceURL.href);
+            copyIcon.textContent = "✓";
+            copyButton.setAttribute(
+              "aria-label",
+              "Source link copied. Copy again",
+            );
+          } catch {
+            copyIcon.textContent = "⧉";
+            copyButton.setAttribute("aria-label", "Copy source link");
+            sourceStatus.textContent =
+              "Copy failed. Select and copy the link manually.";
+          }
+        };
+        sourceToggle.addEventListener("click", () => {
+          if (!sourceDetails.hidden) {
+            closeSource(true);
+            return;
+          }
+          sourceDetails.hidden = false;
+          positionSource();
+          sourceToggle.setAttribute("aria-expanded", "true");
+          copyButton.focus();
+          void copySource();
+        });
+        copyButton.addEventListener("click", copySource);
+        document.addEventListener("click", (event) => {
+          if (!sourceToggle.parentElement.contains(event.target)) closeSource();
+        });
+        document.addEventListener("keydown", (event) => {
+          if (event.key === "Escape" && !sourceDetails.hidden) {
+            event.preventDefault();
+            closeSource(true);
+          }
+        });
+
+        const download = document.querySelector("#download-ipa");
+        const downloadStatus = document.querySelector("#ipa-status");
+        let loading = false;
+        const loadIPA = async () => {
+          if (loading) return;
+          loading = true;
+          download.textContent = "Preparing IPA…";
+          download.setAttribute("aria-disabled", "true");
+          downloadStatus.textContent = "";
+          try {
+            const response = await fetch("apps.json", {
+              signal: AbortSignal.timeout(10000),
+            });
+            if (!response.ok) throw new Error("Source unavailable");
+            const source = await response.json();
+            const stable = source.apps.find(
+              (app) =>
+                app.bundleIdentifier === "com.sycamore.onedrop" && !app.beta,
+            );
+            const url = new URL(stable.versions[0].downloadURL);
+            if (
+              url.origin !== "https://github.com" ||
+              !url.pathname.startsWith(
+                "/zixu0779/OneDrop/releases/download/",
+              ) ||
+              !url.pathname.endsWith(".ipa")
+            ) {
+              throw new Error("Invalid IPA URL");
+            }
+            download.href = url.href;
+            download.removeAttribute("aria-disabled");
+            download.textContent = "Download IPA";
+          } catch {
+            download.href = "#download-ipa";
+            download.removeAttribute("aria-disabled");
+            download.textContent = "Retry IPA download";
+            downloadStatus.textContent =
+              "Could not load the IPA link. Retry, or use the installation guide.";
+          } finally {
+            loading = false;
+          }
+        };
+        download.addEventListener("click", (event) => {
+          if (download.getAttribute("href")?.startsWith("https://")) return;
+          event.preventDefault();
+          void loadIPA();
+        });
+        void loadIPA();
+      })();
+    </script>
     <script>
       (() => {
         const showcase = document.querySelector(".panel-showcase");

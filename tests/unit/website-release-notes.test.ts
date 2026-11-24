@@ -1,7 +1,15 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const html = readFileSync("docs/index.html", "utf8");
+// Exercise the actual Jekyll output, not a second handwritten timeline fixture.
+const rendered = JSON.parse(
+  execFileSync(
+    "ruby",
+    ["tests/release/website-release-notes.rb", "--render-cases"],
+    { encoding: "utf8" },
+  ),
+) as Record<string, string>;
+const html = rendered["8"]!;
 const animate = vi.fn();
 const scrollIntoView = vi.fn();
 const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -130,4 +138,33 @@ it("selects versions with native buttons and honors reduced motion", async () =>
   await settle();
   expect(animate.mock.calls[0]![1].duration).toBe(0);
   expect(entries()[1]!.classList.contains("is-selected")).toBe(true);
+});
+
+it.each([0, 1, 3])("handles %i releases without archive controls", (count) => {
+  document.documentElement.innerHTML = rendered[String(count)]!;
+  const scripts = document.querySelectorAll("script");
+  expect(() =>
+    window.eval(scripts[scripts.length - 1]!.textContent!),
+  ).not.toThrow();
+  expect(entries()).toHaveLength(count);
+  expect(
+    document.querySelector("#show-releases, #hide-releases, #older-releases"),
+  ).toBeNull();
+  if (count) {
+    const last = entries().at(-1)!;
+    expect(last.classList.contains("release-last")).toBe(true);
+    last.querySelector<HTMLButtonElement>(".release-select")!.click();
+    expect(last.classList.contains("is-selected")).toBe(true);
+  }
+});
+
+it("renders a single archived release when four are published", () => {
+  document.documentElement.innerHTML = rendered["4"]!;
+  expect(entries()).toHaveLength(4);
+  expect(
+    element("#older-releases").querySelectorAll(".release-entry"),
+  ).toHaveLength(1);
+  expect(element("#older-releases").lastElementChild).toBe(
+    element("#hide-releases"),
+  );
 });

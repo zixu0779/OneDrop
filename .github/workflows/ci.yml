@@ -39,19 +39,20 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Run tests
-        run: npm test
-
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
 
-      - name: Test LiveContainer catalog
+      - name: Test website release templates
         run: |
           gem install jekyll -v 3.10.0 --no-document
           ruby tests/release/livecontainer-source.rb
           ruby tests/release/update-feed.rb
+          ruby tests/release/website-release-notes.rb
+
+      - name: Run tests
+        run: npm test
 
       - name: Build Edge extension
         run: npm run build

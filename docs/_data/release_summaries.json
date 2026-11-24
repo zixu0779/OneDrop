@@ -1,0 +1,106 @@
+{
+  "1.2.0": {
+    "title": "More accounts. More personal.",
+    "changes": [
+      {
+        "kind": "New",
+        "text": "Save up to three Microsoft accounts, with separate messages, drafts and transfers. Customize and sync account avatars."
+      },
+      {
+        "kind": "New",
+        "text": "Check for updates in Settings, with a daily check on first launch and download or install actions you control."
+      },
+      {
+        "kind": "Fixed",
+        "text": "More reliable native sign-in and Android downloads, clearer switching feedback, and no unwanted input zoom on iOS."
+      }
+    ]
+  },
+  "1.1.3": {
+    "title": "A quieter update check.",
+    "changes": [
+      {
+        "kind": "Improved",
+        "text": "Check for updates moves to the last row of About, with a cleaner label and version status and actions aligned on the right."
+      }
+    ]
+  },
+  "1.1.2": {
+    "title": "Know when an update is ready.",
+    "changes": [
+      {
+        "kind": "New",
+        "text": "Update checks across all five clients, shown inline in Settings. Stable and Beta channels stay separate."
+      },
+      {
+        "kind": "Improved",
+        "text": "One check on the first launch each day, with platform-specific Install or Download actions you choose."
+      }
+    ]
+  },
+  "1.1.1": {
+    "title": "Your accounts, kept separate.",
+    "changes": [
+      {
+        "kind": "New",
+        "text": "Switch between up to three Microsoft accounts and personalize each with a synced avatar."
+      },
+      {
+        "kind": "Fixed",
+        "text": "Native Android download authorization, native sign-in feedback, and focus-triggered zoom on iOS."
+      }
+    ]
+  },
+  "1.1.0": {
+    "title": "Paste an image. Take Android along.",
+    "changes": [
+      {
+        "kind": "New",
+        "text": "Paste clipboard images straight into the composer with Cmd+V or Ctrl+V."
+      },
+      {
+        "kind": "New",
+        "text": "A native Android app for sharing text and files, with previews, downloads, opening, sharing and saving."
+      }
+    ]
+  },
+  "1.0.4": {
+    "title": "A better pull to load history.",
+    "changes": [
+      {
+        "kind": "Fixed",
+        "text": "One pull loads the latest month with messages when the current month is empty, including short or empty timelines on native iOS."
+      },
+      {
+        "kind": "Fixed",
+        "text": "The empty-state hint clears when earlier messages appear."
+      }
+    ]
+  },
+  "1.0.3": {
+    "title": "One mobile package. Fewer rough edges.",
+    "changes": [
+      {
+        "kind": "New",
+        "text": "One shared mobile CRX for Android and iOS Edge, plus device removal controls in Settings."
+      },
+      {
+        "kind": "Fixed",
+        "text": "Keyboard positioning in iOS Edge and correct iPhone and iPad device identification."
+      }
+    ]
+  },
+  "1.0.2": {
+    "title": "The foundations of OneDrop.",
+    "changes": [
+      {
+        "kind": "New",
+        "text": "Microsoft sign-in and OneDrive-based text, image and file sharing across desktop Edge, mobile Edge and native iOS."
+      },
+      {
+        "kind": "New",
+        "text": "Recycle Bin support and recovery when the OneDrive App Folder is missing."
+      }
+    ]
+  }
+}

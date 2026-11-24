@@ -65,6 +65,12 @@ Dir.mktmpdir do |output|
     check(page.scan(/<article\s+class="[^"]*release-last/).size == (count.zero? ? 0 : count > 3 ? 2 : 1), "Incorrect endpoints #{count}")
   end
 
+  # github-metadata supplies Time objects in production, not only ISO strings.
+  time_page = render_site([release("4.0.0", "", published_at: Time.utc(2026, 11, 24, 10, 0, 0))], output)
+  datetime = time_page[/<time datetime="([^"]+)"/, 1]
+  check(datetime&.match?(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})\z/), "Time metadata must render ISO 8601 datetime")
+  check(Time.iso8601(datetime) == Time.utc(2026, 11, 24, 10, 0, 0), "Datetime changed the publication instant")
+
   candidates = [release("1.9.0"), release("1.10.0"), release("2.0.0", "", prerelease: true), release("3.0.0", "", draft: true)]
   %w[1.2.3-beta 01.2.3 1.2 1.2.3. 1.2.3.4 1..2 1.2.<script>].each { |version| candidates << release(version) }
   candidates << release("9.0.0", "", published_at: nil)

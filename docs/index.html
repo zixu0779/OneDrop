@@ -8,7 +8,24 @@
       content="OneDrop keeps text and files moving between your devices through your own OneDrive."
     />
     <meta name="theme-color" content="#f6f8fb" />
-    <link rel="icon" type="image/png" href="/assets/onedrop-icon.png" />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="16x16"
+      href="/assets/onedrop-icon-16.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="32x32"
+      href="/assets/onedrop-icon-32.png"
+    />
+    <link
+      rel="icon"
+      type="image/png"
+      sizes="48x48"
+      href="/assets/onedrop-icon-48.png"
+    />
     <title>OneDrop — Your devices, one place to share</title>
     <style>
       :root {
@@ -92,7 +109,7 @@
         color: var(--muted);
         font-size: 14px;
       }
-      .links a:hover {
+      .links a:not(.button):hover {
         color: var(--ink);
       }
       .button {
@@ -106,10 +123,10 @@
         font-weight: 650;
         box-shadow: 0 8px 18px rgba(40, 100, 230, 0.2);
       }
-      .button.secondary {
-        color: var(--blue);
-        background: var(--soft);
-        box-shadow: none;
+      .button:hover,
+      .platform-native-ios .source-toggle:hover {
+        color: #fff;
+        background: #2055c6;
       }
       .hero {
         padding: 102px 0 82px;
@@ -390,9 +407,6 @@
         color: #fff;
         background: var(--blue);
       }
-      .platform-native-ios .source-toggle:hover {
-        background: #2055c6;
-      }
       .platform-native-ios .platform-guide {
         min-height: 0;
       }
@@ -405,7 +419,8 @@
         z-index: 6;
         top: calc(100% + 8px);
         left: 0;
-        width: min(430px, calc(100vw - 32px));
+        width: max-content;
+        max-width: calc(100vw - 32px);
         padding: 8px;
         background: var(--paper);
         box-shadow: 0 8px 24px rgb(23 32 51 / 14%);
@@ -414,24 +429,62 @@
       }
       .source-link-row {
         display: flex;
+        width: 100%;
+        min-height: 44px;
         align-items: center;
         gap: 8px;
       }
-      .source-link-row button {
+      #source-url {
+        flex: 0 1 auto;
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--blue);
+        font: inherit;
+        font-size: 13px;
+        text-align: left;
+        overflow-wrap: anywhere;
+        user-select: text;
+        -webkit-user-select: text;
+        cursor: text;
+      }
+      #copy-source {
+        display: grid;
+        place-items: center;
         flex: 0 0 44px;
         width: 44px;
         height: 44px;
-        justify-content: center;
         padding: 0;
-        font-size: 21px;
-        line-height: 1;
-      }
-      .source-link-row a {
-        flex: 1;
-        min-width: 0;
+        border: 0;
+        border-radius: 6px;
+        background: var(--soft);
         color: var(--blue);
-        overflow-wrap: anywhere;
-        font-size: 13px;
+        cursor: pointer;
+      }
+      #copy-source:hover {
+        background: #dfeaff;
+      }
+      .copy-icon {
+        flex: 0 0 20px;
+        width: 20px;
+        height: 20px;
+      }
+      .copy-feedback {
+        position: fixed;
+        z-index: 10;
+        pointer-events: none;
+        padding: 4px 8px;
+        border-radius: 5px;
+        background: #263244;
+        color: #fff;
+        font-size: 12px;
+        font-weight: 500;
+        white-space: nowrap;
+      }
+      .actions .hero-secondary {
+        margin-top: 0;
+        align-self: center;
       }
       .ios-status {
         display: block;
@@ -448,7 +501,7 @@
         cursor: wait;
       }
       .platform-action:focus-visible,
-      .source-link-row a:focus-visible {
+      #copy-source:focus-visible {
         outline: 2px solid var(--blue);
         outline-offset: 4px;
       }
@@ -456,14 +509,11 @@
         background: #dfeaff;
       }
       .platform-action-icon {
-        display: inline-grid;
-        width: 20px;
-        height: 20px;
-        place-items: center;
-        border: 1px solid currentColor;
-        border-radius: 5px;
-        font-size: 12px;
-        line-height: 1;
+        display: block;
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+        margin: 2px;
       }
       .github-link {
         display: inline-flex;
@@ -574,12 +624,12 @@
         font-size: clamp(30px, 3.6vw, 40px);
       }
       .release-entry {
-        --node-x: 204px;
+        --node-x: 164px;
         --node-y: 25px;
         --node-radius: 5px;
         display: grid;
-        grid-template-columns: 170px minmax(0, 1fr);
-        gap: 34px;
+        grid-template-columns: 140px minmax(0, 1fr);
+        gap: 24px;
         position: relative;
       }
       .release-meta {
@@ -728,19 +778,29 @@
         text-underline-offset: 4px;
       }
       .release-archive-toggle {
-        width: fit-content;
-        margin-left: 236px;
         display: flex;
-        gap: 18px;
         align-items: center;
-        cursor: pointer;
+        gap: 8px;
+        width: max-content;
+        margin-left: 196px;
+        padding: 0;
+        border: 0;
+        background: transparent;
         color: var(--blue);
         font: inherit;
         font-size: 14px;
         font-weight: 650;
-        padding: 12px 0;
-        border: 0;
-        background: transparent;
+        cursor: pointer;
+      }
+      .release-archive-toggle:hover {
+        color: #2055c6;
+        text-decoration: underline;
+        text-underline-offset: 4px;
+      }
+      .archive-chevron {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
       }
       .release-archive-toggle[aria-expanded="true"] .archive-chevron {
         transform: rotate(180deg);
@@ -844,7 +904,12 @@
     <header>
       <nav class="wrap">
         <a class="brand" href="#top"
-          ><span class="mark"><img src="assets/onedrop-icon.png" alt="" /></span
+          ><span class="mark"
+            ><img
+              src="assets/onedrop-icon-128.png"
+              width="34"
+              height="34"
+              alt="" /></span
           ><span>OneDrop</span></a
         >
         <div class="links">
@@ -883,7 +948,9 @@
           </p>
           <div class="actions">
             <a class="button" href="#platforms">Learn how to install</a
-            ><a class="button secondary" href="#features">See what it does</a>
+            ><a class="platform-action hero-secondary" href="#features"
+              >See what it does</a
+            >
           </div>
         </div>
         <div
@@ -988,7 +1055,20 @@
                 href="https://microsoftedge.microsoft.com/addons/detail/onedrop/omfponfedcemkidfmpkojmhfofgmfmgh"
                 target="_blank"
                 rel="noreferrer"
-                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                ><svg
+                  class="platform-action-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"
+                  ></path>
+                </svg>
                 Edge Add-ons</a
               >
             </div>
@@ -1000,7 +1080,20 @@
                 href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#android-edge"
                 target="_blank"
                 rel="noreferrer"
-                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                ><svg
+                  class="platform-action-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"
+                  ></path>
+                </svg>
                 Installation guide</a
               >
             </div>
@@ -1012,7 +1105,20 @@
                 href="https://github.com/zixu0779/OneDrop/releases/latest"
                 target="_blank"
                 rel="noreferrer"
-                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                ><svg
+                  class="platform-action-icon platform-download-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"
+                  ></path>
+                </svg>
                 Download APK</a
               >
             </div>
@@ -1024,7 +1130,20 @@
                 href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#ios-edge"
                 target="_blank"
                 rel="noreferrer"
-                ><span class="platform-action-icon" aria-hidden="true">↗</span>
+                ><svg
+                  class="platform-action-icon"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"
+                  ></path>
+                </svg>
                 Installation guide</a
               >
             </div>
@@ -1046,21 +1165,49 @@
                   >
                     LiveContainer source link
                   </button>
+                  <span
+                    class="copy-feedback"
+                    id="copy-feedback"
+                    aria-hidden="true"
+                    hidden
+                    >Copied</span
+                  >
+                  <span
+                    class="sr-only"
+                    id="copy-announcement"
+                    role="status"
+                  ></span>
                   <div class="source-details" id="livecontainer-source" hidden>
                     <div class="source-link-row">
-                      <a
-                        id="source-url"
-                        href="https://onedrop.sycamore.top/apps.json"
-                        >https://onedrop.sycamore.top/apps.json</a
+                      <span id="source-url"
+                        >https://onedrop.sycamore.top/apps.json</span
                       >
                       <button
-                        class="platform-action"
                         id="copy-source"
-                        aria-label="Copy source link"
-                        aria-live="polite"
                         type="button"
+                        aria-label="Copy source link"
                       >
-                        <span aria-hidden="true">⧉</span>
+                        <svg
+                          class="copy-icon"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.7"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                          aria-hidden="true"
+                        >
+                          <rect
+                            x="8"
+                            y="8"
+                            width="12"
+                            height="13"
+                            rx="2"
+                          ></rect>
+                          <path
+                            d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"
+                          ></path>
+                        </svg>
                       </button>
                     </div>
                     <small
@@ -1074,16 +1221,40 @@
                   class="platform-action"
                   id="download-ipa"
                   aria-disabled="true"
-                  >Preparing IPA…</a
+                  ><svg
+                    class="platform-action-icon platform-download-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M12 3v12m-5-5 5 5 5-5M4 16v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"
+                    ></path></svg
+                  ><span id="download-ipa-label">Preparing IPA…</span></a
                 >
                 <a
                   class="platform-action platform-guide"
                   href="https://github.com/zixu0779/OneDrop/blob/main/docs/installation.md#native-ios-through-livecontainer"
                   target="_blank"
                   rel="noreferrer"
-                  ><span class="platform-action-icon" aria-hidden="true"
-                    >↗</span
+                  ><svg
+                    class="platform-action-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.8"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
                   >
+                    <path
+                      d="M14 3h7v7m0-7L10 14M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"
+                    ></path>
+                  </svg>
                   Installation guide</a
                 >
               </div>
@@ -1235,7 +1406,19 @@
               aria-expanded="false"
               aria-controls="older-releases"
             >
-              Show 5 earlier releases <span aria-hidden="true">⌄</span>
+              Show earlier releases
+              <svg
+                class="archive-chevron"
+                viewBox="0 0 20 20"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.8"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m5 7.5 5 5 5-5"></path>
+              </svg>
             </button>
             <div class="release-archive" id="older-releases" hidden>
               <article class="release-entry" id="release-older-1">
@@ -1457,7 +1640,19 @@
                 aria-expanded="true"
                 aria-controls="older-releases"
               >
-                Hide earlier releases <span aria-hidden="true">⌃</span>
+                Hide earlier releases
+                <svg
+                  class="archive-chevron"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="m5 7.5 5 5 5-5"></path>
+                </svg>
               </button>
             </div>
           </div>
@@ -1504,9 +1699,15 @@
         const sourceURL = document.querySelector("#source-url");
         const sourceStatus = document.querySelector("#source-status");
         const copyButton = document.querySelector("#copy-source");
-        const copyIcon = copyButton.querySelector("span");
+        const feedback = document.querySelector("#copy-feedback");
+        const announcement = document.querySelector("#copy-announcement");
+        let copyAnimation;
+        let copyAttempt = 0;
         const closeSource = (restoreFocus = false) => {
           sourceDetails.hidden = true;
+          copyAttempt += 1;
+          copyAnimation?.cancel();
+          feedback.hidden = true;
           sourceToggle.setAttribute("aria-expanded", "false");
           if (restoreFocus) sourceToggle.focus();
         };
@@ -1516,23 +1717,44 @@
         window.addEventListener("resize", () => {
           if (!sourceDetails.hidden) positionSource();
         });
-        const copySource = async () => {
+        const copySource = async (event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const x =
+            event.detail > 0 ? event.clientX : rect.left + rect.width / 2;
+          const y = event.detail > 0 ? event.clientY : rect.top;
+          const attempt = ++copyAttempt;
+          copyAnimation?.cancel();
+          feedback.hidden = true;
+          announcement.textContent = "";
           sourceStatus.textContent = "";
           try {
-            await navigator.clipboard.writeText(sourceURL.href);
-            copyIcon.textContent = "✓";
-            copyButton.setAttribute(
-              "aria-label",
-              "Source link copied. Copy again",
+            await navigator.clipboard.writeText(sourceURL.textContent.trim());
+            if (attempt !== copyAttempt) return;
+            announcement.textContent = "Source link copied.";
+            feedback.hidden = false;
+            feedback.style.left = `${Math.max(8, Math.min(x - feedback.offsetWidth / 2, window.innerWidth - feedback.offsetWidth - 8))}px`;
+            feedback.style.top = `${Math.max(8, Math.min(y - feedback.offsetHeight - 8, window.innerHeight - feedback.offsetHeight - 8))}px`;
+            copyAnimation = feedback.animate(
+              [
+                { opacity: 0 },
+                { opacity: 1, offset: 0.12 },
+                { opacity: 1, offset: 0.8 },
+                { opacity: 0 },
+              ],
+              { duration: 1200, easing: "ease-out" },
             );
+            copyAnimation.finished
+              .then(() => {
+                feedback.hidden = true;
+              })
+              .catch(() => {});
           } catch {
-            copyIcon.textContent = "⧉";
-            copyButton.setAttribute("aria-label", "Copy source link");
+            if (attempt !== copyAttempt) return;
             sourceStatus.textContent =
               "Copy failed. Select and copy the link manually.";
           }
         };
-        sourceToggle.addEventListener("click", () => {
+        sourceToggle.addEventListener("click", (event) => {
           if (!sourceDetails.hidden) {
             closeSource(true);
             return;
@@ -1540,10 +1762,12 @@
           sourceDetails.hidden = false;
           positionSource();
           sourceToggle.setAttribute("aria-expanded", "true");
-          copyButton.focus();
-          void copySource();
+          if (event.detail === 0) copyButton.focus({ preventScroll: true });
+          void copySource(event);
         });
-        copyButton.addEventListener("click", copySource);
+        copyButton.addEventListener("click", (event) => {
+          void copySource(event);
+        });
         document.addEventListener("click", (event) => {
           if (!sourceToggle.parentElement.contains(event.target)) closeSource();
         });
@@ -1555,12 +1779,13 @@
         });
 
         const download = document.querySelector("#download-ipa");
+        const downloadLabel = document.querySelector("#download-ipa-label");
         const downloadStatus = document.querySelector("#ipa-status");
         let loading = false;
         const loadIPA = async () => {
           if (loading) return;
           loading = true;
-          download.textContent = "Preparing IPA…";
+          downloadLabel.textContent = "Preparing IPA…";
           download.setAttribute("aria-disabled", "true");
           downloadStatus.textContent = "";
           try {
@@ -1585,11 +1810,11 @@
             }
             download.href = url.href;
             download.removeAttribute("aria-disabled");
-            download.textContent = "Download IPA";
+            downloadLabel.textContent = "Download IPA";
           } catch {
             download.href = "#download-ipa";
             download.removeAttribute("aria-disabled");
-            download.textContent = "Retry IPA download";
+            downloadLabel.textContent = "Retry IPA download";
             downloadStatus.textContent =
               "Could not load the IPA link. Retry, or use the installation guide.";
           } finally {

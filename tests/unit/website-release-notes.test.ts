@@ -60,6 +60,12 @@ it("renders the approved eight stable releases in version order with no draft se
     "v1.0.3",
     "v1.0.2",
   ]);
+  expect(
+    element("#show-releases").textContent!.replace(/\s+/g, " ").trim(),
+  ).toBe("Show earlier releases");
+  expect(
+    element("#hide-releases").textContent!.replace(/\s+/g, " ").trim(),
+  ).toBe("Hide earlier releases");
   expect(element("#older-releases").hidden).toBe(true);
   expect(entries()[2]!.classList.contains("release-last")).toBe(true);
   expect(document.querySelector(".preview-label, #download")).toBeNull();

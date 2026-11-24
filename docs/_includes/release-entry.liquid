@@ -69,7 +69,7 @@
       {% if include.index == 1 %}<span class="release-latest">Latest</span>{%
       endif %}
     </div>
-    <time datetime="{{ release.published_at | escape }}"
+    <time datetime="{{ release.published_at | date_to_xmlschema | escape }}"
       >{{ release.published_at | date: "%b %-d, %Y" }}</time
     >
   </div>

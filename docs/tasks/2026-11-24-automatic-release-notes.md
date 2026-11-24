@@ -51,3 +51,9 @@ Prefer existing Jekyll GitHub release metadata and build-time rendering. Retain 
 ## Publication authorization
 
 The user explicitly requested publishing this automatic Release notes implementation to the official website. Scope is this website/template/workflow change only; no remote Release content changes or Edge store submission. The branch was checked against the latest `origin/main` before committing, with no base divergence or unrelated work. Existing local checks and independent acceptance remain valid; required CI and live deployment verification will be recorded with the PR.
+
+## Published metadata correction
+
+PR #50 merged as `74b4372835fef7a21303a116cc541fb2fc5cb535` after required CI passed. Pages deployment `45388793352` succeeded. The manual **Refresh website release notes** smoke test `45388777977` also succeeded, proving the workflow token can request a Pages rebuild; release-event and scheduled paths were not artificially triggered.
+
+Independent live review then found a real metadata-type difference: GitHub supplies `published_at` as a Ruby `Time`, whereas initial fixtures supplied ISO strings. Direct escaping produced a non-ISO `datetime` attribute such as `2026-11-23 11:33:50 UTC`. Visible dates, release copy and interactions remained correct. The narrow fix applies Jekyll's `date_to_xmlschema` before escaping and adds an actual `Time` fixture asserting ISO 8601 shape and an unchanged publication instant. The user's website publication authorization covers this correction; its CI/deployment and final live verification are tracked in the follow-up PR.
